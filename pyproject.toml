@@ -9,15 +9,13 @@ authors = [{ name = "Mem Lake Team" }]
 dependencies = [
     # MCP 网关（4.0 beta 启用 MCP 2026-07-28 无状态协议特性：server/discover、Mcp-Method 头、ttlMs/cacheScope）
     "fastmcp>=4.0.0b1",
+    # ASGI 服务器（mcp.run http transport 依赖）
+    "uvicorn[standard]>=0.30.0",
     # 数据库
     "sqlalchemy[asyncio]>=2.0.0",
     "psycopg[binary,pool]>=3.2.0",
-    # Apache AGE Python 驱动（PyPI 包名 apache-age-python，导入名 age）
-    "apache-age-python>=0.0.7",
     # 向量检索
     "pgvector>=0.3.0",
-    # Embedding
-    "sentence-transformers>=3.0.0",
     # HTTP 客户端（embedding client）
     "httpx>=0.27.0",
     # 工具库
@@ -28,6 +26,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# sentence-transformers 仅 embedding 服务容器需要，app 容器通过 HTTP 调用 embedding 服务
+embedding = [
+    "sentence-transformers>=3.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
