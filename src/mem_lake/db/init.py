@@ -1,8 +1,12 @@
-"""扩展安装与初始化：CREATE EXTENSION age/pgvector/zhparser、AGE 图创建。
+"""扩展安装与初始化：CREATE EXTENSION age/pgvector/zhparser、AGE 图创建、业务表建表。
 
-职责边界：仅做幂等存在性检查（fail-fast），不重复 CREATE EXTENSION。
-扩展与图的实体创建由 deploy/init/001_extensions.sql 在容器启动时完成，
-应用启动时调用 init_database() 验证它们就位，缺失则抛 RuntimeError 指引修复。
+职责边界：
+- init_database()：幂等存在性检查（fail-fast），不重复 CREATE EXTENSION。
+  扩展与图的实体创建由 deploy/init/001_extensions.sql 在容器启动时完成，
+  应用启动时调用验证它们就位，缺失则抛 RuntimeError 指引修复。
+- create_tables()：用 Base.metadata.create_all 幂等建业务表。
+  通过 import 各模块 models 触发 ORM 注册到 Base.metadata；
+  M2 注册 audit_log + access_key，M3+ 的 knowledge / approval 模型 import 后自动纳入。
 """
 
 from sqlalchemy import text
@@ -11,6 +15,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mem_lake.config import get_settings
 
 REQUIRED_EXTENSIONS = ("age", "vector", "zhparser")
+
+
+async def create_tables(session: AsyncSession) -> None:
+    """幂等创建所有已注册的业务表。
+
+    通过 import 各模块 models 触发 ORM 注册到 Base.metadata，再调用 create_all。
+    create_all 对已存在的表跳过，幂等安全。
+    """
+    from mem_lake.db.base import Base
+    # 触发各模块 ORM 注册到 Base.metadata（import 即注册）
+    from mem_lake.audit import models as _audit_models  # noqa: F401
+    from mem_lake.auth import models as _auth_models  # noqa: F401
+
+    conn = await session.connection()
+    await conn.run_sync(Base.metadata.create_all)
 
 
 async def check_extensions(session: AsyncSession) -> dict[str, bool]:
