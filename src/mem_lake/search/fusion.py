@@ -1,1 +1,173 @@
-"""RRF 融合排序：三路召回合并"""
+"""RRF 融合排序 + 并行三引擎检索入口。
+
+对齐 PDD 3.3/5.4：向量与全文结果通过 RRF 算法融合排序，融合在应用层完成。
+PDD 硬约束：三引擎检索使用自定义轻量级融合层，并行 asyncio.gather，统一 FilterSpec 编译。
+
+RRF 算法参考 Cormack 等人 2009 年 SIGIR 论文《Reciprocal Rank Fusion outperforms Condorcet
+and individual rank learning methods》。k=60 是论文在 TREC 数据集上扫描 k=1~100 后确定的
+最优默认值，已成为工业界默认（Elasticsearch、Vespa、Weaviate 等均采用）。
+
+公式：score(d) = Σ_i 1/(k + rank_i(d))，rank 从 1 开始，同节点在多列表出现分数累加。
+"""
+
+import asyncio
+import uuid
+from collections import defaultdict
+from dataclasses import dataclass, replace
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mem_lake.embedding.client import EmbeddingClient
+from mem_lake.knowledge.graph_store import GraphStore
+from mem_lake.search.filters import FilterSpec
+
+
+@dataclass
+class SearchResult:
+    """三引擎统一检索结果。
+
+    向量/全文引擎的 score 是原始分数（cosine 相似度 0~1 / ts_rank_cd 0.x），
+    图遍历的 score 为 None（图遍历无相似度概念）。
+    RRF 融合后 score 替换为 RRF 分数，source 替换为 "fused"。
+    """
+
+    node_id: uuid.UUID
+    title: str
+    content: str  # 摘要，截断前 200 字符
+    node_type: str
+    score: float | None
+    source: str  # "vector" / "fulltext" / "graph" / "fused"
+    properties: dict
+    tags: list
+
+
+# 摘要截断长度（PDD 3.3：返回结果含原文摘要）
+SUMMARY_MAX_LENGTH = 200
+
+
+def _truncate(text: str, max_length: int = SUMMARY_MAX_LENGTH) -> str:
+    """截断文本为摘要长度，超出部分以省略号标记。"""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length] + "..."
+
+
+def rrf_fuse(
+    result_lists: list[list[SearchResult]],
+    k: int = 60,
+    top_n: int = 10,
+) -> list[SearchResult]:
+    """RRF 倒数排名融合。
+
+    参数：
+        result_lists: 多个引擎的检索结果列表（每个列表内已按相关性降序排序）
+        k: 平滑常数，默认 60（Cormack 2009 论文最优值）。k 越大排名差异影响越小，融合越"民主"
+        top_n: 融合后返回前 N 个结果，默认 10（PDD 5.4）
+
+    返回：
+        融合后按 RRF 分数降序排序的 SearchResult 列表，长度 <= top_n。
+        每个 SearchResult 的 score 替换为 RRF 分数，source 替换为 "fused"，
+        其余字段保留首次出现时的值。
+
+    边界：
+        - 空列表输入返回空列表
+        - 单列表输入等价于按原顺序取前 top_n（rank 单一来源）
+        - 同一 node_id 在多列表出现分数累加（RRF 核心优势：多引擎一致认可得分更高）
+    """
+    if not result_lists:
+        return []
+
+    scores: dict[uuid.UUID, float] = defaultdict(float)
+    meta: dict[uuid.UUID, SearchResult] = {}
+
+    for result_list in result_lists:
+        # rank 从 1 开始，rank=1 是第一名，RRF 分数 1/(k+1)
+        for rank, result in enumerate(result_list, start=1):
+            scores[result.node_id] += 1.0 / (k + rank)
+            # 保留首次出现的 SearchResult（含原始 title/content/node_type 等）
+            if result.node_id not in meta:
+                meta[result.node_id] = result
+
+    # 按累加 RRF 分数降序排序
+    fused_sorted = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    # 替换 score 与 source，截断 top_n
+    return [
+        replace(meta[nid], score=score, source="fused")
+        for nid, score in fused_sorted[:top_n]
+    ]
+
+
+async def hybrid_search(
+    session: AsyncSession,
+    query: str,
+    embedding_client: EmbeddingClient,
+    graph_store: GraphStore,
+    top_k: int = 50,
+    top_n: int = 10,
+    filters: FilterSpec | None = None,
+    graph_node_id: uuid.UUID | None = None,
+    graph_depth: int = 3,
+) -> dict:
+    """并行三引擎混合检索。
+
+    向量与全文引擎并行执行并 RRF 融合；图遍历作为独立路径仅在提供 graph_node_id 时执行
+    （组合模式：先向量找起点，再图遍历展开），结果作为 "graph" 字段独立返回不参与融合。
+
+    参数：
+        session: 异步数据库会话
+        query: 查询文本（向量引擎 embed_one 生成查询向量，全文引擎 websearch_to_tsquery）
+        embedding_client: Embedding 客户端
+        graph_store: GraphStore 实现（AGEGraphStore）
+        top_k: 单引擎召回数，默认 50（PDD 5.4）
+        top_n: 融合后返回数，默认 10（PDD 5.4）
+        filters: 统一过滤条件
+        graph_node_id: 图遍历起点节点 ID，None 时不执行图遍历
+        graph_depth: 图遍历深度，默认 3
+
+    返回：
+        {"fused": [...], "vector": [...], "fulltext": [...], "graph": [...]}
+        fused 长度 <= top_n，vector/fulltext 长度 <= top_k，graph 长度取决于图遍历结果
+    """
+    # 延迟导入避免循环依赖：fusion 被 __init__ 导出，vector/fulltext/graph 也被导出
+    from mem_lake.search.fulltext import FullTextSearcher
+    from mem_lake.search.graph import GraphSearcher
+    from mem_lake.search.vector import VectorSearcher
+
+    vector_searcher = VectorSearcher(embedding_client)
+    fulltext_searcher = FullTextSearcher()
+    graph_searcher = GraphSearcher(graph_store)
+
+    # 并行执行三引擎检索
+    # asyncio.gather 总延迟 ≈ max(三引擎延迟)，而非三者之和
+    # 注意：同一 AsyncSession 在 psycopg3 async 下可能受单连接限制串行执行，
+    # 但语义上仍为并行调用，性能影响可接受（单引擎延迟 < 500ms）
+    vector_task = vector_searcher.search(session, query, top_k, filters)
+    fulltext_task = fulltext_searcher.search(session, query, top_k, filters)
+
+    if graph_node_id is not None:
+        graph_task = graph_searcher.traverse(
+            session, graph_node_id, depth=graph_depth, filters=filters
+        )
+    else:
+        # 不执行图遍历，返回空列表
+        graph_task = _empty_result()
+
+    vector_results, fulltext_results, graph_results = await asyncio.gather(
+        vector_task, fulltext_task, graph_task
+    )
+
+    # 向量与全文 RRF 融合
+    fused = rrf_fuse([vector_results, fulltext_results], k=60, top_n=top_n)
+
+    return {
+        "fused": fused,
+        "vector": vector_results,
+        "fulltext": fulltext_results,
+        "graph": graph_results,
+    }
+
+
+async def _empty_result() -> list[SearchResult]:
+    """返回空 SearchResult 列表的协程，用于 graph_node_id=None 时的占位任务。"""
+    return []

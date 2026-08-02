@@ -14,6 +14,7 @@ knowledge_helpers：function 级，提供各类节点的合法 properties 构造
 
 import asyncio
 import sys
+import uuid
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -189,3 +190,158 @@ def knowledge_helpers():
         "Decision": _decision,
         "Pitfall": _pitfall,
     }
+
+
+# ============ M4 search fixtures ============
+
+
+@pytest.fixture
+def vector_searcher(real_embedding_client):
+    """VectorSearcher 实例（基于真实 embedding 客户端）。
+
+    依赖 real_embedding_client，embedding 容器未运行时自动 skip。
+    用于集成测试中向量检索的实际调用场景验证。
+    """
+    from mem_lake.search.vector import VectorSearcher
+
+    return VectorSearcher(real_embedding_client)
+
+
+@pytest.fixture
+def vector_searcher_mock(mock_embedding_client):
+    """VectorSearcher 实例（基于 mock embedding 客户端）。
+
+    用于不依赖真实 embedding 服务的测试场景（如过滤条件、top_k 限制等逻辑验证）。
+    mock 返回固定 [0.1]*1024 向量，相似度计算无意义，仅验证流程正确性。
+    """
+    from mem_lake.search.vector import VectorSearcher
+
+    return VectorSearcher(mock_embedding_client)
+
+
+@pytest.fixture
+def fulltext_searcher():
+    """FullTextSearcher 实例（无构造依赖）。"""
+    from mem_lake.search.fulltext import FullTextSearcher
+
+    return FullTextSearcher()
+
+
+@pytest.fixture
+def graph_searcher(graph_store):
+    """GraphSearcher 实例（基于 AGEGraphStore）。"""
+    from mem_lake.search.graph import GraphSearcher
+
+    return GraphSearcher(graph_store)
+
+
+# ============ M5 approval fixtures ============
+
+
+@pytest.fixture
+def sample_batch_payloads(knowledge_helpers):
+    """返回各类批次的 payload 模板，用于审批流测试快速构造 items。
+
+    返回 dict 含三种批次类型的 items 列表（publish_requirement / submit_dev_artifacts /
+    update_requirement_relations），调用方传入 submit_batch 的 items 参数。
+    模板内 project_id/from_id/to_id 由调用方在提交前填入实际值。
+    """
+    req_props = knowledge_helpers["Requirement"]()
+    code_props = knowledge_helpers["CodeSnippet"]()
+    sol_props = knowledge_helpers["Solution"]()
+
+    def _publish_requirement(project_id: uuid.UUID, created_by: str = "ak_pm") -> list[dict]:
+        """publish_requirement 批次模板：1 个 Requirement 节点。"""
+        return [
+            {
+                "item_type": "node",
+                "action": "create",
+                "entity_type": "Requirement",
+                "payload": {
+                    "project_id": str(project_id),
+                    "node_type": "Requirement",
+                    "title": "用户登录鉴权需求",
+                    "content": "系统需要支持账号密码登录与 JWT 令牌签发",
+                    "properties": req_props,
+                    "tags": ["auth", "P0"],
+                    "source": {"agent": "pm_agent", "tool": "publish_requirement"},
+                    "created_by": created_by,
+                },
+            }
+        ]
+
+    def _submit_dev_artifacts(
+        project_id: uuid.UUID,
+        from_id: uuid.UUID,
+        to_id: uuid.UUID,
+        created_by: str = "ak_dev",
+    ) -> list[dict]:
+        """submit_dev_artifacts 批次模板：1 个 CodeSnippet + 1 个 Solution + 1 个 implements 边。"""
+        return [
+            {
+                "item_type": "node",
+                "action": "create",
+                "entity_type": "CodeSnippet",
+                "payload": {
+                    "project_id": str(project_id),
+                    "node_type": "CodeSnippet",
+                    "title": "LoginService 类",
+                    "content": "LoginService 负责用户登录鉴权，签发 JWT 令牌",
+                    "properties": code_props,
+                    "tags": ["auth", "service"],
+                    "source": {"agent": "dev_agent", "tool": "submit_dev_artifacts"},
+                    "created_by": created_by,
+                },
+            },
+            {
+                "item_type": "node",
+                "action": "create",
+                "entity_type": "Solution",
+                "payload": {
+                    "project_id": str(project_id),
+                    "node_type": "Solution",
+                    "title": "JWT 鉴权方案",
+                    "content": "采用 JWT 令牌方案，access token 30 分钟，refresh token 7 天",
+                    "properties": sol_props,
+                    "tags": ["auth", "jwt"],
+                    "source": {"agent": "dev_agent", "tool": "submit_dev_artifacts"},
+                    "created_by": created_by,
+                },
+            },
+            {
+                "item_type": "edge",
+                "action": "create",
+                "entity_type": "implements",
+                "payload": {
+                    "from_id": str(from_id),
+                    "to_id": str(to_id),
+                    "edge_type": "implements",
+                    "properties": {"reason": "代码实现需求"},
+                },
+            },
+        ]
+
+    def _update_requirement_relations(
+        from_id: uuid.UUID, to_id: uuid.UUID
+    ) -> list[dict]:
+        """update_requirement_relations 批次模板：1 个 conflicts_with 边。"""
+        return [
+            {
+                "item_type": "edge",
+                "action": "create",
+                "entity_type": "conflicts_with",
+                "payload": {
+                    "from_id": str(from_id),
+                    "to_id": str(to_id),
+                    "edge_type": "conflicts_with",
+                    "properties": {"reason": "需求间冲突"},
+                },
+            }
+        ]
+
+    return {
+        "publish_requirement": _publish_requirement,
+        "submit_dev_artifacts": _submit_dev_artifacts,
+        "update_requirement_relations": _update_requirement_relations,
+    }
+
