@@ -1,1 +1,364 @@
-"""节点 CRUD：PG 关系表读写"""
+"""知识图谱 Repository：节点 CRUD + 边 CRUD + 事务性共写 + 审计。
+
+职责边界：
+- 仅封装"PG 关系表（knowledge_node）+ AGE 图（节点/边）+ 审计日志"在同一 AsyncSession
+  事务内的原子写入。session 不 commit，由调用方（approval 模块或 gateway）控制提交。
+- 节点写入前调用 schema.validate_node 校验类型与必填字段，不合规抛 SchemaValidationError。
+- 边写入前调用 schema.validate_edge_type 校验类型。
+- 向量生成委托给 EmbeddingClient，向量延迟生成策略由调用方决定（直接 approved 场景同步生成；
+  审批流场景审批通过时再调用 regenerate_vector）。
+- 图操作委托给 GraphStore 抽象，AGEGraphStore 为 v1.0 实现。
+- 审计写入委托给 audit.service.write_audit_log，与业务操作同事务。
+- RLS 上下文（project_id/actor）由调用方在事务前注入（auth/rls.py）。
+
+设计权衡：
+- 不在 repository 内 commit，保证审批流可整体回滚。
+- get_node 返回 ORM 对象（而非 dict），保留懒加载与类型提示。
+- 软删除（is_deleted=True + status=archived）替代物理删除，保留审计可追溯。
+- update_node 不修改 type 字段（节点类型不可变更，避免图谱与关系表不一致）。
+"""
+
+import uuid
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mem_lake.audit.service import write_audit_log
+from mem_lake.embedding.client import EmbeddingClient
+from mem_lake.knowledge.graph_store import GraphStore
+from mem_lake.knowledge.models import KnowledgeNode
+from mem_lake.knowledge.schema import validate_edge_type, validate_node
+
+
+class NodeNotFoundError(Exception):
+    """节点不存在或已软删除时抛出。"""
+
+
+async def create_node(
+    session: AsyncSession,
+    *,
+    graph_store: GraphStore,
+    embedding_client: EmbeddingClient | None,
+    project_id: uuid.UUID,
+    node_type: str,
+    title: str,
+    content: str,
+    properties: dict[str, Any],
+    tags: list[str] | None = None,
+    source: dict[str, Any] | None = None,
+    created_by: str,
+    generate_vector: bool = True,
+) -> KnowledgeNode:
+    """创建知识节点（PG 表 + AGE 图节点 + 审计日志，事务性共写）。
+
+    流程：
+    1. schema.validate_node 校验类型与必填字段
+    2. 若 generate_vector 且 embedding_client 提供：调用 EmbeddingClient 生成 1024 维向量
+    3. INSERT knowledge_node（content_tsv 由触发器自动维护）
+    4. 调用 graph_store.add_node 同步图节点（带 id/project_id/title 属性）
+    5. write_audit_log 记录创建审计
+
+    不 commit，由调用方控制事务。
+    """
+    validate_node(node_type, properties)
+
+    content_vector: list[float] | None = None
+    if generate_vector:
+        if embedding_client is None:
+            raise ValueError(
+                "generate_vector=True 时必须提供 embedding_client"
+            )
+        # 拼接标题与正文作为向量化输入（bge-large-zh-v1.5 推荐 query/doc 同维）
+        embed_input = f"{title}\n{content}"
+        content_vector = await embedding_client.embed_one(embed_input)
+
+    node = KnowledgeNode(
+        project_id=project_id,
+        type=node_type,
+        title=title,
+        content=content,
+        content_vector=content_vector,
+        properties=properties,
+        tags=tags or [],
+        source=source or {},
+        status="approved",
+        version=1,
+        created_by=created_by,
+    )
+    session.add(node)
+    await session.flush()  # 触发 server_default 生成 id 与 created_at
+
+    # AGE 图节点：携带 id/project_id/title 供图查询过滤
+    await graph_store.add_node(
+        session,
+        node_id=node.id,
+        label=node_type,
+        properties={
+            "id": str(node.id),
+            "project_id": str(project_id),
+            "title": title,
+        },
+    )
+
+    await write_audit_log(
+        session,
+        actor=created_by,
+        action="write",
+        target_type="node",
+        target_id=node.id,
+        detail={
+            "node_type": node_type,
+            "title": title,
+            "version": 1,
+            "vector_generated": content_vector is not None,
+        },
+    )
+
+    return node
+
+
+async def get_node(
+    session: AsyncSession,
+    node_id: uuid.UUID,
+    include_deleted: bool = False,
+) -> KnowledgeNode:
+    """按 id 查询节点。
+
+    默认排除软删除节点（is_deleted=False）。include_deleted=True 返回含已删除。
+    不存在或已删除（且 include_deleted=False）抛 NodeNotFoundError。
+    """
+    stmt = select(KnowledgeNode).where(KnowledgeNode.id == node_id)
+    if not include_deleted:
+        stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
+    result = await session.execute(stmt)
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise NodeNotFoundError(f"节点不存在或已删除: {node_id}")
+    return node
+
+
+async def update_node(
+    session: AsyncSession,
+    *,
+    graph_store: GraphStore,
+    embedding_client: EmbeddingClient | None,
+    node_id: uuid.UUID,
+    title: str | None = None,
+    content: str | None = None,
+    properties: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    source: dict[str, Any] | None = None,
+    actor: str,
+    regenerate_vector: bool = True,
+) -> KnowledgeNode:
+    """更新节点字段并版本递增。
+
+    规则：
+    - 不允许修改 type 字段（节点类型不可变更），调用方需重新创建新节点
+    - title/content 任一更新且 regenerate_vector=True：重新生成向量
+    - properties 整体替换（不深度合并，调用方负责合并逻辑）
+    - 版本号 +1
+    - 审计日志记录变更前后关键字段
+
+    不存在抛 NodeNotFoundError。不 commit。
+    """
+    node = await get_node(session, node_id)
+
+    changes: dict[str, Any] = {}
+    if title is not None and title != node.title:
+        changes["title"] = {"from": node.title, "to": title}
+        node.title = title
+    if content is not None and content != node.content:
+        changes["content"] = {"from": node.content[:200], "to": content[:200]}
+        node.content = content
+    if properties is not None:
+        # 更新前重新校验必填字段（防止 properties 缺失关键字段）
+        validate_node(node.type, properties)
+        changes["properties"] = "updated"
+        node.properties = properties
+    if tags is not None:
+        changes["tags"] = {"from": node.tags, "to": tags}
+        node.tags = tags
+    if source is not None:
+        changes["source"] = "updated"
+        node.source = source
+
+    if not changes:
+        # 无变更直接返回，避免无谓的版本递增
+        return node
+
+    node.version += 1
+
+    # 标题或正文变更时重生成向量
+    if regenerate_vector and ("title" in changes or "content" in changes):
+        if embedding_client is None:
+            raise ValueError(
+                "regenerate_vector=True 且 title/content 变更时必须提供 embedding_client"
+            )
+        embed_input = f"{node.title}\n{node.content}"
+        node.content_vector = await embedding_client.embed_one(embed_input)
+        changes["vector_regenerated"] = True
+
+    await session.flush()
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="update",
+        target_type="node",
+        target_id=node.id,
+        detail={
+            "node_type": node.type,
+            "version": node.version,
+            "changes": changes,
+        },
+    )
+
+    return node
+
+
+async def archive_node(
+    session: AsyncSession,
+    *,
+    graph_store: GraphStore,
+    node_id: uuid.UUID,
+    actor: str,
+    delete_from_graph: bool = False,
+) -> KnowledgeNode:
+    """归档节点（软删除：is_deleted=True + status=archived）。
+
+    - 默认不删除 AGE 图节点（保留图遍历历史，archived 状态由查询过滤）
+    - delete_from_graph=True 时调用 graph_store.delete_node 同步删除图节点与关联边
+    - 已归档节点幂等（重复归档不报错）
+
+    不存在抛 NodeNotFoundError。不 commit。
+    """
+    node = await get_node(session, node_id, include_deleted=True)
+
+    if node.is_deleted and node.status == "archived":
+        # 幂等：已归档直接返回
+        return node
+
+    node.is_deleted = True
+    node.status = "archived"
+    await session.flush()
+
+    if delete_from_graph:
+        await graph_store.delete_node(session, node_id)
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="archive",
+        target_type="node",
+        target_id=node.id,
+        detail={
+            "node_type": node.type,
+            "title": node.title,
+            "delete_from_graph": delete_from_graph,
+        },
+    )
+
+    return node
+
+
+async def add_edge(
+    session: AsyncSession,
+    *,
+    graph_store: GraphStore,
+    from_id: uuid.UUID,
+    to_id: uuid.UUID,
+    edge_type: str,
+    properties: dict[str, Any] | None = None,
+    actor: str,
+) -> None:
+    """创建图边（关系），仅写 AGE 图与审计日志。
+
+    前置条件：from_id 与 to_id 对应的节点已存在（PG 表与 AGE 图均存在）。
+    本方法不二次校验节点存在性（避免重复查询），由调用方保证。
+    edge_type 经 schema.validate_edge_type 校验。
+
+    不 commit。
+    """
+    validate_edge_type(edge_type)
+    edge_props = properties or {}
+    # 注入审计元数据（边属性），与 PDD 4.3 边属性示例对齐
+    edge_props.setdefault("created_by", actor)
+
+    await graph_store.add_edge(
+        session,
+        from_id=from_id,
+        to_id=to_id,
+        edge_type=edge_type,
+        properties=edge_props,
+    )
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="write",
+        target_type="edge",
+        detail={
+            "edge_type": edge_type,
+            "from_id": str(from_id),
+            "to_id": str(to_id),
+        },
+    )
+
+
+async def regenerate_vector(
+    session: AsyncSession,
+    *,
+    embedding_client: EmbeddingClient,
+    node_id: uuid.UUID,
+    actor: str,
+) -> KnowledgeNode:
+    """重新生成节点向量（独立调用入口，供审批通过场景使用）。
+
+    不存在抛 NodeNotFoundError。不 commit。
+    """
+    node = await get_node(session, node_id)
+    embed_input = f"{node.title}\n{node.content}"
+    node.content_vector = await embedding_client.embed_one(embed_input)
+    await session.flush()
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="update",
+        target_type="node",
+        target_id=node.id,
+        detail={"vector_regenerated": True, "trigger": "manual"},
+    )
+
+    return node
+
+
+async def list_nodes_by_project(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    node_type: str | None = None,
+    status: str | None = "approved",
+    limit: int = 100,
+    offset: int = 0,
+) -> list[KnowledgeNode]:
+    """按项目列出节点（支持类型与状态过滤，分页）。
+
+    过滤规则：
+    - status="approved"（默认）：仅返回 approved 且未软删除的节点
+    - status="archived"：仅返回 archived 节点（is_deleted 隐含 True）
+    - status=None：返回所有节点（含 archived），不过滤状态与软删除
+    """
+    stmt = select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
+    if status is not None:
+        stmt = stmt.where(KnowledgeNode.status == status)
+        if status == "approved":
+            stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
+    if node_type is not None:
+        stmt = stmt.where(KnowledgeNode.type == node_type)
+
+    stmt = stmt.order_by(KnowledgeNode.created_at.desc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
