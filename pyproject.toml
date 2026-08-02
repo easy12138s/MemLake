@@ -12,14 +12,15 @@ dependencies = [
     # 数据库
     "sqlalchemy[asyncio]>=2.0.0",
     "psycopg[binary,pool]>=3.2.0",
-    # Apache AGE Python 驱动
-    "age>=1.8.0",
+    # Apache AGE Python 驱动（PyPI 包名 apache-age-python，导入名 age）
+    "apache-age-python>=0.0.7",
     # 向量检索
     "pgvector>=0.3.0",
     # Embedding
     "sentence-transformers>=3.0.0",
     # 工具库
     "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
     "pyyaml>=6.0",
     "bcrypt>=4.0.0",
 ]
