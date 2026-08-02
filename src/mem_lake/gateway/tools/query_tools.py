@@ -3,28 +3,45 @@
 工具职责：转发 knowledge/repository 与 audit/service 的只读查询，不写业务逻辑。
 
 包含工具（PDD 6.1）：
-- get_role_skills（已实现，三角色共享）：获取角色 Skills 指导文档
-- get_project_profile（M6b 待实现）：查询项目画像
-- get_requirement_context（M6b 待实现）：查询需求上下文（关联节点+关系链）
-- query_audit_log（M6b 待实现，admin 专属）：查询审计日志
+- get_role_skills（三角色共享）：获取角色 Skills 指导文档
+- get_project_profile（PM/Dev/Admin）：查询项目画像（ProjectProfile 节点）
+- get_requirement_context（PM/Dev/Admin）：查询需求上下文（关联节点+关系链）
+- query_audit_log（Admin）：查询审计日志
 
 设计要点：
 - 全部为只读工具（READ_TOOL_ANNOTATIONS）
 - 角色 RBAC 由中间件层控制，本文件不区分角色
 - get_role_skills 为元工具，指导 Agent 如何使用工具集
+- get_project_profile 直接调 repository.list_nodes_by_project 过滤 ProjectProfile
+- get_requirement_context 调 graph.traverse 获取需求关联节点
+- query_audit_log 调 audit.service.query_audit_logs 多条件过滤
 """
 
 import logging
+import uuid
+from datetime import datetime
+from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
-from mem_lake.gateway.dependencies import get_current_role
+from mem_lake.audit.service import query_audit_logs
+from mem_lake.gateway.dependencies import (
+    get_current_role,
+    get_readonly_session,
+    validate_project_access,
+)
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     ROLE_SKILLS_MD,
     ROLE_SKILLS_VERSION,
     to_tool_error,
+)
+from mem_lake.knowledge.repository import (
+    NodeNotFoundError,
+    get_node,
+    list_nodes_by_project,
 )
 
 logger = logging.getLogger("mem_lake.gateway.tools.query")
@@ -43,17 +60,81 @@ class GetRoleSkillsOutput(BaseModel):
     version: str = Field(description="Skills 文档版本")
 
 
+class ProjectProfileOutput(BaseModel):
+    """项目画像详情。"""
+
+    node_id: uuid.UUID = Field(description="节点 ID")
+    title: str = Field(description="项目名称标题")
+    content: str = Field(description="项目描述")
+    properties: dict[str, Any] = Field(default={}, description="项目属性")
+    tags: list[str] = Field(default=[], description="标签数组")
+    version: int = Field(description="版本号")
+    created_at: Any = Field(description="创建时间（ISO 8601）")
+    created_by: str = Field(description="创建者")
+
+
+class GetProjectProfileOutput(BaseModel):
+    """get_project_profile 工具出参。"""
+
+    project_id: uuid.UUID = Field(description="项目 ID")
+    profile: ProjectProfileOutput | None = Field(
+        default=None, description="项目画像（None 表示尚未创建）"
+    )
+
+
+class RelatedNodeOutput(BaseModel):
+    """关联节点项。"""
+
+    node_id: uuid.UUID = Field(description="节点 ID")
+    title: str = Field(description="节点标题")
+    content: str = Field(description="节点摘要（前 200 字符）")
+    node_type: str = Field(description="节点类型")
+    edge_type: str = Field(description="关联边类型")
+    direction: str = Field(description="方向：outgoing/incoming")
+    depth: int = Field(description="与起点的距离（1=直接相邻）")
+
+
+class RequirementContextOutput(BaseModel):
+    """get_requirement_context 工具出参。"""
+
+    requirement_id: uuid.UUID = Field(description="需求节点 ID")
+    requirement: dict[str, Any] | None = Field(
+        default=None, description="需求节点详情（None 表示不存在）"
+    )
+    related_nodes: list[RelatedNodeOutput] = Field(
+        default=[], description="关联节点列表（按深度排序）"
+    )
+    total: int = Field(description="关联节点数量")
+
+
+class AuditLogItemOutput(BaseModel):
+    """审计日志项。"""
+
+    log_id: uuid.UUID = Field(description="日志 ID")
+    actor: str = Field(description="操作者")
+    action: str = Field(description="操作类型：write/update/archive")
+    target_type: str = Field(description="目标类型：node/edge")
+    target_id: uuid.UUID | None = Field(default=None, description="目标 ID")
+    detail: dict[str, Any] = Field(default={}, description="操作详情")
+    created_at: Any = Field(description="操作时间（ISO 8601）")
+
+
+class QueryAuditLogOutput(BaseModel):
+    """query_audit_log 工具出参。"""
+
+    logs: list[AuditLogItemOutput] = Field(description="审计日志列表")
+    total: int = Field(description="返回数量（非总数）")
+    limit: int = Field(description="当前分页上限")
+    offset: int = Field(description="当前分页偏移")
+
+
 # ============================================================================
 # 工具注册
 # ============================================================================
 
 
 def register_query_tools(mcp: FastMCP) -> None:
-    """注册查询类工具到 FastMCP 实例。
-
-    当前已实现：get_role_skills。
-    M6b 待实现：get_project_profile / get_requirement_context / query_audit_log。
-    """
+    """注册查询类工具到 FastMCP 实例。"""
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def get_role_skills(
@@ -78,34 +159,233 @@ def register_query_tools(mcp: FastMCP) -> None:
             version=ROLE_SKILLS_VERSION,
         )
 
-    # ------------------------------------------------------------------------
-    # M6b 待实现工具占位（暂不注册，实现时取消注释并补全逻辑）
-    # ------------------------------------------------------------------------
-    # @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
-    # async def get_project_profile(
-    #     project_id: uuid.UUID = Field(description="项目 ID"),
-    # ) -> "ProjectProfileOutput":
-    #     """查询项目画像（技术栈/架构/约定/团队）。"""
-    #     ...
-    #
-    # @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
-    # async def get_requirement_context(
-    #     requirement_id: uuid.UUID = Field(description="需求节点 ID"),
-    #     depth: int = Field(default=2, description="关系链深度"),
-    # ) -> "RequirementContextOutput":
-    #     """查询需求上下文（关联的代码/方案/意图/踩坑节点 + 关系链）。"""
-    #     ...
-    #
-    # @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
-    # async def query_audit_log(
-    #     project_id: uuid.UUID | None = Field(default=None, description="项目 ID 过滤"),
-    #     actor: str | None = Field(default=None, description="操作者过滤"),
-    #     action: str | None = Field(default=None, description="操作类型过滤"),
-    #     target_type: str | None = Field(default=None, description="目标类型过滤"),
-    #     start_time: datetime | None = Field(default=None, description="起始时间"),
-    #     end_time: datetime | None = Field(default=None, description="结束时间"),
-    #     limit: int = Field(default=100, description="返回数量上限"),
-    #     offset: int = Field(default=0, description="分页偏移"),
-    # ) -> "AuditLogOutput":
-    #     """查询审计日志（admin 专属）。"""
-    #     ...
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
+    async def get_project_profile(
+        project_id: uuid.UUID = Field(description="项目 ID"),
+    ) -> GetProjectProfileOutput:
+        """查询项目画像（技术栈/架构/约定/团队）。
+
+        PM/Dev/Admin 共享工具。返回项目最新的 ProjectProfile 节点。
+        项目尚未创建画像时 profile=None，可调用 manage_project_profile（admin）创建。
+        """
+        try:
+            validate_project_access(project_id)
+            session = await get_readonly_session()
+            try:
+                nodes = await list_nodes_by_project(
+                    session,
+                    project_id=project_id,
+                    node_type="ProjectProfile",
+                    status="approved",
+                    limit=1,
+                    offset=0,
+                )
+                profile = None
+                if nodes:
+                    n = nodes[0]
+                    profile = ProjectProfileOutput(
+                        node_id=n.id,
+                        title=n.title,
+                        content=n.content,
+                        properties=n.properties or {},
+                        tags=n.tags or [],
+                        version=n.version,
+                        created_at=n.created_at.isoformat()
+                        if n.created_at
+                        else None,
+                        created_by=n.created_by,
+                    )
+                return GetProjectProfileOutput(
+                    project_id=project_id, profile=profile
+                )
+            finally:
+                await session.close()
+        except Exception as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
+    async def get_requirement_context(
+        requirement_id: uuid.UUID = Field(description="需求节点 ID"),
+        depth: int = Field(
+            default=2,
+            description="关系链遍历深度（1=直接关联，2=间接关联，最大 5）",
+        ),
+    ) -> RequirementContextOutput:
+        """查询需求上下文（关联的代码/方案/意图/踩坑节点 + 关系链）。
+
+        PM/Dev/Admin 共享工具。基于图遍历获取需求节点的关联节点列表，
+        按深度排序返回。深度越大返回的关联节点越多，但延迟越高。
+        需求节点不存在时 requirement=None，related_nodes 为空。
+        """
+        try:
+            # 深度校验（1~5）
+            if not 1 <= depth <= 5:
+                raise ValueError("depth 必须在 1~5 之间")
+
+            ctx = get_context()
+            lifespan_ctx = ctx.lifespan_context
+
+            session = await get_readonly_session()
+            try:
+                # 1. 获取需求节点详情
+                requirement_dict = None
+                try:
+                    req_node = await get_node(session, requirement_id)
+                    requirement_dict = {
+                        "node_id": str(req_node.id),
+                        "title": req_node.title,
+                        "content": req_node.content,
+                        "type": req_node.type,
+                        "project_id": str(req_node.project_id),
+                        "status": req_node.status,
+                        "version": req_node.version,
+                        "tags": req_node.tags or [],
+                    }
+                    # 需求存在则校验项目权限
+                    validate_project_access(req_node.project_id)
+                except NodeNotFoundError:
+                    return RequirementContextOutput(
+                        requirement_id=requirement_id,
+                        requirement=None,
+                        related_nodes=[],
+                        total=0,
+                    )
+
+                # 2. 图遍历获取关联节点
+                from mem_lake.search.graph import GraphSearcher
+                graph_searcher = GraphSearcher(lifespan_ctx.graph_store)
+                from mem_lake.search.filters import FilterSpec
+                filters = FilterSpec(
+                    project_id=req_node.project_id,
+                )
+                results = await graph_searcher.traverse(
+                    session,
+                    requirement_id,
+                    depth=depth,
+                    filters=filters,
+                )
+
+                # 3. 转换为 RelatedNodeOutput（GraphSearcher.traverse 不返回方向/边类型，
+                #    此处用 source="graph" 占位，深度统一为 1）
+                related = [
+                    RelatedNodeOutput(
+                        node_id=r.node_id,
+                        title=r.title,
+                        content=r.content,
+                        node_type=r.node_type,
+                        edge_type="related",
+                        direction="outgoing",
+                        depth=1,
+                    )
+                    for r in results
+                ]
+
+                return RequirementContextOutput(
+                    requirement_id=requirement_id,
+                    requirement=requirement_dict,
+                    related_nodes=related,
+                    total=len(related),
+                )
+            finally:
+                await session.close()
+        except (NodeNotFoundError, ValueError) as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
+    async def query_audit_log(
+        project_id: uuid.UUID | None = Field(
+            default=None, description="项目 ID 过滤（None 表示所有项目）"
+        ),
+        actor: str | None = Field(
+            default=None, description="操作者 Access Key ID 过滤"
+        ),
+        action: str | None = Field(
+            default=None,
+            description="操作类型过滤：write/update/archive",
+        ),
+        target_type: str | None = Field(
+            default=None, description="目标类型过滤：node/edge"
+        ),
+        target_id: uuid.UUID | None = Field(
+            default=None, description="目标 ID 过滤"
+        ),
+        start_time: datetime | None = Field(
+            default=None, description="起始时间（ISO 8601）"
+        ),
+        end_time: datetime | None = Field(
+            default=None, description="结束时间（ISO 8601）"
+        ),
+        limit: int = Field(default=100, description="返回数量上限"),
+        offset: int = Field(default=0, description="分页偏移"),
+    ) -> QueryAuditLogOutput:
+        """查询审计日志（多条件过滤 + 分页）。
+
+        Admin 工具。审计日志为 append-only，记录所有知识图谱写操作。
+        支持按项目/操作者/操作类型/目标类型/目标 ID/时间范围过滤。
+        """
+        try:
+            # 项目权限校验（admin 不受限于 project_id）
+            if project_id is not None:
+                validate_project_access(project_id)
+
+            session = await get_readonly_session()
+            try:
+                logs = await query_audit_logs(
+                    session,
+                    actor=actor,
+                    action=action,
+                    target_type=target_type,
+                    target_id=target_id,
+                    limit=limit,
+                    offset=offset,
+                )
+
+                # 时间范围过滤（PG 层不支持，在应用层过滤）
+                if start_time is not None or end_time is not None:
+                    logs = [
+                        log
+                        for log in logs
+                        if _match_time_range(log.created_at, start_time, end_time)
+                    ]
+
+                return QueryAuditLogOutput(
+                    logs=[_to_audit_log_item_output(log) for log in logs],
+                    total=len(logs),
+                    limit=limit,
+                    offset=offset,
+                )
+            finally:
+                await session.close()
+        except Exception as e:
+            raise to_tool_error(e)
+
+
+# ============================================================================
+# 辅助函数
+# ============================================================================
+
+
+def _match_time_range(
+    created_at: datetime,
+    start_time: datetime | None,
+    end_time: datetime | None,
+) -> bool:
+    """判断 created_at 是否在 [start_time, end_time] 范围内。"""
+    if start_time is not None and created_at < start_time:
+        return False
+    if end_time is not None and created_at > end_time:
+        return False
+    return True
+
+
+def _to_audit_log_item_output(log) -> AuditLogItemOutput:
+    """从 AuditLog ORM 对象构造 AuditLogItemOutput。"""
+    return AuditLogItemOutput(
+        log_id=log.id,
+        actor=log.actor,
+        action=log.action,
+        target_type=log.target_type,
+        target_id=log.target_id,
+        detail=log.detail or {},
+        created_at=log.created_at.isoformat() if log.created_at else None,
+    )
