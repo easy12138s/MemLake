@@ -2,6 +2,9 @@
 
 纯 Python 常量字典，无 DB 查询，无 Casbin。工具名严格对齐 PDD 3.5 / 6.1。
 M6 gateway 拦截层调用 has_tool_access 校验角色对工具的访问权限。
+
+manage_project_profile 为 PDD 3.4 + 8.5 要求的补充工具（admin 专属，直接写入
+ProjectProfile 节点不走审批流），PDD 6.1 admin 工具表未列出但 PDD 3.4/8.5 明确要求。
 """
 
 PM_TOOLS: frozenset[str] = frozenset({
@@ -33,6 +36,7 @@ ADMIN_ONLY_TOOLS: frozenset[str] = frozenset({
     "list_knowledge",
     "query_audit_log",
     "manage_access_key",
+    "manage_project_profile",
 })
 
 # admin 拥有全部工具（含 pm 与 dev 工具集）
