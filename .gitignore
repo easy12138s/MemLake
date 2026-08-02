@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 模型文件（体积大，不入库）
+models/
+*.bin
+*.safetensors
+
+# 环境配置
+.env
+*.local
+
+# Docker
+deploy/data/
+
+# OS
+.DS_Store
+Thumbs.db

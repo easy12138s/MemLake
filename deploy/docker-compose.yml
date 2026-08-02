@@ -1,0 +1,60 @@
+# Mem Lake Docker Compose 编排
+# 三容器：PostgreSQL（AGE+pgvector+zhparser）、Embedding 服务、Mem Lake 应用
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.pg
+    environment:
+      POSTGRES_USER: memlake
+      POSTGRES_PASSWORD: memlake
+      POSTGRES_DB: memlake
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memlake"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  embedding:
+    build:
+      context: .
+      dockerfile: Dockerfile.embedding
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../models:/models:ro
+    environment:
+      MODEL_PATH: /models/bge-large-zh-v1.5
+      DEVICE: cpu
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mem-lake:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.app
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://memlake:memlake@postgres:5432/memlake
+      EMBEDDING_HOST: embedding
+      EMBEDDING_PORT: "8001"
+    env_file:
+      - ../.env
+
+volumes:
+  pg_data:

@@ -1,0 +1,28 @@
+# 自定义 PostgreSQL 17 镜像
+# 基于 apache/age 官方镜像，追加 pgvector + zhparser 扩展
+FROM apache/age:v1.8.0
+
+# 安装编译依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    postgresql-server-dev-17 \
+    git \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# 编译安装 pgvector
+RUN git clone --branch v0.8.0 https://github.com/pgvector/pgvector.git /tmp/pgvector \
+    && cd /tmp/pgvector \
+    && make && make install \
+    && rm -rf /tmp/pgvector
+
+# 编译安装 zhparser（中文全文检索分词）
+RUN git clone https://github.com/amutu/zhparser.git /tmp/zhparser \
+    && cd /tmp/zhparser \
+    && make && make install \
+    && rm -rf /tmp/zhparser
+
+# 清理编译依赖
+RUN apt-get purge -y build-essential postgresql-server-dev-17 git wget \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*

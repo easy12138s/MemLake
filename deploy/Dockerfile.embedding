@@ -1,0 +1,17 @@
+# Embedding 服务镜像
+# 基于 Python slim，内置 sentence-transformers + bge-large-zh-v1.5
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir \
+    sentence-transformers>=3.0.0 \
+    fastapi>=0.115.0 \
+    uvicorn[standard]>=0.30.0
+
+WORKDIR /app
+COPY embedding_server.py /app/
+
+# 模型通过卷挂载，不入镜像
+# /models/bge-large-zh-v1.5
+
+EXPOSE 8001
+CMD ["uvicorn", "embedding_server:app", "--host", "0.0.0.0", "--port", "8001"]
