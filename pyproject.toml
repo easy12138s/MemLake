@@ -7,8 +7,8 @@ license = { text = "MIT" }
 authors = [{ name = "Mem Lake Team" }]
 
 dependencies = [
-    # MCP 网关
-    "fastmcp>=3.0.0",
+    # MCP 网关（4.0 beta 启用 MCP 2026-07-28 无状态协议特性：server/discover、Mcp-Method 头、ttlMs/cacheScope）
+    "fastmcp>=4.0.0b1",
     # 数据库
     "sqlalchemy[asyncio]>=2.0.0",
     "psycopg[binary,pool]>=3.2.0",

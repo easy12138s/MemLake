@@ -1,0 +1,471 @@
+"""写入类工具：产生审批批次，等待 admin 审批。
+
+工具职责：构造审批项（node/edge items）并提交批次，不在工具层写入知识图谱。
+所有写操作经 admin 审批通过后由 approval/service 原子写入图谱。
+
+包含工具（PDD 6.1）：
+- publish_requirement（PM）：发布需求节点 + 关联关系
+- update_requirement_relations（PM）：更新需求间关系边
+- submit_dev_artifacts（Dev）：批量提交开发产物（代码/方案/意图/踩坑）
+
+设计要点：
+- 工具参数采用 flat params 模式，复杂嵌套用 Pydantic 模型
+- 临时引用（ref）在工具层保留为字符串，审批通过时由 approval 层解析为节点 ID
+- 工具层不写业务逻辑，仅参数解析 + items 构造 + 转发 submit_batch
+- 角色 RBAC 由中间件层控制，本文件不区分角色
+"""
+
+import logging
+import uuid
+from typing import Any
+
+from fastmcp import FastMCP
+from pydantic import BaseModel, Field
+
+from mem_lake.approval.service import (
+    PayloadValidationError,
+    submit_batch,
+)
+from mem_lake.gateway.dependencies import (
+    get_current_key_id,
+    transactional_session,
+    validate_project_access,
+)
+from mem_lake.gateway.tools._shared import (
+    WRITE_TOOL_ANNOTATIONS,
+    WriteToolOutput,
+    build_edge_item,
+    build_node_item,
+    to_tool_error,
+)
+from mem_lake.knowledge.schema import SchemaValidationError
+
+logger = logging.getLogger("mem_lake.gateway.tools.write")
+
+
+# ============================================================================
+# 需求相关 Pydantic 模型（publish_requirement / update_requirement_relations）
+# ============================================================================
+
+
+class RequirementInput(BaseModel):
+    """需求节点内容。"""
+
+    title: str = Field(description="需求标题")
+    content: str = Field(description="需求详细描述")
+    properties: dict[str, Any] = Field(
+        description=(
+            "需求属性，必填字段：requirement_id（需求编号）、priority（P0/P1/P2/P3）、"
+            "module（模块）、acceptance_criteria（验收标准）；可选：source_doc、version"
+        )
+    )
+    tags: list[str] = Field(default=[], description="标签数组")
+
+
+class RelatedInput(BaseModel):
+    """需求间关联关系。"""
+
+    supersedes: list[str] = Field(
+        default=[],
+        description="被替代的旧需求 requirement_id 列表（自动构造 supersedes 边）",
+    )
+    relates_to: list[str] = Field(
+        default=[],
+        description="关联需求 requirement_id 列表（自动构造 relates_to 边）",
+    )
+
+
+class RelationInput(BaseModel):
+    """需求间关系（用于 update_requirement_relations）。"""
+
+    from_id: uuid.UUID = Field(description="源需求节点 ID")
+    to_id: uuid.UUID = Field(description="目标需求节点 ID")
+    relation_type: str = Field(
+        description="关系类型：conflicts_with/duplicates/relates_to/supersedes/version_of"
+    )
+    properties: dict[str, Any] = Field(default={}, description="边属性")
+
+
+# ============================================================================
+# 开发产物 Pydantic 模型（submit_dev_artifacts）
+# ============================================================================
+
+
+class CodeSnippetInput(BaseModel):
+    """代码片段。"""
+
+    ref: str = Field(
+        description="批次内引用名（如 'LoginService'），供 relations 中 from_ref/to_ref 引用"
+    )
+    title: str = Field(description="代码片段标题")
+    content: str = Field(description="代码片段描述/关键代码")
+    properties: dict[str, Any] = Field(
+        description=(
+            "CodeSnippet 属性，必填：name（名称）、type（class/function/module）、"
+            "responsibility（职责）、file_path（文件路径）；可选：signature、snippet、language"
+        )
+    )
+    tags: list[str] = Field(default=[], description="标签数组")
+
+
+class SolutionInput(BaseModel):
+    """实现方案。"""
+
+    ref: str = Field(description="批次内引用名")
+    title: str = Field(description="方案标题")
+    content: str = Field(description="方案描述")
+    properties: dict[str, Any] = Field(
+        description="Solution 属性，必填：approach（方案）、alternatives（备选方案）；可选：version"
+    )
+    tags: list[str] = Field(default=[], description="标签数组")
+
+
+class DesignIntentInput(BaseModel):
+    """设计意图。"""
+
+    ref: str = Field(description="批次内引用名")
+    title: str = Field(description="意图标题")
+    content: str = Field(description="意图描述")
+    properties: dict[str, Any] = Field(
+        description="DesignIntent 属性，必填：rationale（理由）、trade_offs（权衡）；可选：references"
+    )
+    tags: list[str] = Field(default=[], description="标签数组")
+
+
+class PitfallInput(BaseModel):
+    """踩坑记录。"""
+
+    ref: str = Field(description="批次内引用名")
+    title: str = Field(description="踩坑标题")
+    content: str = Field(description="踩坑描述")
+    properties: dict[str, Any] = Field(
+        description=(
+            "Pitfall 属性，必填：symptom（症状）、root_cause（根因）、"
+            "solution（解决方案）、severity（严重程度 P0/P1/P2/P3）"
+        )
+    )
+    tags: list[str] = Field(default=[], description="标签数组")
+
+
+class ArtifactRelationInput(BaseModel):
+    """产物间关系（含临时引用）。"""
+
+    from_ref: str = Field(
+        description="源引用（ref 名 / requirement_id / UUID 字符串）"
+    )
+    to_ref: str = Field(
+        description="目标引用（ref 名 / requirement_id / UUID 字符串）"
+    )
+    relation_type: str = Field(
+        description=(
+            "关系类型：implements（需求→代码）、depends_on（代码→代码）、"
+            "realized_by（代码→方案）、embodies（方案→意图）、"
+            "traces_to（代码→意图）、described_by（代码→踩坑）、references（通用引用）"
+        )
+    )
+    properties: dict[str, Any] = Field(default={}, description="边属性")
+
+
+class ArtifactsInput(BaseModel):
+    """开发产物集合。"""
+
+    code_snippets: list[CodeSnippetInput] = Field(
+        default=[], description="代码片段列表"
+    )
+    solutions: list[SolutionInput] = Field(default=[], description="实现方案列表")
+    design_intents: list[DesignIntentInput] = Field(
+        default=[], description="设计意图列表"
+    )
+    pitfalls: list[PitfallInput] = Field(default=[], description="踩坑记录列表")
+
+
+# ============================================================================
+# 工具注册
+# ============================================================================
+
+
+def register_write_tools(mcp: FastMCP) -> None:
+    """注册写入类工具到 FastMCP 实例。"""
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def publish_requirement(
+        project_id: uuid.UUID = Field(description="归属项目 ID"),
+        requirement: RequirementInput = Field(description="需求节点内容"),
+        related: RelatedInput | None = Field(
+            default=None, description="关联关系（supersedes/relates_to）"
+        ),
+        operation_id: str | None = Field(
+            default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
+        ),
+    ) -> WriteToolOutput:
+        """发布需求节点（含关联关系），产生审批批次等待 admin 审批。
+
+        PM 工具。需求节点暂存于审批批次，审批通过后才写入知识图谱并参与检索。
+        支持 operation_id 幂等：同 operation_id 重复提交返回首次 batch_id。
+        related.supersedes/relates_to 中的 requirement_id 必须为已有 Requirement 节点的 UUID。
+        """
+        try:
+            validate_project_access(project_id)
+            key_id = get_current_key_id()
+            items = _build_publish_items(project_id, requirement, related, key_id)
+
+            async with transactional_session() as session:
+                batch = await submit_batch(
+                    session,
+                    project_id=project_id,
+                    batch_type="publish_requirement",
+                    submitted_by=key_id,
+                    submitter_role="pm",
+                    items=items,
+                    operation_id=operation_id,
+                )
+            return WriteToolOutput.from_batch(batch)
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def update_requirement_relations(
+        project_id: uuid.UUID = Field(description="归属项目 ID"),
+        relations: list[RelationInput] = Field(description="需求间关系列表"),
+        operation_id: str | None = Field(
+            default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
+        ),
+    ) -> WriteToolOutput:
+        """更新需求间关系（冲突/关联/替代），产生审批批次等待 admin 审批。
+
+        PM 工具。批量添加需求节点间的关系边，审批通过后写入知识图谱。
+        from_id/to_id 必须为已有 Requirement 节点的 UUID。
+        支持 operation_id 幂等。
+        """
+        try:
+            validate_project_access(project_id)
+            if not relations:
+                raise PayloadValidationError("relations 不能为空")
+
+            items = [
+                build_edge_item(
+                    from_ref=str(r.from_id),
+                    to_ref=str(r.to_id),
+                    edge_type=r.relation_type,
+                    properties=r.properties,
+                )
+                for r in relations
+            ]
+
+            key_id = get_current_key_id()
+            async with transactional_session() as session:
+                batch = await submit_batch(
+                    session,
+                    project_id=project_id,
+                    batch_type="update_requirement_relations",
+                    submitted_by=key_id,
+                    submitter_role="pm",
+                    items=items,
+                    operation_id=operation_id,
+                )
+            return WriteToolOutput.from_batch(batch)
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def submit_dev_artifacts(
+        project_id: uuid.UUID = Field(description="归属项目 ID"),
+        requirement_id: uuid.UUID = Field(
+            description="关联的需求节点 ID（自动构造 implements 关系）"
+        ),
+        artifacts: ArtifactsInput = Field(
+            description="开发产物集合（代码片段/方案/意图/踩坑）"
+        ),
+        relations: list[ArtifactRelationInput] = Field(
+            default=[],
+            description="产物间关系（from_ref/to_ref 可用 ref 名或 UUID）",
+        ),
+        operation_id: str | None = Field(
+            default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
+        ),
+    ) -> WriteToolOutput:
+        """批量提交开发产物（代码片段+方案+意图+踩坑），产生审批批次等待 admin 审批。
+
+        Dev 工具。审批通过后产物节点写入知识图谱，并自动建立 Requirement--implements-->CodeSnippet 关系。
+        使用 ref 机制在批次内引用未创建的节点：artifacts 中每个产物声明 ref 名，
+        relations 中用 from_ref/to_ref 引用这些 ref 名（或已有节点的 UUID）。
+        临时引用在审批通过时解析为实际节点 ID。
+        支持 operation_id 幂等。
+        """
+        try:
+            validate_project_access(project_id)
+            key_id = get_current_key_id()
+            items = _build_dev_items(
+                project_id=project_id,
+                requirement_id=requirement_id,
+                artifacts=artifacts,
+                relations=relations,
+                created_by=key_id,
+            )
+
+            if not items:
+                raise PayloadValidationError("artifacts 和 relations 不能同时为空")
+
+            async with transactional_session() as session:
+                batch = await submit_batch(
+                    session,
+                    project_id=project_id,
+                    batch_type="submit_dev_artifacts",
+                    submitted_by=key_id,
+                    submitter_role="dev",
+                    items=items,
+                    operation_id=operation_id,
+                )
+            return WriteToolOutput.from_batch(batch)
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e)
+
+
+# ============================================================================
+# items 构造辅助
+# ============================================================================
+
+
+def _build_publish_items(
+    project_id: uuid.UUID,
+    requirement: RequirementInput,
+    related: RelatedInput | None,
+    created_by: str,
+) -> list[dict[str, Any]]:
+    """构造 publish_requirement 的 items 列表。
+
+    结构：
+    - 1 个 Requirement node item（ref="requirement"）
+    - related.supersedes 每项 → 1 个 edge item（from_ref="requirement", edge_type="supersedes"）
+    - related.relates_to 每项 → 1 个 edge item（from_ref="requirement", edge_type="relates_to"）
+    """
+    items: list[dict[str, Any]] = [
+        build_node_item(
+            ref="requirement",
+            node_type="Requirement",
+            title=requirement.title,
+            content=requirement.content,
+            properties=requirement.properties,
+            tags=requirement.tags,
+            project_id=project_id,
+            created_by=created_by,
+        )
+    ]
+
+    if related:
+        for old_req_id in related.supersedes:
+            items.append(
+                build_edge_item(
+                    from_ref="requirement",
+                    to_ref=old_req_id,
+                    edge_type="supersedes",
+                )
+            )
+        for related_id in related.relates_to:
+            items.append(
+                build_edge_item(
+                    from_ref="requirement",
+                    to_ref=related_id,
+                    edge_type="relates_to",
+                )
+            )
+
+    return items
+
+
+def _build_dev_items(
+    *,
+    project_id: uuid.UUID,
+    requirement_id: uuid.UUID,
+    artifacts: ArtifactsInput,
+    relations: list[ArtifactRelationInput],
+    created_by: str,
+) -> list[dict[str, Any]]:
+    """构造 submit_dev_artifacts 的 items 列表。
+
+    结构：
+    - code_snippets/solutions/design_intents/pitfalls 各项 → node item（含 ref）
+    - 自动构造：Requirement requirement_id --implements--> 每个 CodeSnippet
+    - relations 中每项 → edge item（from_ref/to_ref 直接用输入字符串）
+    """
+    items: list[dict[str, Any]] = []
+
+    # 1. 构造 node items
+    for code in artifacts.code_snippets:
+        items.append(
+            build_node_item(
+                ref=code.ref,
+                node_type="CodeSnippet",
+                title=code.title,
+                content=code.content,
+                properties=code.properties,
+                tags=code.tags,
+                project_id=project_id,
+                created_by=created_by,
+            )
+        )
+
+    for solution in artifacts.solutions:
+        items.append(
+            build_node_item(
+                ref=solution.ref,
+                node_type="Solution",
+                title=solution.title,
+                content=solution.content,
+                properties=solution.properties,
+                tags=solution.tags,
+                project_id=project_id,
+                created_by=created_by,
+            )
+        )
+
+    for intent in artifacts.design_intents:
+        items.append(
+            build_node_item(
+                ref=intent.ref,
+                node_type="DesignIntent",
+                title=intent.title,
+                content=intent.content,
+                properties=intent.properties,
+                tags=intent.tags,
+                project_id=project_id,
+                created_by=created_by,
+            )
+        )
+
+    for pitfall in artifacts.pitfalls:
+        items.append(
+            build_node_item(
+                ref=pitfall.ref,
+                node_type="Pitfall",
+                title=pitfall.title,
+                content=pitfall.content,
+                properties=pitfall.properties,
+                tags=pitfall.tags,
+                project_id=project_id,
+                created_by=created_by,
+            )
+        )
+
+    # 2. 自动构造 Requirement --implements--> CodeSnippet 关系
+    for code in artifacts.code_snippets:
+        items.append(
+            build_edge_item(
+                from_ref=str(requirement_id),
+                to_ref=code.ref,
+                edge_type="implements",
+            )
+        )
+
+    # 3. 用户显式声明的 relations
+    for r in relations:
+        items.append(
+            build_edge_item(
+                from_ref=r.from_ref,
+                to_ref=r.to_ref,
+                edge_type=r.relation_type,
+                properties=r.properties,
+            )
+        )
+
+    return items
