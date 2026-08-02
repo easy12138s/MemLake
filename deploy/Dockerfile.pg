@@ -1,28 +1,76 @@
 # 自定义 PostgreSQL 17 镜像
-# 基于 apache/age 官方镜像，追加 pgvector + zhparser 扩展
-FROM apache/age:v1.8.0
+# 基于 postgres:17 官方镜像，从源码编译 AGE + pgvector + zhparser
+# 原因：apache/age Docker Hub 稳定版仅支持 PG16，PG17 需自行编译
 
-# 安装编译依赖
+FROM postgres:17
+
+# 替换为国内 Debian 镜像源（加速 apt 下载）
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+    || sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null \
+    || true
+
+# 安装编译依赖（flex/bison 为 AGE 词法语法分析器所需；autotools 为 scws 所需）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     postgresql-server-dev-17 \
     git \
     wget \
+    ca-certificates \
+    flex \
+    bison \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# 编译安装 pgvector
-RUN git clone --branch v0.8.0 https://github.com/pgvector/pgvector.git /tmp/pgvector \
+# 配置 Git：增大缓冲区、放宽 HTTP 超时
+RUN git config --global http.postBuffer 524288000 \
+    && git config --global http.lowSpeedLimit 0 \
+    && git config --global http.lowSpeedTime 999999
+
+# 编译安装 Apache AGE v1.7.0（PG17 对应版本）
+# 使用浅克隆 + GitHub 镜像加速，避免国内网络 TLS 中断
+RUN git clone --depth 1 --branch PG17/v1.7.0-rc0 \
+        https://ghfast.top/https://github.com/apache/age.git /tmp/age \
+    && cd /tmp/age \
+    && make PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config install \
+    && rm -rf /tmp/age
+
+# 编译安装 pgvector v0.8.6
+RUN git clone --depth 1 --branch v0.8.6 \
+        https://ghfast.top/https://github.com/pgvector/pgvector.git /tmp/pgvector \
     && cd /tmp/pgvector \
-    && make && make install \
+    && make PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config \
+    && make PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config install \
     && rm -rf /tmp/pgvector
 
-# 编译安装 zhparser（中文全文检索分词）
-RUN git clone https://github.com/amutu/zhparser.git /tmp/zhparser \
+# 编译安装 scws（zhparser 依赖的中文分词库）
+# 用 master 分支克隆（含最新修复，仓库无 v 前缀 tag）
+# GCC 14 默认 C23 把 implicit declaration 当 error，scws 老代码未 include <unistd.h>
+# 用 CFLAGS 显式放宽，避免修改上游源码
+# scws 的 etc/Makefile.am 安装规则与 install-sh 不兼容（f=xxx 被当命令）
+# 直接修补 etc/Makefile，把 install-sysconfDATA 改为空目标
+RUN git clone --depth 1 \
+        https://ghfast.top/https://github.com/amutu/scws.git /tmp/scws \
+    && cd /tmp/scws \
+    && ([ -f configure ] || autoreconf -i) \
+    && ./configure --prefix=/usr/local \
+    && printf 'install-sysconfDATA:\n\t:\n' >> etc/Makefile \
+    && make -j$(nproc) CFLAGS="-O2 -Wno-error=implicit-function-declaration -Wno-error=implicit-int" \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/scws
+
+# 编译安装 zhparser（master 分支，含 PG17 兼容修复）
+RUN git clone --depth 1 \
+        https://ghfast.top/https://github.com/amutu/zhparser.git /tmp/zhparser \
     && cd /tmp/zhparser \
-    && make && make install \
+    && make PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config \
+    && make PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config install \
     && rm -rf /tmp/zhparser
 
 # 清理编译依赖
-RUN apt-get purge -y build-essential postgresql-server-dev-17 git wget \
+RUN apt-get purge -y build-essential postgresql-server-dev-17 git wget ca-certificates flex bison autoconf automake libtool pkg-config \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*

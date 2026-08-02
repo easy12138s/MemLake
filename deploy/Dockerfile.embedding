@@ -2,7 +2,9 @@
 # 基于 Python slim，内置 sentence-transformers + bge-large-zh-v1.5
 FROM python:3.11-slim
 
-RUN pip install --no-cache-dir \
+# 使用清华 PyPI 镜像加速（torch 体积大，国外源易超时）
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    && pip install --no-cache-dir \
     sentence-transformers>=3.0.0 \
     fastapi>=0.115.0 \
     uvicorn[standard]>=0.30.0

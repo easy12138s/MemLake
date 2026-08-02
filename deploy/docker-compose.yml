@@ -33,10 +33,11 @@ services:
       MODEL_PATH: /models/bge-large-zh-v1.5
       DEVICE: cpu
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   mem-lake:
     build:
@@ -50,7 +51,7 @@ services:
       embedding:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://memlake:memlake@postgres:5432/memlake
+      DATABASE_URL: postgresql+psycopg_async://memlake:memlake@postgres:5432/memlake
       EMBEDDING_HOST: embedding
       EMBEDDING_PORT: "8001"
     env_file:

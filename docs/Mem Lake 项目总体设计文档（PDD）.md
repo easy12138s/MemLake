@@ -1042,6 +1042,71 @@ v1.0 实现为基于 Apache AGE 的 `AGEGraphStore`。未来若需替换为 Neo4
 
 三引擎共存于 PostgreSQL 17 单实例，共享事务与存储。
 
+### 11.4 项目基础环境
+
+#### 开发环境
+
+| 项目 | 版本/配置 |
+|------|-----------|
+| 操作系统 | Windows + WSL2（Ubuntu，数据存储于 D 盘） |
+| Python | 3.11（Conda 环境名：`memlake`） |
+| Docker | Docker Desktop 4.84.0（Engine 29.6.2，WSL2 后端） |
+| Docker Compose | v5.3.1 |
+| Docker 镜像加速器 | `docker.1ms.run`、`docker.xuanyuan.me` |
+
+#### Python 依赖清单
+
+| 依赖 | PyPI 包名 | 版本 | 用途 |
+|------|-----------|------|------|
+| FastMCP | `fastmcp` | 3.4.5 | MCP 网关框架 |
+| SQLAlchemy | `sqlalchemy[asyncio]` | 2.0.51 | ORM 与数据库会话管理 |
+| psycopg | `psycopg[binary,pool]` | 3.3.4 | PostgreSQL 异步驱动 |
+| Apache AGE Python 驱动 | `apache-age-python` | 0.0.7 | AGE Cypher 执行与 AGType 解析（导入名 `age`） |
+| pgvector | `pgvector` | 0.5.0 | PostgreSQL 向量列访问 |
+| sentence-transformers | `sentence-transformers` | 5.6.1 | bge-large-zh-v1.5 模型加载与推理 |
+| pydantic | `pydantic` | 2.13.4 | 数据模型校验 |
+| bcrypt | `bcrypt` | 5.0.0 | Access Key 哈希 |
+| PyYAML | `pyyaml` | 6.0.3 | YAML 配置解析 |
+
+#### 开发工具链
+
+| 工具 | 版本 | 用途 |
+|------|------|------|
+| pytest | 9.1.1 | 单元测试与集成测试 |
+| pytest-asyncio | 1.4.0 | 异步测试支持 |
+| pytest-cov | 7.1.0 | 测试覆盖率 |
+| ruff | 0.16.1 | 代码风格检查与格式化 |
+| mypy | 2.3.0 | 静态类型检查 |
+
+#### Embedding 模型
+
+| 项目 | 配置 |
+|------|------|
+| 模型 | BAAI/bge-large-zh-v1.5 |
+| 维度 | 1024 |
+| 下载源 | ModelScope（`AI-ModelScope/bge-large-zh-v1.5`），国内网络优先 |
+| 备选下载源 | hf-mirror.com、BAAI 智源官方 |
+| 部署方式 | 独立容器（FastAPI + sentence-transformers），模型文件挂载或打入镜像 |
+
+#### 项目结构
+
+```
+mem_lake/
+├── src/mem_lake/
+│   ├── gateway/          # MCP 网关层（FastMCP）
+│   │   ├── tools/        # 工具定义（pm/dev/admin）
+│   ├── knowledge/        # 知识图谱存储模块
+│   ├── search/           # 三引擎检索模块
+│   ├── approval/         # 审批工作流模块
+│   ├── auth/             # RBAC 与访问控制
+│   ├── embedding/        # Embedding 服务客户端
+│   ├── db/               # 数据库基础设施
+│   └── audit/            # 审计日志
+├── tests/                # 测试（unit + integration）
+├── deploy/               # Docker 部署配置
+└── pyproject.toml        # 依赖管理与构建配置
+```
+
 ---
 
 > 本文档为设计基线（v0.7），知识存储基于知识图谱建模范式，MCP 网关基于 2026-07-28 无状态规范设计，RBAC 采用业务角色模型（admin/pm/dev），审批流基于批次单元设计，技术栈经审核验证。后续将基于此基线进入各模块详细设计阶段。
