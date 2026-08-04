@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
+    auto_process_batch,
     get_batch_detail,
     list_pending_batches,
     review_approve as approval_review_approve,
@@ -107,6 +108,33 @@ class ReviewBatchDetailOutput(BaseModel):
     )
     operation_id: str | None = Field(default=None, description="幂等键")
     items: list[ApprovalItemOutput] = Field(description="审批项列表")
+
+
+class AutoProcessOutput(BaseModel):
+    """review_auto_process 工具出参。
+
+    为 Admin Agent 设计：无冲突时 decision=auto_approved 且批次已写入图谱，
+    有冲突时 decision=needs_human_review 且批次保持 pending_review 等待人工决策。
+    Agent 据 decision 决定是否需向人类 admin 描述冲突并等待决策。
+    """
+
+    batch_id: uuid.UUID = Field(description="批次 ID")
+    decision: str = Field(
+        description="决策结果：auto_approved（自动通过）/ needs_human_review（升级人工审查）"
+    )
+    status: str = Field(
+        description="批次最终状态：approved（auto_approved）/ pending_review（needs_human_review）"
+    )
+    conflict_hint: dict[str, Any] = Field(
+        description=(
+            "冲突检测详情。auto_approved 时含 has_conflict=False/checked_nodes/candidates_examined；"
+            "needs_human_review 时含 has_conflict=True/conflicting_nodes/suggestion"
+        )
+    )
+    summary: str = Field(description="批次摘要（供 Agent 向人类 admin 描述时使用）")
+    batch_type: str = Field(description="批次类型")
+    submitted_by: str = Field(description="提交者 Access Key ID")
+    item_count: int = Field(description="审批项数量")
 
 
 # ============================================================================
@@ -233,6 +261,54 @@ def register_review_tools(mcp: FastMCP) -> None:
                 conflict_hint=None,
             )
         except (BatchNotFoundError, BatchStatusError) as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def review_auto_process(
+        batch_id: uuid.UUID = Field(description="审批批次 ID"),
+    ) -> AutoProcessOutput:
+        """自动处理审批批次：检测冲突，无冲突自动通过，有冲突返回详情供人工决策。
+
+        Admin 工具，为 Agent 设计（非人类直接使用）。调用后：
+        - decision="auto_approved"：批次已自动审批通过（无冲突），节点写入图谱，
+          无需人工介入
+        - decision="needs_human_review"：检测到冲突，批次保持 pending_review，
+          Agent 需向人类 admin 描述冲突详情（节点标题/相似度/匹配属性）并等待决策，
+          人类确认通过后调用 review_approve，拒绝则调用 review_reject
+
+        冲突检测使用三层架构：同项目同类型（L1）→ 关键属性比对（L2）→ 内容语义
+        相似度 ≥ 0.92（L3，用标题+正文做向量对比）。三层全部通过才视为冲突。
+        """
+        try:
+            ctx = get_context()
+            lifespan_ctx = ctx.lifespan_context
+
+            async with transactional_session() as session:
+                result = await auto_process_batch(
+                    session,
+                    batch_id=batch_id,
+                    reviewed_by=get_current_key_id(),
+                    graph_store=lifespan_ctx.graph_store,
+                    embedding_client=lifespan_ctx.embedding_client,
+                    vector_searcher=lifespan_ctx.vector_searcher,
+                )
+            batch = result["batch"]
+            return AutoProcessOutput(
+                batch_id=batch.id,
+                decision=result["decision"],
+                status=batch.status,
+                conflict_hint=result["conflict_hint"],
+                summary=batch.summary,
+                batch_type=batch.batch_type,
+                submitted_by=batch.submitted_by,
+                item_count=len(batch.items) if batch.items else 0,
+            )
+        except (
+            BatchNotFoundError,
+            BatchStatusError,
+            NodeNotFoundError,
+            SchemaValidationError,
+        ) as e:
             raise to_tool_error(e)
 
 

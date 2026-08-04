@@ -21,6 +21,7 @@ from mem_lake.approval.service import (
 )
 from fastmcp.exceptions import ToolError
 from mem_lake.gateway.tools._shared import (
+    INSTALLATION_GUIDE,
     ROLE_SKILLS_MD,
     ROLE_SKILLS_VERSION,
     READ_TOOL_ANNOTATIONS,
@@ -387,3 +388,79 @@ class TestRoleSkillsMd:
         """版本号为字符串。"""
         assert isinstance(ROLE_SKILLS_VERSION, str)
         assert len(ROLE_SKILLS_VERSION) > 0
+
+    def test_version_upgraded_to_1_0_0(self):
+        """文件化重构后版本号升级为 1.0.0。"""
+        assert ROLE_SKILLS_VERSION == "1.0.0"
+
+    def test_admin_skills_contains_auto_approval(self):
+        """Admin Skills 文档含自动审批工具。"""
+        content = ROLE_SKILLS_MD["admin"]
+        assert "review_auto_process" in content
+        assert "auto_approved" in content
+        assert "needs_human_review" in content
+
+
+class TestSkillsFileLoading:
+    """SKILL.md 文件加载测试：验证从文件系统正确加载并解析 YAML frontmatter。"""
+
+    def test_all_skill_files_loaded(self):
+        """3 个角色的 skills 均从文件加载成功（非空）。"""
+        for role in ("pm", "dev", "admin"):
+            assert role in ROLE_SKILLS_MD
+            assert len(ROLE_SKILLS_MD[role]) > 0
+            assert ROLE_SKILLS_MD[role].startswith("# ")
+
+    def test_frontmatter_stripped_from_body(self):
+        """YAML frontmatter 已被剥离，body 以 # 标题开头。"""
+        for role in ("pm", "dev", "admin"):
+            content = ROLE_SKILLS_MD[role]
+            # 不应包含 frontmatter 标记
+            assert not content.startswith("---")
+            assert content.startswith("# ")
+
+    def test_pm_skill_body_contains_role_title(self):
+        """PM skills body 含角色标题。"""
+        assert "PM Skills" in ROLE_SKILLS_MD["pm"]
+
+    def test_dev_skill_body_contains_role_title(self):
+        """Dev skills body 含角色标题。"""
+        assert "Dev Skills" in ROLE_SKILLS_MD["dev"]
+
+    def test_admin_skill_body_contains_role_title(self):
+        """Admin skills body 含角色标题。"""
+        assert "Admin Skills" in ROLE_SKILLS_MD["admin"]
+
+
+class TestInstallationGuide:
+    """INSTALLATION_GUIDE 常量测试。"""
+
+    def test_installation_guide_not_empty(self):
+        """安装指南非空。"""
+        assert len(INSTALLATION_GUIDE) > 0
+
+    def test_contains_claude_code(self):
+        """安装指南含 Claude Code 放置路径。"""
+        assert "Claude Code" in INSTALLATION_GUIDE
+        assert "~/.claude/skills/" in INSTALLATION_GUIDE
+
+    def test_contains_cursor(self):
+        """安装指南含 Cursor 放置路径。"""
+        assert "Cursor" in INSTALLATION_GUIDE
+        assert ".cursor/rules/" in INSTALLATION_GUIDE
+
+    def test_contains_codex_cli(self):
+        """安装指南含 Codex CLI 放置路径。"""
+        assert "Codex CLI" in INSTALLATION_GUIDE
+
+    def test_contains_gemini_cli(self):
+        """安装指南含 Gemini CLI 放置路径。"""
+        assert "Gemini CLI" in INSTALLATION_GUIDE
+
+    def test_contains_role_placeholder(self):
+        """安装指南含 {role} 占位符。"""
+        assert "{role}" in INSTALLATION_GUIDE
+
+    def test_contains_universal_disclaimer(self):
+        """安装指南含通用说明（提示查阅官方文档）。"""
+        assert "官方文档" in INSTALLATION_GUIDE or "互联网搜索" in INSTALLATION_GUIDE

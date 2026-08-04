@@ -363,10 +363,12 @@ class TestOutputModels:
         output = GetRoleSkillsOutput(
             role="pm",
             skills_markdown="# PM Skills",
-            version="0.1.0",
+            version="1.0.0",
+            installation_guide="## Skills 文件放置指南",
         )
         assert output.role == "pm"
-        assert output.version == "0.1.0"
+        assert output.version == "1.0.0"
+        assert "放置指南" in output.installation_guide
 
     def test_get_project_profile_output_none(self):
         """GetProjectProfileOutput 无画像场景。"""

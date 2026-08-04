@@ -7,7 +7,10 @@
 import logging
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field
@@ -238,89 +241,79 @@ def build_edge_item(
 
 
 # ============================================================================
-# 角色 Skills 文档（M6a 骨架，M6b 完善）
+# 角色 Skills 文档（从 src/mem_lake/skills/{role}/SKILL.md 加载）
+# 符合 Agent Skills 标准（agentskills.io）：YAML frontmatter + Markdown body
 # 基于PDD 8.3/8.4/8.5 表格生成
 # ============================================================================
 
-ROLE_SKILLS_MD: dict[str, str] = {
-    "pm": """# PM Skills（产品经理）
+_SKILLS_DIR = Path(__file__).parent.parent.parent / "skills"
 
-## 你的角色
-你是项目的 PM，负责需求管理。通过 Mem Lake MCP 工具发布和维护需求节点。
 
-## 可用工具
-- `publish_requirement`：发布需求节点（含版本关系与关联关系），产生审批批次
-- `update_requirement_relations`：更新需求间关系（冲突/关联/替代）
-- `get_role_skills`：获取角色 Skills 指导文档
+def _load_skill_file(role: str) -> tuple[str, str]:
+    """从文件系统加载角色 SKILL.md，返回 (markdown_body, version)。
 
-## 工作流
-1. 调用 `publish_requirement` 提交新需求，获得 batch_id
-2. 等待 admin 审批通过后，需求节点写入知识图谱
-3. 需求变更时调用 `update_requirement_relations` 更新关系
+    解析 YAML frontmatter 提取 version，返回 frontmatter 之后的 body。
+    文件格式符合 Agent Skills 标准（agentskills.io）：
+        ---
+        name: mem-lake-{role}
+        description: "..."
+        version: 1.0.0
+        ---
+        # {Role} Skills
+        ...
 
-## 关键约束
-- 需求节点的 properties 必须包含：requirement_id, priority, module, acceptance_criteria
-- related.supersedes/relates_to 中的 requirement_id 必须为已有 Requirement 节点
-- 所有写操作产生审批批次，需 admin 审批通过后才生效
+    加载时机：模块级（首次 import _shared.py 时执行），启动后缓存在内存，
+    修改 skills 文件需重启服务。
+    """
+    skill_file = _SKILLS_DIR / role / "SKILL.md"
+    content = skill_file.read_text(encoding="utf-8")
+    # 解析 YAML frontmatter（首行 --- 开始，第二个 --- 结束）
+    parts = content.split("---", 2)
+    if len(parts) >= 3:
+        frontmatter = yaml.safe_load(parts[1])
+        body = parts[2].strip()
+        version = str(frontmatter.get("version", "0.0.0"))
+        return body, version
+    # 无 frontmatter 的降级处理（不应发生，保持健壮性）
+    return content, "0.0.0"
 
-（M6b 将完善详细 Skills 指导）
-""",
-    "dev": """# Dev Skills（开发者）
 
-## 你的角色
-你是项目的开发者，负责提交开发产物（代码片段/方案/意图/踩坑）。通过 Mem Lake MCP 工具批量提交开发产物。
-
-## 可用工具
-- `submit_dev_artifacts`：批量提交开发产物，产生审批批次
-- `get_role_skills`：获取角色 Skills 指导文档
-
-## 工作流
-1. 调用 `submit_dev_artifacts` 批量提交代码片段/方案/意图/踩坑
-2. 使用 ref 机制在批次内引用未创建的节点
-3. relations 中用 from_ref/to_ref 引用 ref 名或已有节点 UUID
-4. 等待 admin 审批通过后，产物节点写入知识图谱
-
-## 关键约束
-- 每个产物必须声明 ref 名（如 "LoginService"），供 relations 引用
-- code_snippets 的 properties 必须包含：name, type, responsibility, file_path
-- solutions 的 properties 必须包含：approach, alternatives
-- design_intents 的 properties 必须包含：rationale, trade_offs
-- pitfalls 的 properties 必须包含：symptom, root_cause, solution, severity
-- 自动构造 Requirement--implements-->CodeSnippet 关系
-- 临时引用在审批通过时解析为实际节点 ID
-
-（M6b 将完善详细 Skills 指导）
-""",
-    "admin": """# Admin Skills（管理员）
-
-## 你的角色
-你是项目的管理员，负责审批管理、Access Key 管理、项目画像维护。通过 Mem Lake MCP 工具管理知识图谱的写入。
-
-## 可用工具
-- `review_pending_list`：查询待审批批次队列
-- `review_batch_detail`：查看批次内所有审批项的完整内容
-- `review_approve`：审批通过批次（原子性写入图谱）
-- `review_reject`：审批退回批次（附原因）
-- `manage_access_key`：创建/吊销/查看 Access Key
-- `manage_project_profile`：直接写入 ProjectProfile 节点（不走审批流）
-- `get_role_skills`：获取角色 Skills 指导文档
-
-## 工作流
-1. 调用 `review_pending_list` 查看待审批批次
-2. 调用 `review_batch_detail` 查看批次详情
-3. 调用 `review_approve` 或 `review_reject` 审批
-4. 审批通过时自动检测冲突（conflict_hint），但不阻断审批
-5. 通过 `manage_access_key` 为 PM/Dev 创建 Access Key
-6. 通过 `manage_project_profile` 维护项目画像
-
-## 关键约束
-- 审批通过是原子操作（节点+边+审计日志同一事务）
-- conflict_hint 仅作提示，不阻断审批
-- manage_project_profile 直接写入，不走审批流
-- Access Key 明文仅创建时返回一次，需安全保存
-
-（M6b 将完善详细 Skills 指导）
-""",
+# 模块级加载（首次导入时执行，启动后缓存）
+_ROLE_SKILLS_DATA: dict[str, tuple[str, str]] = {
+    role: _load_skill_file(role) for role in ("pm", "dev", "admin")
 }
+ROLE_SKILLS_MD: dict[str, str] = {
+    role: data[0] for role, data in _ROLE_SKILLS_DATA.items()
+}
+ROLE_SKILLS_VERSION = max(data[1] for data in _ROLE_SKILLS_DATA.values())
 
-ROLE_SKILLS_VERSION = "0.1.0"
+
+# ============================================================================
+# Skills 安装指南（告知上游 agent 如何将 skills 放置到对应目录）
+# 基于互联网可搜索到的常见 agent 放置格式，Mem Lake 不保证覆盖所有 agent
+# ============================================================================
+
+INSTALLATION_GUIDE = """## Skills 文件放置指南
+
+将返回的 skills_markdown 内容保存为 SKILL.md 文件，根据你使用的 Agent 放置到对应目录：
+
+### Claude Code
+- 用户级（全局）：`~/.claude/skills/mem-lake-{role}/SKILL.md`
+- 项目级（仅当前项目）：`.claude/skills/mem-lake-{role}/SKILL.md`
+
+### Cursor
+- 项目规则目录：`.cursor/rules/mem-lake-{role}.mdc`（将内容包装为 .mdc 格式）
+- 或旧格式：`.cursorrules`（追加到现有文件）
+
+### Codex CLI (OpenAI)
+- 项目根目录：`AGENTS.md`（追加到现有文件，或创建新文件）
+- 或 `.codex/rules/mem-lake-{role}.md`
+
+### Gemini CLI
+- 项目级：`.gemini/rules/mem-lake-{role}.md`
+
+### 通用说明
+- `{role}` 替换为你的实际角色（admin/pm/dev）
+- 放置后重启 Agent 会话即可生效
+- 如不确定你的 Agent 使用的目录格式，请查阅其官方文档或互联网搜索
+"""

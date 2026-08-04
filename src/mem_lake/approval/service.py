@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from mem_lake.approval.conflict import detect_conflicts
+from mem_lake.approval.conflict import detect_conflicts, detect_conflicts_v2
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
@@ -333,6 +333,122 @@ async def review_reject(
     )
 
     return batch
+
+
+async def auto_process_batch(
+    session: AsyncSession,
+    *,
+    batch_id: uuid.UUID,
+    reviewed_by: str,
+    graph_store: GraphStore,
+    embedding_client: EmbeddingClient,
+    vector_searcher: VectorSearcher,
+) -> dict:
+    """自动处理审批批次：三层冲突检测 → 无冲突自动通过 / 有冲突升级人工。
+
+    为 admin Agent 设计（PDD v1.x 自动审批能力）。流程：
+    1. 查询批次详情，校验 status == pending_review
+    2. 遍历 approval_items 中的 node+create 项，对每个节点调用 detect_conflicts_v2
+       （三层检测：硬门控→关键属性比对→内容语义相似度）
+    3. 合并所有节点的冲突检测结果
+    4. 若无冲突：调用 review_approve 完成原子写入，返回 decision="auto_approved"
+    5. 若有冲突：不写入图谱，返回 decision="needs_human_review" + 冲突详情
+
+    事务性：与 review_approve 一致，service 层不 commit，由调用方控制事务边界。
+    无冲突时 review_approve 的所有写操作（节点/边/审计日志/状态更新）在同一
+    AsyncSession 内，任一步骤失败整体回滚。有冲突时仅执行只读检索，无写操作。
+
+    参数：
+        session: 异步数据库会话
+        batch_id: 审批批次 ID
+        reviewed_by: 审批者 Access Key ID（自动审批时仍记录）
+        graph_store: 图存储实例（传入 review_approve）
+        embedding_client: Embedding 客户端（传入 review_approve）
+        vector_searcher: 向量检索器（用于 detect_conflicts_v2 + 传入 review_approve）
+
+    返回：
+        {
+            "decision": "auto_approved" | "needs_human_review",
+            "conflict_hint": {
+                "has_conflict": bool,
+                "checked_nodes": int,        # 检测的 node+create 项数
+                "candidates_examined": int,  # 向量检索召回的候选总数
+                "conflicting_nodes": list,   # has_conflict=True 时的冲突详情
+                "suggestion": "review" | None,
+            },
+            "batch": ApprovalBatch,  # auto_approved 时为 approved 状态，needs_human_review 时为 pending_review
+        }
+    """
+    batch = await get_batch_detail(session, batch_id)
+
+    # 1. 状态校验
+    if batch.status != STATUS_PENDING_REVIEW:
+        raise BatchStatusError(
+            f"批次状态不允许自动处理: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
+        )
+
+    # 2. 遍历 node+create 项执行三层冲突检测
+    all_conflicts: list[dict] = []
+    candidates_total = 0
+    checked_nodes = 0
+
+    for item in batch.items:
+        if item.item_type != "node" or item.action != "create":
+            continue
+
+        checked_nodes += 1
+        payload = item.payload or {}
+
+        conflict_result = await detect_conflicts_v2(
+            session,
+            vector_searcher=vector_searcher,
+            project_id=_to_uuid(payload["project_id"]),
+            node_type=item.entity_type,
+            title=payload["title"],
+            content=payload["content"],
+            properties=payload.get("properties", {}),
+            tags=payload.get("tags", []),
+        )
+
+        candidates_total += conflict_result.get("candidates_examined", 0)
+        if conflict_result.get("has_conflict"):
+            all_conflicts.extend(conflict_result.get("conflicting_nodes", []))
+
+    has_conflict = bool(all_conflicts)
+
+    # 3. 无冲突 → 自动审批通过
+    if not has_conflict:
+        approved_batch = await review_approve(
+            session,
+            batch_id=batch_id,
+            reviewed_by=reviewed_by,
+            graph_store=graph_store,
+            embedding_client=embedding_client,
+            vector_searcher=vector_searcher,
+            review_comment="auto_approved: no conflict detected",
+        )
+        return {
+            "decision": "auto_approved",
+            "conflict_hint": {
+                "has_conflict": False,
+                "checked_nodes": checked_nodes,
+                "candidates_examined": candidates_total,
+            },
+            "batch": approved_batch,
+        }
+
+    # 4. 有冲突 → 升级人工审查（不写入图谱）
+    return {
+        "decision": "needs_human_review",
+        "conflict_hint": {
+            "has_conflict": True,
+            "checked_nodes": checked_nodes,
+            "candidates_examined": candidates_total,
+            "conflicting_nodes": all_conflicts,
+            "suggestion": "review",
+        },
+        "batch": batch,
+    }
 
 
 async def list_pending_batches(

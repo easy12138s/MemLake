@@ -33,6 +33,7 @@ ADMIN_ONLY_TOOLS: frozenset[str] = frozenset({
     "review_batch_detail",
     "review_approve",
     "review_reject",
+    "review_auto_process",
     "list_knowledge",
     "query_audit_log",
     "manage_access_key",

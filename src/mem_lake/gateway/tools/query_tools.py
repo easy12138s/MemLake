@@ -33,6 +33,7 @@ from mem_lake.gateway.dependencies import (
     validate_project_access,
 )
 from mem_lake.gateway.tools._shared import (
+    INSTALLATION_GUIDE,
     READ_TOOL_ANNOTATIONS,
     ROLE_SKILLS_MD,
     ROLE_SKILLS_VERSION,
@@ -55,9 +56,14 @@ logger = logging.getLogger("mem_lake.gateway.tools.query")
 class GetRoleSkillsOutput(BaseModel):
     """get_role_skills 工具出参。"""
 
-    role: str = Field(description="角色")
-    skills_markdown: str = Field(description="角色 Skills 指导文档（Markdown 格式）")
+    role: str = Field(description="角色：admin/pm/dev")
+    skills_markdown: str = Field(
+        description="角色 Skills 指导文档（Markdown 格式，可直接保存为 SKILL.md）"
+    )
     version: str = Field(description="Skills 文档版本")
+    installation_guide: str = Field(
+        description="常见 Agent 的 skills 文件放置目录格式（Claude Code/Cursor/Codex CLI/Gemini CLI）"
+    )
 
 
 class ProjectProfileOutput(BaseModel):
@@ -143,10 +149,11 @@ def register_query_tools(mcp: FastMCP) -> None:
             description="指定角色（admin/pm/dev），None 表示返回当前调用者角色",
         ),
     ) -> GetRoleSkillsOutput:
-        """获取角色 Skills 指导文档（Markdown 格式）。
+        """获取角色 Skills 指导文档（Markdown 格式，可直接保存为 SKILL.md）。
 
         共享工具（三角色均可调用）。返回当前角色或指定角色的 Skills 文档，
-        指导 Agent 如何使用 Mem Lake 工具集。
+        指导 Agent 如何使用 Mem Lake 工具集。返回值含 installation_guide 字段，
+        指导如何将 Skills 文件放置到对应 Agent 目录（Claude Code/Cursor/Codex CLI/Gemini CLI）。
         """
         target_role = role or get_current_role()
         if target_role not in ROLE_SKILLS_MD:
@@ -157,6 +164,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             role=target_role,
             skills_markdown=ROLE_SKILLS_MD[target_role],
             version=ROLE_SKILLS_VERSION,
+            installation_guide=INSTALLATION_GUIDE,
         )
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
