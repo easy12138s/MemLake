@@ -38,6 +38,9 @@ dev = [
     "mypy>=1.10.0",
 ]
 
+[project.scripts]
+memlake-bootstrap-admin = "mem_lake.cli:run"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

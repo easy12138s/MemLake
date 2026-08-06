@@ -150,6 +150,10 @@ async def submit_batch(
 
     await session.flush()
 
+    # 显式预加载 items：调用方可能在 session 关闭后访问 batch.items
+    # （如 WriteToolOutput.from_batch），此时懒加载会因 detached 报错。
+    await session.refresh(batch, attribute_names=["items"])
+
     # 6. 写审计日志
     await write_audit_log(
         session,
