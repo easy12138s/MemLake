@@ -389,9 +389,9 @@ class TestRoleSkillsMd:
         assert isinstance(ROLE_SKILLS_VERSION, str)
         assert len(ROLE_SKILLS_VERSION) > 0
 
-    def test_version_upgraded_to_1_0_0(self):
-        """文件化重构后版本号升级为 1.0.0。"""
-        assert ROLE_SKILLS_VERSION == "1.0.0"
+    def test_version_upgraded_to_1_1_0(self):
+        """skills 内容优化后版本号升级为 1.1.0。"""
+        assert ROLE_SKILLS_VERSION == "1.1.0"
 
     def test_admin_skills_contains_auto_approval(self):
         """Admin Skills 文档含自动审批工具。"""

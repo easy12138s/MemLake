@@ -1,19 +1,22 @@
 # Embedding 服务镜像
-# 基于 Python slim，内置 sentence-transformers + bge-large-zh-v1.5
+# 基于 Python slim，内置 sentence-transformers + bge-large-zh-v1.5 模型
 FROM python:3.11-slim
 
-# 使用清华 PyPI 镜像加速（torch 体积大，国外源易超时）
+# 使用清华 PyPI 镜像加速
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
     && pip install --no-cache-dir \
     sentence-transformers>=3.0.0 \
     fastapi>=0.115.0 \
-    uvicorn[standard]>=0.30.0
+    uvicorn[standard]>=0.30.0 \
+    modelscope
+
+# 构建时下载模型到镜像内，避免部署时手动下载
+RUN python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-large-zh-v1.5', cache_dir='/models')"
 
 WORKDIR /app
 COPY embedding_server.py /app/
 
-# 模型通过卷挂载，不入镜像
-# /models/bge-large-zh-v1.5
+ENV MODEL_PATH=/models/bge-large-zh-v1.5
 
 EXPOSE 8001
 CMD ["uvicorn", "embedding_server:app", "--host", "0.0.0.0", "--port", "8001"]

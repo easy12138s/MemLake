@@ -61,6 +61,19 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
         settings.AGE_GRAPH_NAME,
     )
 
+    # DB 初始化：检查扩展 + 建业务表 + tsvector 触发器 + RLS 策略
+    from mem_lake.db.init import init_database, create_tables, init_knowledge_schema
+    from mem_lake.db.session import AsyncSessionLocal
+
+    logger.info("执行数据库初始化检查...")
+    await init_database()
+    logger.info("扩展/FTS/AGE 图检查通过，开始建表...")
+    async with AsyncSessionLocal() as session:
+        await create_tables(session)
+        await init_knowledge_schema(session)
+        await session.commit()
+    logger.info("业务表与 schema 初始化完成")
+
     # 初始化共享资源
     embedding_client = EmbeddingClient(
         base_url=f"http://{settings.EMBEDDING_HOST}:{settings.EMBEDDING_PORT}",

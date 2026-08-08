@@ -16,7 +16,6 @@ PM 调研了半天需求，AI 帮忙梳理了 PRD、分析了影响范围、检�
 
 ```bash
 cp .env.example .env
-python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-large-zh-v1.5', cache_dir='models')"
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
@@ -38,3 +37,7 @@ MCP 客户端配置：
 接入后 AI 自动获得 18 个工具，按角色分配权限。pm 管需求发布和关系治理，dev 管代码方案提交和知识检索，admin 管审批和密钥。写操作走审批流，读操作直接返回。
 
 第一次用需要 admin 创建 Access Key 分配给团队成员。之后所有 Agent 交互自动走 Mem Lake，不需要额外操作。
+
+## 详细文档
+
+部署、配置、备份恢复与日常运维操作见 [DEPLOYMENT.md](DEPLOYMENT.md)。
