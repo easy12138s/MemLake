@@ -27,10 +27,7 @@ services:
       dockerfile: Dockerfile.embedding
     ports:
       - "8001:8001"
-    volumes:
-      - ../models:/models:ro
     environment:
-      MODEL_PATH: /models/bge-large-zh-v1.5
       DEVICE: cpu
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]

@@ -1,43 +1,295 @@
 ---
 name: mem-lake-admin
-description: "Mem Lake 管理员 Skills。Use when managing approval workflows, access keys, and project profiles. Triggers on: 审批, access key, 项目画像, review_auto_process, 自动审批."
-version: 1.0.0
+description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, manage_access_key, manage_project_profile."
+version: 1.1.0
 ---
 
 # Admin Skills（管理员）
 
+## When to Use
+
+当人类 admin 或其 Agent 需要执行以下操作时加载本 skill：
+- 查看待审批批次队列
+- 自动或手动审批知识写入批次
+- 创建、吊销或查看 Access Key
+- 维护项目画像（ProjectProfile）
+- 了解冲突检测机制与审批决策依据
+
+## Do NOT load for
+
+- 发布需求或提交开发产物（使用 PM Skills / Dev Skills）
+- 检索知识或查询需求上下文（使用通用查询工具，无需加载角色 skill）
+- 代码实现或本地开发任务（本 skill 仅指导 Mem Lake 工具使用）
+
 ## 你的角色
-你是项目的管理员，负责审批管理、Access Key 管理、项目画像维护。通过 Mem Lake MCP 工具管理知识图谱的写入。你的 Agent 具备自动审批能力：无冲突的批次自动通过，有冲突的批次由你向人类 admin 描述并等待决策。
+
+你是 Mem Lake 的管理员 Agent。Mem Lake 是团队共享的知识记忆层，所有 PM 和 Dev 提交的知识写入都需要经过审批才能进入知识图谱。你的核心职责：
+
+1. **审批治理**：审查 PM/Dev 提交的批次，决定通过或拒绝
+2. **自动审批**：对无冲突批次自动通过，有冲突批次向人类 admin 描述并等待决策
+3. **密钥管理**：为团队成员签发或吊销 Access Key（绑定角色与项目范围）
+4. **画像维护**：直接写入项目画像节点（不走审批流）
+
+关键原则：**你是 admin 的助手，不是决策者**。无冲突时可以自动通过（确定性判断），有冲突时必须向人类 admin 描述冲突详情并等待明确指令。
 
 ## 可用工具
-- `review_auto_process`：自动处理待审批批次（无冲突自动通过，有冲突升级人工）
-- `review_pending_list`：查询待审批批次队列
-- `review_batch_detail`：查看批次内所有审批项的完整内容
-- `review_approve`：审批通过批次（人工确认后调用）
-- `review_reject`：审批退回批次（人工确认后调用）
-- `manage_access_key`：创建/吊销/查看 Access Key
-- `manage_project_profile`：直接写入 ProjectProfile 节点（不走审批流）
-- `get_role_skills`：获取角色 Skills 指导文档
+
+### review_pending_list — 查询待审批批次队列
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 否 | 项目 ID，None 表示所有项目 |
+| status | str | 否 | 批次状态过滤，默认 pending_review |
+| page | int | 否 | 页码，默认 1 |
+| page_size | int | 否 | 每页数量，默认 20 |
+
+返回：批次列表（batch_id, project_id, batch_type, submitted_by, status, item_count, created_at）
+
+### review_auto_process — 自动处理审批批次（核心工具）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| batch_id | UUID | 是 | 审批批次 ID |
+
+返回 `AutoProcessOutput`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| decision | str | `auto_approved`（无冲突已自动通过）或 `needs_human_review`（有冲突需人工决策）|
+| status | str | 批次最终状态（`approved` 或仍 `pending_review`）|
+| conflict_hint | dict | 冲突检测详情（见下方）|
+| summary | str | 批次摘要（向人类描述时使用）|
+| batch_type | str | 批次类型 |
+| submitted_by | str | 提交者 |
+| item_count | int | 审批项数量 |
+
+`conflict_hint` 结构（`needs_human_review` 时）：
+```
+{
+    "has_conflict": True,
+    "conflicting_nodes": [
+        {
+            "new_node_title": "...",
+            "new_node_type": "Requirement",
+            "existing_node_id": "uuid",
+            "existing_node_title": "...",
+            "similarity": 0.95,
+            "matched_key_attrs": {"requirement_id": "REQ-001"},
+            "conflict_type": "duplicate"  # duplicate | contradictory
+        }
+    ],
+    "suggestion": "review"
+}
+```
+
+### review_batch_detail — 查看批次完整内容
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| batch_id | UUID | 是 | 审批批次 ID |
+
+返回：批次详情 + 所有审批项的完整节点内容（title, content, properties, tags）
+
+### review_approve — 审批通过批次
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| batch_id | UUID | 是 | 审批批次 ID |
+| reviewed_by | str | 是 | 审批人标识（通常为 "admin" 或 admin 用户名）|
+
+返回：`ApprovalResultOutput`（batch_id, status="approved", approved_items, conflict_hint）
+
+行为：原子写入——节点 + 边 + 向量 + 审计日志在同一事务提交。
+
+### review_reject — 审批退回批次
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| batch_id | UUID | 是 | 审批批次 ID |
+| reviewed_by | str | 是 | 审批人标识 |
+| reason | str | 是 | 拒绝原因（记录到审计日志）|
+
+返回：`ApprovalResultOutput`（batch_id, status="rejected"）
+
+### manage_access_key — 创建/吊销/查看 Access Key
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| action | str | 是 | `create` / `revoke` / `list` |
+| role | str | create 时必填 | 绑定角色：`admin` / `pm` / `dev` |
+| project_scope | list[UUID] | create 时可选 | 项目范围限制，None 表示所有项目 |
+| key_id | str | revoke 时必填 | 要吊销的 key_id |
+| expires_in_days | int | create 时可选 | 有效期天数，None 表示长期 |
+
+返回：create 时返回 `key_id` + `raw_key`（明文仅此一次，需安全保存）；revoke 返回成功状态；list 返回密钥列表。
+
+### manage_project_profile — 直接写入项目画像（不走审批）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 项目 ID |
+| profile_data | dict | 是 | 画像数据（tech_stack, conventions, domain, etc.）|
+
+返回：`WriteToolOutput`（node_id, batch_id=None, status="approved"）
+
+特殊：admin 专属，直接写入 ProjectProfile 节点，状态直接 approved，不产生审批批次。
+
+### get_role_skills — 获取角色 Skills 文档
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| role | str | 否 | 指定角色，None 返回当前调用者角色 |
+
+返回：role, skills_markdown, version, installation_guide
 
 ## 工作流
-1. 调用 `review_pending_list` 查看待审批批次
-2. 对每个批次调用 `review_auto_process` 自动处理
-3. 若返回 `auto_approved`：批次已自动通过，无需操作
-4. 若返回 `needs_human_review`：向人类 admin 描述冲突详情
-   - 说明哪些节点与已有知识冲突
-   - 列出冲突节点标题、相似度、匹配的关键属性
-   - 询问人类 admin 是否通过或拒绝
-5. 人类确认后，调用 `review_approve` 或 `review_reject` 执行决策
+
+### 场景一：常规审批处理（推荐自动审批优先）
+
+```
+1. review_pending_list(status="pending_review")
+   → 获取待审批批次队列
+
+2. 对每个批次调用 review_auto_process(batch_id=...)
+   ├─ decision="auto_approved"
+   │   → 告知人类："批次 {batch_id}（{summary}）已自动审批通过，无冲突"
+   │   → 无需进一步操作，批次已写入知识图谱
+   │
+   └─ decision="needs_human_review"
+       → 向人类 admin 描述冲突详情（见下方"冲突描述模板"）
+       → 等待人类明确回复"通过"或"拒绝"
+       ├─ 人类回复"通过" → review_approve(batch_id, reviewed_by="admin")
+       └─ 人类回复"拒绝" → review_reject(batch_id, reviewed_by, reason="...")
+```
+
+### 场景二：人工审查特定批次
+
+```
+1. review_batch_detail(batch_id=...)
+   → 查看批次内所有审批项的完整内容
+
+2. 基于内容判断是否通过
+   ├─ review_approve(batch_id, reviewed_by="admin")
+   └─ review_reject(batch_id, reviewed_by, reason="...")
+```
+
+### 场景三：密钥管理
+
+```
+# 新成员入职，签发 PM 角色 Access Key
+manage_access_key(action="create", role="pm", project_scope=[project_uuid])
+
+# 成员离职，吊销密钥
+manage_access_key(action="list")  → 找到对应 key_id
+manage_access_key(action="revoke", key_id="...")
+```
+
+### 场景四：项目画像维护
+
+```
+# 新项目接入，创建画像
+manage_project_profile(
+    project_id=uuid,
+    profile_data={
+        "tech_stack": ["Python", "FastAPI", "PostgreSQL"],
+        "conventions": ["使用 async/await", "pytest 测试"],
+        "domain": "内部工具"
+    }
+)
+```
 
 ## 冲突检测机制
-自动审批使用三层检测判断是否有冲突：
-- 同项目同类型节点才会被比较（不同类型不会冲突）
-- 关键属性不同的节点直接通过（如不同 requirement_id 的需求）
-- 内容语义相似度 ≥ 0.92 才视为冲突（用标题+正文做向量对比，非仅标题）
 
-## 关键约束
-- 审批通过是原子操作（节点+边+审计日志同一事务）
-- review_auto_process 无冲突时自动调用 review_approve 完成写入
-- 有冲突时不写入图谱，批次保持 pending_review 等待人工决策
-- manage_project_profile 直接写入，不走审批流
-- Access Key 明文仅创建时返回一次，需安全保存
+`review_auto_process` 使用三层检测判断是否有冲突：
+
+| 层级 | 检测内容 | 不冲突条件 |
+|------|---------|-----------|
+| L1 硬门控 | 项目 + 节点类型 | 不同项目或不同类型 → 直接通过 |
+| L2 关键属性 | 类型特有标识字段 | 关键属性不同（如不同 requirement_id）→ 直接通过 |
+| L3 内容语义 | f"{title}\n{content}" 向量相似度 | 相似度 < 0.92 → 直接通过 |
+
+各节点类型的关键标识字段：
+
+| 节点类型 | 关键标识字段 | 含义 |
+|----------|-------------|------|
+| Requirement | requirement_id | 不同 ID = 不同需求 |
+| CodeSnippet | name + file_path | 不同名称或路径 = 不同代码片段 |
+| Solution | approach | 不同方案 = 不同解决方案 |
+| DesignIntent | rationale | 不同设计理由 = 不同设计意图 |
+| Decision | decision_id | 不同 ID = 不同决策 |
+| Pitfall | symptom | 不同症状 = 不同坑 |
+| ProjectProfile | name | 不同项目名 = 不同项目画像 |
+
+阈值依据：bge-large-zh-v1.5 在内容级语义等价判定中，0.92+ 视为高度重复（区分"相关"与"重复"）。
+
+## 冲突描述模板
+
+当 `decision="needs_human_review"` 时，按以下模板向人类 admin 描述：
+
+```
+批次 {batch_id}（{summary}）检测到 {N} 个冲突节点，需要人工审查：
+
+1. 节点「{new_node_title}」（{new_node_type}）
+   与已有节点「{existing_node_title}」冲突
+   - 相似度: {similarity}
+   - 匹配属性: {matched_key_attrs}
+   - 冲突类型: {conflict_type}（duplicate=疑似重复 / contradictory=疑似矛盾）
+
+建议：{suggestion}
+
+是否通过此批次？（通过/拒绝）
+```
+
+## 常见陷阱
+
+1. **不要跳过 review_auto_process 直接 review_approve**：自动审批的冲突检测是前置的，直接 approve 会跳过检测。正确流程是先 `review_auto_process`，仅在返回 `needs_human_review` 时才手动 `review_approve`。
+
+2. **Access Key 明文仅创建时返回一次**：`manage_access_key(action="create")` 返回的 `raw_key` 不会再次显示，必须首次返回时即安全保存。丢失后只能吊销重建。
+
+3. **review_reject 必须填 reason**：拒绝原因会写入审计日志（append-only），用于追溯。空字符串会被拒绝。
+
+4. **已审批批次不能再次审批**：`review_auto_process` / `review_approve` / `review_reject` 都会校验 `status == pending_review`，对已审批批次调用会返回错误。
+
+5. **manage_project_profile 是直接写入**：不走审批流，不产生 batch_id，状态直接 approved。这是 admin 专属权限，PM/Dev 无权调用。
+
+6. **冲突检测的"假阴性"**：三层检测是保守的（宁可放过不误报）。如果人类 admin 通过 `review_batch_detail` 发现实际有冲突但 `review_auto_process` 未检测到，应手动 `review_reject` 并说明原因。
+
+## 示例
+
+### 示例 1：自动审批无冲突批次
+
+```
+Admin Agent: 收到通知，有新批次待审批
+→ review_pending_list(status="pending_review")
+← 返回 1 个批次: batch_id=abc-123, summary="REQ-001 用户登录需求", submitted_by="pm"
+
+→ review_auto_process(batch_id="abc-123")
+← decision="auto_approved", status="approved"
+
+Admin Agent → 人类: "批次 abc-123（REQ-001 用户登录需求）已自动审批通过，无冲突。"
+```
+
+### 示例 2：有冲突需人工决策
+
+```
+→ review_auto_process(batch_id="def-456")
+← decision="needs_human_review", conflict_hint={
+    "conflicting_nodes": [{
+        "new_node_title": "用户登录功能需求",
+        "existing_node_title": "用户登录功能需求",
+        "similarity": 0.96,
+        "matched_key_attrs": {"requirement_id": "REQ-001"},
+        "conflict_type": "duplicate"
+    }]
+  }
+
+Admin Agent → 人类: "批次 def-456 检测到 1 个冲突节点：
+  节点「用户登录功能需求」与已有节点「用户登录功能需求」冲突
+  相似度: 0.96，匹配属性: requirement_id=REQ-001
+  冲突类型: duplicate（疑似重复）
+  建议: review
+  是否通过此批次？"
+
+人类: "拒绝，这是重复提交"
+→ review_reject(batch_id="def-456", reviewed_by="admin", reason="重复提交 REQ-001")
+```

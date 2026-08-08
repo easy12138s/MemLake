@@ -37,6 +37,7 @@ models/
 
 # Docker
 deploy/data/
+deploy/backups/
 
 # OS
 .DS_Store

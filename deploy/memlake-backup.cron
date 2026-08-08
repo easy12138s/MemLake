@@ -1,0 +1,23 @@
+# MemLake 定时备份 cron 配置
+#
+# 部署到 Linux 服务器后，将本文件复制到 /etc/cron.d/ 或用 crontab -e 编辑：
+#
+#   sudo cp deploy/memlake-backup.cron /etc/cron.d/memlake-backup
+#   sudo chmod 644 /etc/cron.d/memlake-backup
+#
+# 备份日志默认输出到 deploy/backups/ 目录，可通过 LOG_FILE 环境变量覆盖。
+# 备份保留策略通过 RETENTION_DAYS 环境变量控制（默认 30 天）。
+#
+# 验证 cron 是否生效：
+#   sudo systemctl status cron
+#   sudo grep CRON /var/log/syslog
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 每日凌晨 2:00 执行备份，保留 30 天
+0 2 * * * root cd /opt/memlake/deploy && RETENTION_DAYS=30 ./backup.sh >> backups/backup.log 2>&1
+
+# 每周日凌晨 3:00 执行一次额外备份（周备份，保留更久）
+# 取消注释启用：
+# 0 3 * * 0 root cd /opt/memlake/deploy && RETENTION_DAYS=90 ./backup.sh /opt/memlake/backups/weekly >> /opt/memlake/backups/weekly.log 2>&1
