@@ -265,28 +265,27 @@ def register_search_tools(mcp: FastMCP) -> None:
             ctx = get_context()
             lifespan_ctx = ctx.lifespan_context
 
-            # 复用 hybrid_search 检索同项目 Requirement 节点
+            # 获取被检测需求的标题用作查询文本
             session = await get_readonly_session()
             try:
-                # 先获取被检测需求的标题用作查询文本
                 from mem_lake.knowledge.repository import get_node
                 target_node = await get_node(session, requirement_id)
-                query_text = f"{target_node.title}\n{target_node.content}"
-
-                filters = FilterSpec(
-                    project_id=project_id,
-                    node_types=("Requirement",),
-                )
-                result = await hybrid_search(
-                    session,
-                    query=query_text,
-                    embedding_client=lifespan_ctx.embedding_client,
-                    graph_store=lifespan_ctx.graph_store,
-                    top_n=top_n,
-                    filters=filters,
-                )
             finally:
                 await session.close()
+            query_text = f"{target_node.title}\n{target_node.content}"
+
+            # 复用 hybrid_search 检索同项目 Requirement 节点（内部自建独立 session）
+            filters = FilterSpec(
+                project_id=project_id,
+                node_types=("Requirement",),
+            )
+            result = await hybrid_search(
+                query=query_text,
+                embedding_client=lifespan_ctx.embedding_client,
+                graph_store=lifespan_ctx.graph_store,
+                top_n=top_n,
+                filters=filters,
+            )
 
             # 过滤：排除自身 + score >= threshold
             conflicts = [
@@ -385,18 +384,14 @@ async def _run_hybrid_search(
         tags=tags,
     )
 
-    session = await get_readonly_session()
-    try:
-        result = await hybrid_search(
-            session,
-            query=query,
-            embedding_client=lifespan_ctx.embedding_client,
-            graph_store=lifespan_ctx.graph_store,
-            top_n=top_n,
-            filters=filters,
-        )
-    finally:
-        await session.close()
+    # hybrid_search 内部为每引擎自建独立 session（AsyncSession 非并发安全）
+    result = await hybrid_search(
+        query=query,
+        embedding_client=lifespan_ctx.embedding_client,
+        graph_store=lifespan_ctx.graph_store,
+        top_n=top_n,
+        filters=filters,
+    )
 
     return HybridSearchOutput(
         query=query,

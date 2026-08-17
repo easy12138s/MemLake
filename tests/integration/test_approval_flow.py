@@ -1037,7 +1037,7 @@ class TestConflictDetection:
     依赖真实 embedding 容器（localhost:8001）以生成真实向量对比相似度。
     """
 
-    async def test_conflict_detection_similar_title(
+    async def test_conflict_detection_duplicate_content(
         self,
         db_session,
         graph_store,
@@ -1046,7 +1046,7 @@ class TestConflictDetection:
         knowledge_helpers,
         sample_batch_payloads,
     ):
-        """标题高度相似的两节点，conflict_hint 含 similar_nodes。"""
+        """内容级重复（相同内容 + 相同 requirement_id）的两节点，conflict_hint 含 conflicting_nodes。"""
         project_id = uuid.uuid4()
 
         # 先创建一个已 approved 的"用户登录鉴权需求"节点
@@ -1060,7 +1060,7 @@ class TestConflictDetection:
             content="系统需要支持账号密码登录与 JWT 令牌签发",
         )
 
-        # 提交一个标题高度相似的批次
+        # 提交一个内容完全相同的批次（内容级重复）
         items = [
             {
                 "item_type": "node",
@@ -1097,11 +1097,20 @@ class TestConflictDetection:
             vector_searcher=vector_searcher,
         )
 
-        # 完全相同标题应触发冲突
+        # 内容级重复 + 关键属性相同（requirement_id 一致）→ 冲突
         assert approved_batch.conflict_hint is not None
         assert approved_batch.conflict_hint["has_conflict"] is True
+        details = approved_batch.conflict_hint["details"]
+        assert len(details) == 1
+        conflict = details[0]["conflict"]
+        assert len(conflict["conflicting_nodes"]) == 1
+        assert conflict["conflicting_nodes"][0]["conflict_type"] == "duplicate"
+        assert (
+            conflict["conflicting_nodes"][0]["matched_key_attrs"]
+            == {"requirement_id": "REQ-2026-001"}
+        )
 
-    async def test_conflict_detection_tag_match(
+    async def test_conflict_detection_tag_overlap_only_no_conflict(
         self,
         db_session,
         graph_store,
@@ -1110,7 +1119,7 @@ class TestConflictDetection:
         knowledge_helpers,
         sample_batch_payloads,
     ):
-        """标签有交集的两节点，conflict_hint 含 tag_matches。"""
+        """仅标签有交集、内容不同的两节点，不构成冲突（标签共享≠内容重复）。"""
         project_id = uuid.uuid4()
 
         # 创建一个带 ["auth", "P0"] 标签的节点
@@ -1162,9 +1171,10 @@ class TestConflictDetection:
             vector_searcher=vector_searcher,
         )
 
-        # 标签匹配应触发冲突（auth 标签交集）
+        # 标签交集但内容不同 → 不构成冲突（v2 语义：标签共享只说明主题相关）
         assert approved_batch.conflict_hint is not None
-        assert approved_batch.conflict_hint["has_conflict"] is True
+        assert approved_batch.conflict_hint["has_conflict"] is False
+        assert approved_batch.conflict_hint["suggestion"] is None
 
     async def test_conflict_detection_no_conflict(
         self,

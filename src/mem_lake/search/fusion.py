@@ -15,8 +15,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.search.filters import FilterSpec
@@ -99,7 +98,6 @@ def rrf_fuse(
 
 
 async def hybrid_search(
-    session: AsyncSession,
     query: str,
     embedding_client: EmbeddingClient,
     graph_store: GraphStore,
@@ -114,8 +112,12 @@ async def hybrid_search(
     向量与全文引擎并行执行并 RRF 融合；图遍历作为独立路径仅在提供 graph_node_id 时执行
     （组合模式：先向量找起点，再图遍历展开），结果作为 "graph" 字段独立返回不参与融合。
 
+    每引擎独立 DB session：AsyncSession 非并发安全（SQLAlchemy 限制），
+    asyncio.gather 共享单一 session 会触发锁竞争甚至报错；独立 session 使
+    三引擎在各自连接上真并行，总延迟 ≈ max(三引擎延迟)。检索为只读操作，
+    独立 session 不涉及事务一致性问题。
+
     参数：
-        session: 异步数据库会话
         query: 查询文本（向量引擎 embed_one 生成查询向量，全文引擎 websearch_to_tsquery）
         embedding_client: Embedding 客户端
         graph_store: GraphStore 实现（AGEGraphStore）
@@ -138,23 +140,25 @@ async def hybrid_search(
     fulltext_searcher = FullTextSearcher()
     graph_searcher = GraphSearcher(graph_store)
 
-    # 并行执行三引擎检索
-    # asyncio.gather 总延迟 ≈ max(三引擎延迟)，而非三者之和
-    # 注意：同一 AsyncSession 在 psycopg3 async 下可能受单连接限制串行执行，
-    # 但语义上仍为并行调用，性能影响可接受（单引擎延迟 < 500ms）
-    vector_task = vector_searcher.search(session, query, top_k, filters)
-    fulltext_task = fulltext_searcher.search(session, query, top_k, filters)
+    async def _vector_task() -> list[SearchResult]:
+        async with AsyncSessionLocal() as s:
+            return await vector_searcher.search(s, query, top_k, filters)
 
-    if graph_node_id is not None:
-        graph_task = graph_searcher.traverse(
-            session, graph_node_id, depth=graph_depth, filters=filters
-        )
-    else:
-        # 不执行图遍历，返回空列表
-        graph_task = _empty_result()
+    async def _fulltext_task() -> list[SearchResult]:
+        async with AsyncSessionLocal() as s:
+            return await fulltext_searcher.search(s, query, top_k, filters)
 
+    async def _graph_task() -> list[SearchResult]:
+        if graph_node_id is None:
+            return []
+        async with AsyncSessionLocal() as s:
+            return await graph_searcher.traverse(
+                s, graph_node_id, depth=graph_depth, filters=filters
+            )
+
+    # 并行执行三引擎检索，asyncio.gather 总延迟 ≈ max(三引擎延迟)
     vector_results, fulltext_results, graph_results = await asyncio.gather(
-        vector_task, fulltext_task, graph_task
+        _vector_task(), _fulltext_task(), _graph_task()
     )
 
     # 向量与全文 RRF 融合
@@ -166,8 +170,3 @@ async def hybrid_search(
         "fulltext": fulltext_results,
         "graph": graph_results,
     }
-
-
-async def _empty_result() -> list[SearchResult]:
-    """返回空 SearchResult 列表的协程，用于 graph_node_id=None 时的占位任务。"""
-    return []

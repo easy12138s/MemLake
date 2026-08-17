@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from mem_lake.approval.conflict import detect_conflicts, detect_conflicts_v2
+from mem_lake.approval.conflict import detect_conflicts
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
@@ -181,7 +181,6 @@ async def review_approve(
     embedding_client: EmbeddingClient,
     vector_searcher: VectorSearcher,
     review_comment: str | None = None,
-    similarity_threshold: float = 0.85,
 ) -> ApprovalBatch:
     """审批通过：原子写入 knowledge_node 表与 AGE 图，生成 conflict_hint。
 
@@ -189,8 +188,8 @@ async def review_approve(
     1. 查询批次（含 items），校验 status == pending_review（否则抛 BatchStatusError）
     2. 遍历 approval_items，按 (item_type, action) 分发：
        - node + create：调用 create_node(status="approved", generate_vector=True)
-         冲突检测：detect_conflicts(...)，累加 conflict_hint
-         回填 approval_item.target_id = node.id
+         冲突检测：detect_conflicts(...)（统一三层实现，写入后检测并排除自身），
+         累加 conflict_hint；回填 approval_item.target_id = node.id
        - node + update：调用 update_node
        - edge + create：校验 from_id/to_id 存在，调用 add_edge
     3. 合并所有 node 的 conflict_hint，写入 approval_batch.conflict_hint
@@ -221,16 +220,17 @@ async def review_approve(
             )
             item.target_id = node.id
 
-            # 冲突检测（节点已写入，可对比）
+            # 冲突检测（节点已写入，排除自身；可捕获同批次内先写入的重复节点）
             conflict_hint = await detect_conflicts(
                 session,
                 vector_searcher=vector_searcher,
                 project_id=node.project_id,
                 node_type=node.type,
                 title=node.title,
+                content=node.content,
+                properties=node.properties or {},
                 tags=node.tags or [],
                 exclude_node_id=node.id,
-                similarity_threshold=similarity_threshold,
             )
             all_conflict_hints.append(
                 {
@@ -352,8 +352,8 @@ async def auto_process_batch(
 
     为 admin Agent 设计（PDD v1.x 自动审批能力）。流程：
     1. 查询批次详情，校验 status == pending_review
-    2. 遍历 approval_items 中的 node+create 项，对每个节点调用 detect_conflicts_v2
-       （三层检测：硬门控→关键属性比对→内容语义相似度）
+    2. 遍历 approval_items 中的 node+create 项，对每个节点调用 detect_conflicts
+       （三层检测：硬门控→关键属性比对→内容语义相似度，与 review_approve 同一实现）
     3. 合并所有节点的冲突检测结果
     4. 若无冲突：调用 review_approve 完成原子写入，返回 decision="auto_approved"
     5. 若有冲突：不写入图谱，返回 decision="needs_human_review" + 冲突详情
@@ -368,7 +368,7 @@ async def auto_process_batch(
         reviewed_by: 审批者 Access Key ID（自动审批时仍记录）
         graph_store: 图存储实例（传入 review_approve）
         embedding_client: Embedding 客户端（传入 review_approve）
-        vector_searcher: 向量检索器（用于 detect_conflicts_v2 + 传入 review_approve）
+        vector_searcher: 向量检索器（用于 detect_conflicts + 传入 review_approve）
 
     返回：
         {
@@ -403,7 +403,7 @@ async def auto_process_batch(
         checked_nodes += 1
         payload = item.payload or {}
 
-        conflict_result = await detect_conflicts_v2(
+        conflict_result = await detect_conflicts(
             session,
             vector_searcher=vector_searcher,
             project_id=_to_uuid(payload["project_id"]),

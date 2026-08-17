@@ -10,8 +10,10 @@ RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
     uvicorn[standard]>=0.30.0 \
     modelscope
 
-# 构建时下载模型到镜像内，避免部署时手动下载
-RUN python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-large-zh-v1.5', cache_dir='/models')"
+# 构建时下载模型到镜像内，删除冗余的 pytorch_model.bin（safetensors 已足够）
+RUN python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-large-zh-v1.5', cache_dir='/models')" \
+    && ln -s /models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master /models/bge-large-zh-v1.5 \
+    && rm -f /models/bge-large-zh-v1.5/pytorch_model.bin
 
 WORKDIR /app
 COPY embedding_server.py /app/

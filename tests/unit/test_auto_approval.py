@@ -2,7 +2,7 @@
 
 覆盖：
 - _match_key_attrs 纯函数（L2 关键属性比对逻辑）
-- detect_conflicts_v2 三层检测（L1 隐含于 FilterSpec，L2 关键属性，L3 内容语义相似度）
+- detect_conflicts 三层检测（L1 隐含于 FilterSpec，L2 关键属性，L3 内容语义相似度）
 - auto_process_batch 决策逻辑（无冲突自动通过 / 有冲突升级人工 / 状态校验）
 - RBAC：review_auto_process 仅 admin 可用
 
@@ -17,10 +17,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mem_lake.approval.conflict import (
-    CONFLICT_SIMILARITY_THRESHOLD_V2,
+    CONFLICT_SIMILARITY_THRESHOLD,
     KEY_IDENTITY_FIELDS,
     _match_key_attrs,
-    detect_conflicts_v2,
+    detect_conflicts,
 )
 from mem_lake.approval.service import (
     BatchStatusError,
@@ -144,12 +144,12 @@ class TestMatchKeyAttrs:
 
 
 # ============================================================================
-# detect_conflicts_v2 三层检测（mock 向量检索 + 节点查询）
+# detect_conflicts 三层检测（mock 向量检索 + 节点查询）
 # ============================================================================
 
 
 class TestDetectConflictsV2:
-    """detect_conflicts_v2 三层冲突检测逻辑测试。"""
+    """detect_conflicts 三层冲突检测逻辑测试。"""
 
     @pytest.mark.asyncio
     async def test_no_candidates_no_conflict(self):
@@ -158,7 +158,7 @@ class TestDetectConflictsV2:
         vector_searcher = MagicMock()
         vector_searcher.search = AsyncMock(return_value=[])
 
-        result = await detect_conflicts_v2(
+        result = await detect_conflicts(
             session,
             vector_searcher=vector_searcher,
             project_id=uuid.uuid4(),
@@ -183,7 +183,7 @@ class TestDetectConflictsV2:
         vector_searcher = MagicMock()
         vector_searcher.search = AsyncMock(return_value=[candidate])
 
-        result = await detect_conflicts_v2(
+        result = await detect_conflicts(
             session,
             vector_searcher=vector_searcher,
             project_id=uuid.uuid4(),
@@ -206,7 +206,7 @@ class TestDetectConflictsV2:
         vector_searcher = MagicMock()
         vector_searcher.search = AsyncMock(return_value=[candidate])
 
-        result = await detect_conflicts_v2(
+        result = await detect_conflicts(
             session,
             vector_searcher=vector_searcher,
             project_id=uuid.uuid4(),
@@ -235,7 +235,7 @@ class TestDetectConflictsV2:
             "mem_lake.approval.conflict.get_node_for_conflict",
             new=AsyncMock(return_value=existing_node),
         ):
-            result = await detect_conflicts_v2(
+            result = await detect_conflicts(
                 session,
                 vector_searcher=vector_searcher,
                 project_id=uuid.uuid4(),
@@ -265,7 +265,7 @@ class TestDetectConflictsV2:
             "mem_lake.approval.conflict.get_node_for_conflict",
             new=AsyncMock(return_value=existing_node),
         ):
-            result = await detect_conflicts_v2(
+            result = await detect_conflicts(
                 session,
                 vector_searcher=vector_searcher,
                 project_id=uuid.uuid4(),
@@ -297,7 +297,7 @@ class TestDetectConflictsV2:
             "mem_lake.approval.conflict.get_node_for_conflict",
             new=AsyncMock(return_value=None),
         ):
-            result = await detect_conflicts_v2(
+            result = await detect_conflicts(
                 session,
                 vector_searcher=vector_searcher,
                 project_id=uuid.uuid4(),
@@ -340,7 +340,7 @@ class TestDetectConflictsV2:
             "mem_lake.approval.conflict.get_node_for_conflict",
             new=fake_get_node,
         ):
-            result = await detect_conflicts_v2(
+            result = await detect_conflicts(
                 session,
                 vector_searcher=vector_searcher,
                 project_id=uuid.uuid4(),
@@ -354,9 +354,51 @@ class TestDetectConflictsV2:
         assert len(result["conflicting_nodes"]) == 1
         assert result["candidates_examined"] == 2
 
+    @pytest.mark.asyncio
+    async def test_exclude_node_id_skips_self(self):
+        """exclude_node_id 排除自身节点（写入后检测场景，避免自检）。"""
+        self_id = uuid.uuid4()
+        session = AsyncMock()
+        candidate_self = FakeSearchResult(
+            node_id=self_id, title="自身", score=0.99
+        )
+        candidate_other = FakeSearchResult(
+            node_id=uuid.uuid4(), title="已有需求", score=0.95
+        )
+        vector_searcher = MagicMock()
+        vector_searcher.search = AsyncMock(
+            return_value=[candidate_self, candidate_other]
+        )
+
+        existing_node = MagicMock()
+        existing_node.properties = {"requirement_id": "REQ-001"}
+
+        with patch(
+            "mem_lake.approval.conflict.get_node_for_conflict",
+            new=AsyncMock(return_value=existing_node),
+        ):
+            result = await detect_conflicts(
+                session,
+                vector_searcher=vector_searcher,
+                project_id=uuid.uuid4(),
+                node_type="Requirement",
+                title="测试需求",
+                content="测试内容",
+                properties={"requirement_id": "REQ-001"},
+                tags=[],
+                exclude_node_id=self_id,
+            )
+        # 自身被排除（candidates_examined=1），仅另一个候选构成冲突
+        assert result["candidates_examined"] == 1
+        assert result["has_conflict"] is True
+        assert (
+            result["conflicting_nodes"][0]["existing_node_id"]
+            == str(candidate_other.node_id)
+        )
+
 
 # ============================================================================
-# auto_process_batch 决策逻辑（mock detect_conflicts_v2 + review_approve）
+# auto_process_batch 决策逻辑（mock detect_conflicts + review_approve）
 # ============================================================================
 
 
@@ -433,7 +475,7 @@ class TestAutoProcessBatch:
             "mem_lake.approval.service.get_batch_detail",
             new=AsyncMock(return_value=batch),
         ), patch(
-            "mem_lake.approval.service.detect_conflicts_v2",
+            "mem_lake.approval.service.detect_conflicts",
             new=AsyncMock(return_value=conflict_result),
         ), patch(
             "mem_lake.approval.service.review_approve",
@@ -506,7 +548,7 @@ class TestAutoProcessBatch:
             "mem_lake.approval.service.get_batch_detail",
             new=AsyncMock(return_value=batch),
         ), patch(
-            "mem_lake.approval.service.detect_conflicts_v2",
+            "mem_lake.approval.service.detect_conflicts",
             new=AsyncMock(return_value=no_conflict_result),
         ), patch(
             "mem_lake.approval.service.review_approve",
@@ -553,7 +595,7 @@ class TestAutoProcessBatch:
             "mem_lake.approval.service.review_approve",
             new=AsyncMock(return_value=approved_batch),
         ), patch(
-            "mem_lake.approval.service.detect_conflicts_v2",
+            "mem_lake.approval.service.detect_conflicts",
             new=AsyncMock(),
         ) as mock_detect:
             result = await auto_process_batch(
@@ -604,8 +646,8 @@ class TestConflictConstants:
     """冲突检测常量校验。"""
 
     def test_conflict_threshold_is_092(self):
-        """V2 内容级冲突阈值固定为 0.92。"""
-        assert CONFLICT_SIMILARITY_THRESHOLD_V2 == 0.92
+        """内容级冲突阈值固定为 0.92。"""
+        assert CONFLICT_SIMILARITY_THRESHOLD == 0.92
 
     def test_key_identity_fields_covers_all_node_types(self):
         """KEY_IDENTITY_FIELDS 覆盖全部 7 种节点类型。"""

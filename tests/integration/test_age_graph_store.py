@@ -18,6 +18,7 @@ import uuid
 import pytest
 
 from mem_lake.knowledge.age_store import AGEGraphStore
+from mem_lake.knowledge.graph_store import EdgeTargetNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
 
 
@@ -146,6 +147,26 @@ class TestAddEdge:
                 from_id=a_id,
                 to_id=b_id,
                 edge_type="invalid_relation",
+                properties={},
+            )
+
+    async def test_add_edge_missing_endpoint_raises(self, db_session, store):
+        """端点节点不存在于图中时抛 EdgeTargetNotFoundError（禁止静默丢边）。
+
+        AGE 的 MATCH ... CREATE 在 MATCH 失败时静默跳过，
+        add_edge 必须显式检测并抛错，触发调用方事务回滚。
+        """
+        project_id = uuid.uuid4()
+        a_id = uuid.uuid4()
+        missing_id = uuid.uuid4()  # 从未 add_node 的节点
+        await store.add_node(db_session, a_id, "Requirement", _props(a_id, project_id))
+
+        with pytest.raises(EdgeTargetNotFoundError, match="边端点节点在图中不存在"):
+            await store.add_edge(
+                db_session,
+                from_id=a_id,
+                to_id=missing_id,
+                edge_type="implements",
                 properties={},
             )
 
@@ -580,26 +601,6 @@ class TestAddEdgeEdgeCases:
             {"nid": str(a)},
         )
         assert len(rows) >= 1
-
-    async def test_add_edge_nonexistent_target(self, db_session, store):
-        """目标节点不存在时 MATCH 不匹配，边不创建，不抛异常（AGE 静默行为）。"""
-        project_id = uuid.uuid4()
-        a = uuid.uuid4()
-        fake_b = uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-
-        # 不存在的目标节点，MATCH (b {id: $to_id}) 不匹配，CREATE 不执行
-        await store.add_edge(
-            db_session, from_id=a, to_id=fake_b, edge_type="implements", properties={}
-        )
-
-        # 无边创建
-        rows = await store.match_pattern(
-            db_session,
-            "MATCH ()-[r]->() RETURN r",
-            {},
-        )
-        assert len(rows) == 0
 
     async def test_add_edge_unicode_properties(self, db_session, store):
         """边属性含中文/特殊字符正确写入与读取。"""

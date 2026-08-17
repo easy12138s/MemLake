@@ -77,6 +77,27 @@ async def _seed_three_nodes(
     return pid, requirement, code, pitfall
 
 
+async def _cleanup_project_data(session, graph_store, project_id):
+    """清理已提交的测试数据（PG 行 + AGE 顶点）。
+
+    hybrid_search 内部为每引擎创建独立 DB session，种子数据必须真实 commit
+    才对检索可见；已提交数据不随 db_session fixture 回滚，需显式清理。
+    测试以 owner 用户连接，RLS 不 FORCE，DELETE 可执行。
+    """
+    from sqlalchemy import text as sa_text
+
+    await session.execute(
+        sa_text("DELETE FROM knowledge_node WHERE project_id = :pid"),
+        {"pid": str(project_id)},
+    )
+    await graph_store.match_pattern(
+        session,
+        "MATCH (n {project_id: $pid}) DETACH DELETE n",
+        {"pid": str(project_id)},
+    )
+    await session.commit()
+
+
 # ============ VectorSearcher 测试 ============
 
 
@@ -462,33 +483,37 @@ class TestHybridSearch:
         pid, requirement, code, pitfall = await _seed_three_nodes(
             db_session, graph_store, real_embedding_client, knowledge_helpers
         )
+        # hybrid_search 内部自建独立 session，种子数据需提交后可见
+        await db_session.commit()
 
-        result = await hybrid_search(
-            db_session,
-            query="JWT 登录鉴权",
-            embedding_client=real_embedding_client,
-            graph_store=graph_store,
-            top_k=50,
-            top_n=10,
-            filters=FilterSpec(project_id=pid),
-        )
+        try:
+            result = await hybrid_search(
+                query="JWT 登录鉴权",
+                embedding_client=real_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=10,
+                filters=FilterSpec(project_id=pid),
+            )
 
-        # 返回结构含四个字段
-        assert "fused" in result
-        assert "vector" in result
-        assert "fulltext" in result
-        assert "graph" in result
+            # 返回结构含四个字段
+            assert "fused" in result
+            assert "vector" in result
+            assert "fulltext" in result
+            assert "graph" in result
 
-        # fused 长度 <= top_n
-        assert len(result["fused"]) <= 10
-        # vector 与 fulltext 长度 <= top_k
-        assert len(result["vector"]) <= 50
-        assert len(result["fulltext"]) <= 50
+            # fused 长度 <= top_n
+            assert len(result["fused"]) <= 10
+            # vector 与 fulltext 长度 <= top_k
+            assert len(result["vector"]) <= 50
+            assert len(result["fulltext"]) <= 50
 
-        # 两引擎都命中的节点（requirement 与 code 都含 JWT + 登录）应排在 fused 前列
-        if result["fused"]:
-            top_fused_ids = {r.node_id for r in result["fused"][:2]}
-            assert requirement.id in top_fused_ids or code.id in top_fused_ids
+            # 两引擎都命中的节点（requirement 与 code 都含 JWT + 登录）应排在 fused 前列
+            if result["fused"]:
+                top_fused_ids = {r.node_id for r in result["fused"][:2]}
+                assert requirement.id in top_fused_ids or code.id in top_fused_ids
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
 
     async def test_hybrid_search_respects_top_n(
         self,
@@ -501,18 +526,21 @@ class TestHybridSearch:
         pid, *_ = await _seed_three_nodes(
             db_session, graph_store, real_embedding_client, knowledge_helpers
         )
+        await db_session.commit()
 
-        result = await hybrid_search(
-            db_session,
-            query="登录",
-            embedding_client=real_embedding_client,
-            graph_store=graph_store,
-            top_k=50,
-            top_n=2,
-            filters=FilterSpec(project_id=pid),
-        )
+        try:
+            result = await hybrid_search(
+                query="登录",
+                embedding_client=real_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=2,
+                filters=FilterSpec(project_id=pid),
+            )
 
-        assert len(result["fused"]) <= 2
+            assert len(result["fused"]) <= 2
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
 
     async def test_hybrid_search_graph_independent(
         self,
@@ -538,23 +566,27 @@ class TestHybridSearch:
             properties={"created_by": "ak"},
             actor="ak",
         )
+        # hybrid_search 内部自建独立 session，种子数据（含 AGE 边）需提交后可见
+        await db_session.commit()
 
-        result = await hybrid_search(
-            db_session,
-            query="登录",
-            embedding_client=real_embedding_client,
-            graph_store=graph_store,
-            top_k=50,
-            top_n=10,
-            filters=FilterSpec(project_id=pid),
-            graph_node_id=requirement.id,
-            graph_depth=2,
-        )
+        try:
+            result = await hybrid_search(
+                query="登录",
+                embedding_client=real_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=10,
+                filters=FilterSpec(project_id=pid),
+                graph_node_id=requirement.id,
+                graph_depth=2,
+            )
 
-        # graph 字段非空（requirement 有 implements 边指向 code）
-        assert len(result["graph"]) >= 1
-        graph_ids = {r.node_id for r in result["graph"]}
-        assert code.id in graph_ids
+            # graph 字段非空（requirement 有 implements 边指向 code）
+            assert len(result["graph"]) >= 1
+            graph_ids = {r.node_id for r in result["graph"]}
+            assert code.id in graph_ids
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
 
     async def test_hybrid_search_no_graph_node_id(
         self,
@@ -567,19 +599,22 @@ class TestHybridSearch:
         pid, *_ = await _seed_three_nodes(
             db_session, graph_store, real_embedding_client, knowledge_helpers
         )
+        await db_session.commit()
 
-        result = await hybrid_search(
-            db_session,
-            query="登录",
-            embedding_client=real_embedding_client,
-            graph_store=graph_store,
-            top_k=50,
-            top_n=10,
-            filters=FilterSpec(project_id=pid),
-            graph_node_id=None,
-        )
+        try:
+            result = await hybrid_search(
+                query="登录",
+                embedding_client=real_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=10,
+                filters=FilterSpec(project_id=pid),
+                graph_node_id=None,
+            )
 
-        assert result["graph"] == []
+            assert result["graph"] == []
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
 
 
 # ============ 边界场景 ============
@@ -651,22 +686,25 @@ class TestSearchEdgeCases:
         pid, *_ = await _seed_three_nodes(
             db_session, graph_store, real_embedding_client, knowledge_helpers
         )
+        await db_session.commit()
 
-        result = await hybrid_search(
-            db_session,
-            query="完全不存在的关键词xyz123",
-            embedding_client=real_embedding_client,
-            graph_store=graph_store,
-            top_k=50,
-            top_n=10,
-            filters=FilterSpec(project_id=pid),
-        )
+        try:
+            result = await hybrid_search(
+                query="完全不存在的关键词xyz123",
+                embedding_client=real_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=10,
+                filters=FilterSpec(project_id=pid),
+            )
 
-        # 向量引擎总会返回结果（即使查询不匹配，cosine 仍计算相似度）
-        # 但全文引擎无匹配时返回空
-        assert result["fulltext"] == []
-        # fused 至少包含向量结果
-        assert isinstance(result["fused"], list)
+            # 向量引擎总会返回结果（即使查询不匹配，cosine 仍计算相似度）
+            # 但全文引擎无匹配时返回空
+            assert result["fulltext"] == []
+            # fused 至少包含向量结果
+            assert isinstance(result["fused"], list)
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
 
     async def test_filters_spec_default_values(self):
         """FilterSpec 默认值：status='approved'，exclude_deleted=True。"""

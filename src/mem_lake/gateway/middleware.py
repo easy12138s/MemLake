@@ -1,22 +1,22 @@
-"""网关中间件：Access Key 认证 + RBAC 鉴权 + 限流 + 审计 + 幂等去重。
+"""网关中间件：Access Key 认证 + RBAC 鉴权 + 限流 + 审计。
 
 对齐 PDD 3.1 限流与审计要求。FastMCP 4.0 Middleware 基类提供 hook 机制，
-本模块实现 5 个中间件，按注册顺序执行：
+本模块实现 4 个中间件，按注册顺序执行：
 
 1. AccessKeyAuthMiddleware（on_request）：提取 X-MCP-Key → 异步查 DB 认证 →
    构造 AccessToken 并设置到 request.scope["user"]，使 get_access_token() 正常工作
 2. RBACMiddleware（on_call_tool）：校验当前角色是否有权调用该工具
 3. RateLimitMiddleware（on_call_tool）：令牌桶限流，per Access Key，默认 100 QPS
-4. IdempotencyMiddleware（on_call_tool）：operation_id 去重，内存 dict + TTL 600s
-5. AuditLogMiddleware（on_call_tool）：记录工具调用审计日志
+4. AuditLogMiddleware（on_call_tool）：记录工具调用审计日志
+
+写操作幂等由 DB 层唯一实现（approval/service.py _find_by_idempotency_key，
+持久化、跨重启，无 600s 时间窗限制），不在中间件层重复。
 
 中间件拒绝调用必须 raise ToolError（FastMCP 规范），不要返回 ToolResult。
 """
 
-import asyncio
 import logging
 import time
-import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
@@ -41,9 +41,6 @@ from mem_lake.gateway.auth import (
 )
 
 logger = logging.getLogger("mem_lake.gateway.middleware")
-
-# 幂等去重缓存 TTL（秒）
-IDEMPOTENCY_TTL_SEC = 600
 
 # 限流时间窗口（秒），与 QPS 配合计算桶容量
 RATE_LIMIT_WINDOW_SEC = 1
@@ -152,6 +149,7 @@ class RateLimitMiddleware(Middleware):
     超限 raise ToolError("Rate limit exceeded")。
 
     实现：滑动窗口 + deque，窗口大小 1 秒，最大请求数 = QPS。
+    单实例内存限流为既定设计（docker compose 单实例部署，PDD 既定范围）。
     """
 
     def __init__(self, qps: int | None = None) -> None:
@@ -168,75 +166,26 @@ class RateLimitMiddleware(Middleware):
         # 限流 key：Access Key ID
         client_key = access_token.client_id or "anonymous"
         now = time.time()
-        bucket = self._buckets[client_key]
+        bucket = self._buckets.get(client_key)
 
-        # 清理窗口外的请求记录
-        while bucket and bucket[0] < now - RATE_LIMIT_WINDOW_SEC:
-            bucket.popleft()
+        # 清理窗口外的请求记录；空桶删除 key，防止 dict 长期驻留
+        if bucket is not None:
+            while bucket and bucket[0] < now - RATE_LIMIT_WINDOW_SEC:
+                bucket.popleft()
+            if not bucket:
+                del self._buckets[client_key]
+                bucket = None
 
-        if len(bucket) >= self._qps:
+        if bucket is not None and len(bucket) >= self._qps:
             raise ToolError(
                 f"限流：超过 {self._qps} QPS 限制（Access Key: {client_key[:8]}...）"
             )
 
+        # 记录本次请求（按需创建桶）
+        if bucket is None:
+            bucket = self._buckets[client_key] = deque()
         bucket.append(now)
         return await call_next(context)
-
-
-class IdempotencyMiddleware(Middleware):
-    """幂等去重中间件。
-
-    on_call_tool hook：基于 (access_key_id, tool_name, operation_id) 去重。
-    命中缓存直接返回缓存的 ToolResult，不执行 call_next。
-
-    仅对含 operation_id 参数的写工具生效（PDD 3.1）。
-    内存 dict + TTL 600s，单实例部署适用。多实例需换 Redis（TODO）。
-    """
-
-    def __init__(self, ttl_sec: int = IDEMPOTENCY_TTL_SEC) -> None:
-        self._ttl = ttl_sec
-        self._cache: dict[str, tuple[float, object]] = {}
-
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
-        # 检查是否含 operation_id 参数
-        message = context.message
-        arguments = getattr(message, "arguments", None) or {}
-        operation_id = arguments.get("operation_id")
-
-        if not operation_id:
-            # 无 operation_id，按普通调用处理
-            return await call_next(context)
-
-        access_token = get_access_token()
-        access_key_id = access_token.client_id if access_token else "anonymous"
-        tool_name = message.name
-
-        # 构造去重键
-        cache_key = f"{access_key_id}:{tool_name}:{operation_id}"
-
-        # 清理过期缓存
-        now = time.time()
-        for k in list(self._cache.keys()):
-            if now - self._cache[k][0] > self._ttl:
-                del self._cache[k]
-
-        # 命中缓存直接返回
-        if cache_key in self._cache:
-            cached_time, cached_result = self._cache[cache_key]
-            logger.info(
-                "幂等命中：key=%s, cached_at=%.0f",
-                cache_key,
-                cached_time,
-            )
-            return cached_result
-
-        # 首次执行
-        result = await call_next(context)
-
-        # 缓存结果（仅缓存成功结果，异常不缓存）
-        self._cache[cache_key] = (now, result)
-
-        return result
 
 
 class AuditLogMiddleware(Middleware):

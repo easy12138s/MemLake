@@ -22,7 +22,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.config import get_settings
-from mem_lake.knowledge.graph_store import GraphStore
+from mem_lake.knowledge.graph_store import EdgeTargetNotFoundError, GraphStore
 from mem_lake.knowledge.schema import validate_edge_type, validate_node_type
 
 # agtype 返回值类型后缀（::vertex / ::edge / ::path）
@@ -158,6 +158,9 @@ class AGEGraphStore(GraphStore):
         参见 AGE 官方文档 https://age.apache.org/age-manual/master/clauses/set.html）。
         因此将 properties dict 展开为独立 Cypher 参数，动态构建 SET 子句。
         属性键经白名单正则校验（仅字母/数字/下划线），防止 Cypher 注入。
+
+        端点校验：Cypher 末尾 RETURN r，MATCH 失败时返回 0 行，
+        抛 EdgeTargetNotFoundError（AGE 的 MATCH 失败静默跳过 CREATE，必须显式检测）。
         """
         validate_edge_type(edge_type)
 
@@ -177,8 +180,9 @@ class AGEGraphStore(GraphStore):
         )
         if set_clauses:
             cypher += f" SET {set_clauses}"
-        # 不使用 RETURN：AGE 终端 SET 子句不返回结果，匹配 (result agtype) 单列定义
-        # （AGE 文档：terminal clause requires single column definition, returns 0 rows）
+        # RETURN r 使 SET 不再是 terminal clause：MATCH 失败时返回 0 行，
+        # 据此检测 AGE 静默跳过（Cypher MATCH 失败不报错的标准行为）
+        cypher += " RETURN r"
 
         # 展开属性为独立参数（与 SET 子句中的 $key 对应）
         params: dict[str, Any] = {
@@ -188,7 +192,12 @@ class AGEGraphStore(GraphStore):
         for k, v in properties.items():
             params[k] = v
 
-        await self._exec_cypher(session, cypher, params)
+        rows = await self._exec_cypher(session, cypher, params)
+        if not rows:
+            raise EdgeTargetNotFoundError(
+                f"边端点节点在图中不存在: from_id={from_id}, to_id={to_id}, "
+                f"edge_type={edge_type}（MATCH 失败导致 CREATE 未执行）"
+            )
 
     async def neighbors(
         self,
