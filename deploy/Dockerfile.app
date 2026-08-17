@@ -1,6 +1,11 @@
-﻿# Mem Lake 应用镜像
+# Mem Lake 应用镜像
 # 基于 python:3.11-slim，安装项目依赖并启动 FastMCP HTTP 服务
 FROM python:3.11-slim
+
+# 替换为国内 Debian 镜像源（加速 apt 下载）
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+    || sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null \
+    || true
 
 # 安装 libpq5（psycopg3 binary 依赖）
 RUN apt-get update && apt-get install -y --no-install-recommends \

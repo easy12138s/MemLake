@@ -1,7 +1,7 @@
 """FastMCP 实例创建、工具注册、生命周期管理。
 
 对齐 PDD 6.1：FastMCP 4.0 实例，cache_ttl=300s + cache_scope=public，
-5 个中间件按序注册，lifespan 初始化共享资源（EmbeddingClient/GraphStore/VectorSearcher）。
+4 个中间件按序注册，lifespan 初始化共享资源（EmbeddingClient/GraphStore/VectorSearcher）。
 
 不设置 auth= 参数：AccessKeyAuthMiddleware 在 on_request hook 中直接设置
 request.scope["user"]，使 get_access_token() 正常工作（详见 gateway/middleware.py）。
@@ -20,7 +20,6 @@ from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.gateway.middleware import (
     AccessKeyAuthMiddleware,
     AuditLogMiddleware,
-    IdempotencyMiddleware,
     RateLimitMiddleware,
     RBACMiddleware,
 )
@@ -99,7 +98,7 @@ def create_mcp_server() -> FastMCP:
 
     配置：
     - cache_ttl=300s + cache_scope=public：MCP 2026-07-28 缓存特性
-    - middleware：5 个中间件按序注册（认证→鉴权→限流→幂等→审计）
+    - middleware：4 个中间件按序注册（认证→鉴权→限流→审计）
     - lifespan：初始化共享资源
     - auth 不设：AccessKeyAuthMiddleware 负责 X-MCP-Key 认证 + 设置 scope["user"]
     """
@@ -114,7 +113,6 @@ def create_mcp_server() -> FastMCP:
             AccessKeyAuthMiddleware(),
             RBACMiddleware(),
             RateLimitMiddleware(),
-            IdempotencyMiddleware(),
             AuditLogMiddleware(),
         ],
         lifespan=app_lifespan,

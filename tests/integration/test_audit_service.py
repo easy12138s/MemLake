@@ -49,14 +49,18 @@ async def test_query_by_action(db_session):
 
 
 async def test_query_pagination(db_session):
-    """写入 3 条，limit=2 offset=0 返回 2 条，offset=2 返回 1 条。"""
+    """写入 3 条，limit=2 offset=0 返回 2 条，offset=2 返回 1 条。
+
+    用唯一 actor 过滤，隔离库中已提交的历史审计行（e2e 中间件写入）。
+    """
+    actor = "pagination_probe"
     for i in range(3):
         await write_audit_log(
-            db_session, actor=f"actor_{i}", action="write", target_type="node"
+            db_session, actor=actor, action="write", target_type="node"
         )
 
-    page1 = await query_audit_logs(db_session, limit=2, offset=0)
-    page2 = await query_audit_logs(db_session, limit=2, offset=2)
+    page1 = await query_audit_logs(db_session, actor=actor, limit=2, offset=0)
+    page2 = await query_audit_logs(db_session, actor=actor, limit=2, offset=2)
     assert len(page1) == 2
     assert len(page2) == 1
 

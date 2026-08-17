@@ -11,6 +11,14 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+class EdgeTargetNotFoundError(Exception):
+    """边端点节点在图中不存在时抛出。
+
+    AGE 的 MATCH ... CREATE 在 MATCH 失败时静默跳过（Cypher 标准行为），
+    实现层必须在创建后校验结果，端点缺失时抛出本异常触发调用方事务回滚。
+    """
+
+
 class GraphStore(ABC):
     """图存储抽象基类，定义图操作原语。
 
@@ -39,7 +47,10 @@ class GraphStore(ABC):
         edge_type: str,
         properties: dict,
     ) -> None:
-        """添加边。edge_type 为关系类型，properties 携带边元数据。"""
+        """添加边。edge_type 为关系类型，properties 携带边元数据。
+
+        端点节点不存在时抛 EdgeTargetNotFoundError（禁止静默丢边）。
+        """
 
     @abstractmethod
     async def neighbors(

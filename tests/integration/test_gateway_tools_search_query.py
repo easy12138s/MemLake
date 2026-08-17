@@ -30,32 +30,131 @@ from mem_lake.knowledge.repository import (
 # ============================================================================
 
 
+async def _cleanup_project_data(session, graph_store, project_id):
+    """清理已提交的测试数据（PG 行 + AGE 顶点）。
+
+    hybrid_search 内部为每引擎创建独立 DB session，种子数据必须真实 commit
+    才对检索可见；已提交数据不随 db_session fixture 回滚，需显式清理。
+    """
+    from sqlalchemy import text as sa_text
+
+    await session.execute(
+        sa_text("DELETE FROM knowledge_node WHERE project_id = :pid"),
+        {"pid": str(project_id)},
+    )
+    await graph_store.match_pattern(
+        session,
+        "MATCH (n {project_id: $pid}) DETACH DELETE n",
+        {"pid": str(project_id)},
+    )
+    await session.commit()
+
+
 class TestHybridSearchTools:
-    """search_similar_requirements / search_code_snippets 端到端测试。"""
+    """search_similar_requirements / search_code_snippets 端到端测试。
+
+    直接验证工具底层路径 hybrid_search（node_types 过滤 + RRF 融合）。
+    fusion 每引擎独立 session 后，mock embedding 立即返回不再触发共享
+    session 并发问题；完整 MCP 协议栈调用由 tests/e2e 覆盖。
+    """
 
     async def test_search_similar_requirements_returns_fused(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
-        """search_similar_requirements 返回融合结果。
+        """Requirement 类型过滤生效：fused 含需求节点且不含代码节点。"""
+        from mem_lake.search.filters import FilterSpec
+        from mem_lake.search.fusion import hybrid_search
 
-        注：hybrid_search 内部 asyncio.gather 并行三引擎，AsyncSession 非并发安全，
-        mock embedding 立即返回会触发 session 并发问题（fusion.py 注释已说明）。
-        此处用 real_embedding_client 串行化网络 IO 避免该问题，hybrid_search 的并行
-        行为已在 M4 test_search.py 充分测试。
-        """
-        pytest.skip(
-            "hybrid_search 并行 session 与 mock embedding 不兼容，"
-            "M4 test_search.py 已覆盖融合检索逻辑"
+        project_id = uuid.uuid4()
+        req_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="登录需求",
+            content="需要登录功能",
+            properties=knowledge_helpers["Requirement"](),
+            created_by="ak_pm",
         )
+        code_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="CodeSnippet",
+            title="LoginService",
+            content="登录服务",
+            properties=knowledge_helpers["CodeSnippet"](),
+            created_by="ak_dev",
+        )
+        await db_session.commit()  # 独立 session 检索要求种子数据已提交
+
+        try:
+            result = await hybrid_search(
+                query="登录功能",
+                embedding_client=mock_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=10,
+                filters=FilterSpec(
+                    project_id=project_id, node_types=("Requirement",)
+                ),
+            )
+            fused_ids = {r.node_id for r in result["fused"]}
+            assert req_node.id in fused_ids
+            assert code_node.id not in fused_ids  # node_types 过滤生效
+        finally:
+            await _cleanup_project_data(db_session, graph_store, project_id)
 
     async def test_search_code_snippets_returns_fused(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
-        """search_code_snippets 返回融合结果。"""
-        pytest.skip(
-            "hybrid_search 并行 session 与 mock embedding 不兼容，"
-            "M4 test_search.py 已覆盖融合检索逻辑"
+        """CodeSnippet 类型过滤生效：fused 含代码节点且不含需求节点。"""
+        from mem_lake.search.filters import FilterSpec
+        from mem_lake.search.fusion import hybrid_search
+
+        project_id = uuid.uuid4()
+        req_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="登录需求",
+            content="需要登录功能",
+            properties=knowledge_helpers["Requirement"](),
+            created_by="ak_pm",
         )
+        code_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="CodeSnippet",
+            title="LoginService",
+            content="登录服务实现",
+            properties=knowledge_helpers["CodeSnippet"](),
+            created_by="ak_dev",
+        )
+        await db_session.commit()  # 独立 session 检索要求种子数据已提交
+
+        try:
+            result = await hybrid_search(
+                query="登录服务实现",
+                embedding_client=mock_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=10,
+                filters=FilterSpec(
+                    project_id=project_id, node_types=("CodeSnippet",)
+                ),
+            )
+            fused_ids = {r.node_id for r in result["fused"]}
+            assert code_node.id in fused_ids
+            assert req_node.id not in fused_ids  # node_types 过滤生效
+        finally:
+            await _cleanup_project_data(db_session, graph_store, project_id)
 
 
 # ============================================================================
@@ -149,11 +248,10 @@ class TestCheckRequirementConflicts:
     ):
         """项目内仅一个需求时无冲突。
 
-        注：check_requirement_conflicts 内部调 hybrid_search（并行 session），
-        与 mock embedding 不兼容。改为验证 conflict_hint 过滤逻辑（阈值+排除自身），
-        hybrid_search 的并行行为已在 M4 test_search.py 充分测试。
+        注：工具函数依赖 FastMCP 上下文（get_context），此处验证其过滤语义
+        （排除自身 + score >= threshold）。内容级冲突检测的权威实现在
+        approval/conflict.py detect_conflicts（test_approval_flow.py 覆盖）。
         """
-        # 此处验证 check_requirement_conflicts 的过滤逻辑（不实际调用 hybrid_search）
         # 模拟 hybrid_search 返回包含自身的结果
         from mem_lake.gateway.tools.search_tools import _to_search_item_output
         from mem_lake.search.fusion import SearchResult

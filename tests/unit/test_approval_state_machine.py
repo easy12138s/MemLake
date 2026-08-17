@@ -695,14 +695,6 @@ class TestDetectConflictsSignature:
         """detect_conflicts 为可调用对象。"""
         assert callable(detect_conflicts)
 
-    def test_detect_conflicts_default_threshold(self):
-        """detect_conflicts 默认 similarity_threshold=0.85（bge-large-zh-v1.5 社区默认值）。"""
-        import inspect
-
-        sig = inspect.signature(detect_conflicts)
-        threshold_param = sig.parameters["similarity_threshold"]
-        assert threshold_param.default == 0.85
-
     def test_detect_conflicts_default_top_k(self):
         """detect_conflicts 默认 top_k=5。"""
         import inspect
@@ -718,3 +710,16 @@ class TestDetectConflictsSignature:
         sig = inspect.signature(detect_conflicts)
         exclude_param = sig.parameters["exclude_node_id"]
         assert exclude_param.default is None
+
+    def test_detect_conflicts_content_based_params(self):
+        """detect_conflicts 以 content/properties 为检测输入（内容级检测契约）。
+
+        阈值为模块常量 CONFLICT_SIMILARITY_THRESHOLD（0.92），
+        不再暴露 similarity_threshold 可调参数（统一三层实现）。
+        """
+        import inspect
+
+        sig = inspect.signature(detect_conflicts)
+        assert "content" in sig.parameters
+        assert "properties" in sig.parameters
+        assert "similarity_threshold" not in sig.parameters
