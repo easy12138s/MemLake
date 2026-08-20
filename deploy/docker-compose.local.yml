@@ -1,0 +1,23 @@
+# 本地已存在模型时复用，跳过镜像构建期下载（可选）
+#
+# 适用场景：宿主机已下载过 bge 模型（默认位于仓库内
+# models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master）。
+# 该文件不会被 `docker compose up` 自动加载，需显式叠加：
+#
+#   cd deploy
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# 若宿主机没有该模型目录，请勿使用本文件，否则容器会因加载不到模型而启动失败。
+# 普通首次部署直接用 `docker compose up -d --build` 即可（构建期自动下载模型）。
+
+services:
+  embedding:
+    build:
+      args:
+        DOWNLOAD_MODEL: "false"
+    environment:
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      HF_HOME: /tmp/hf
+    volumes:
+      - ../models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master:/models/bge-large-zh-v1.5:ro

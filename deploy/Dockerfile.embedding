@@ -2,12 +2,23 @@
 # 基于 Python slim，内置 sentence-transformers + bge-large-zh-v1.5 模型
 FROM python:3.11-slim
 
-# 使用清华 PyPI 镜像加速（模型在运行时从宿主机挂载，不在构建期下载）
+# 使用清华 PyPI 镜像加速
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
     && pip install --no-cache-dir \
     sentence-transformers>=3.0.0 \
     fastapi>=0.115.0 \
-    uvicorn[standard]>=0.30.0
+    uvicorn[standard]>=0.30.0 \
+    modelscope
+
+# 默认在构建期从 modelscope 下载模型并软链到 MODEL_PATH，保证「克隆即部署」可用。
+# 若宿主机已存在本地模型（如仓库内 models/ 目录），可传 DOWNLOAD_MODEL=false 跳过下载，
+# 并用 docker-compose.local.yml 将本地模型挂载进容器（见部署文档）。
+ARG DOWNLOAD_MODEL=true
+RUN if [ "$DOWNLOAD_MODEL" = "true" ]; then \
+      python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-large-zh-v1.5', cache_dir='/models')" \
+      && ln -s /models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master /models/bge-large-zh-v1.5 \
+      && rm -f /models/bge-large-zh-v1.5/pytorch_model.bin; \
+    fi
 
 WORKDIR /app
 COPY embedding_server.py /app/
