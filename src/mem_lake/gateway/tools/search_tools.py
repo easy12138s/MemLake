@@ -57,7 +57,7 @@ class SearchItemOutput(BaseModel):
     title: str = Field(description="节点标题")
     content: str = Field(description="节点摘要（前 200 字符）")
     node_type: str = Field(description="节点类型")
-    score: float | None = Field(description="分数(fused=RRF排名分/vector=cosine/fulltext=ts_rank/graph=None)")
+    score: float | None = Field(description="分数(fused=向量余弦分 0~1/vector=cosine/fulltext=ts_rank/graph=None)")
     vector_score: float | None = Field(
         default=None,
         description="向量余弦相似度（0~1）；fused 结果附带其原始向量分，便于判相关性",
@@ -164,17 +164,17 @@ def register_search_tools(mcp: FastMCP) -> None:
             description="标签匹配语义：all=AND（默认，需包含所有标签），any=OR（命中任一标签）",
         ),
         min_score: float | None = Field(
-            default=None,
-            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；None 表示不过滤（返回相对 top_n）",
+            default=0.5,
+            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；传 None 可关闭默认阈值（返回相对 top_n）",
         ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索相似需求（同项目内 Requirement 类型）。
 
         PM/Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
-        注意：返回的是相对 top_n（按相关性排序的前 N 条），并非绝对高相关保证；
-        可用 min_score 滤除低相似度噪声。fused 结果的 score 为 RRF 排名分（较小），
-        vector_score 为原始向量余弦分，可据此判相关性。
+        注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
+        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）。
+        fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         """
         try:
             validate_project_access(project_id)
@@ -203,17 +203,17 @@ def register_search_tools(mcp: FastMCP) -> None:
             description="标签匹配语义：all=AND（默认，需包含所有标签），any=OR（命中任一标签）",
         ),
         min_score: float | None = Field(
-            default=None,
-            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；None 表示不过滤（返回相对 top_n）",
+            default=0.5,
+            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；传 None 可关闭默认阈值（返回相对 top_n）",
         ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索代码片段（同项目内 CodeSnippet 类型）。
 
         Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
-        注意：返回的是相对 top_n（按相关性排序的前 N 条），并非绝对高相关保证；
-        可用 min_score 滤除低相似度噪声。fused 结果的 score 为 RRF 排名分（较小），
-        vector_score 为原始向量余弦分，可据此判相关性。
+        注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
+        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）。
+        fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         """
         try:
             validate_project_access(project_id)
@@ -433,8 +433,12 @@ async def _run_hybrid_search(
 
     fused_raw = result.get("fused", [])
     if min_score is not None:
+        # 仅对"有向量分"的节点按 min_score 过滤；无向量分的全文命中节点予以保留
         fused_raw = [
-            r for r in fused_raw if vector_score_map.get(r.node_id, -1) >= min_score
+            r
+            for r in fused_raw
+            if r.node_id not in vector_score_map
+            or vector_score_map.get(r.node_id, -1) >= min_score
         ]
 
     return HybridSearchOutput(
