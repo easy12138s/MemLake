@@ -376,3 +376,93 @@ class TestContentLengthLimit:
                 relations=[],
                 created_by="ak",
             )
+
+
+class TestBuildDevItemsFreeStanding:
+    """requirement_id 为空（游离知识点）的 items 构造测试。"""
+
+    def _artifacts(self):
+        from mem_lake.gateway.tools.write_tools import (
+            ArtifactsInput,
+            CodeSnippetInput,
+            PitfallInput,
+            SolutionInput,
+            DesignIntentInput,
+        )
+
+        return ArtifactsInput(
+            code_snippets=[
+                CodeSnippetInput(
+                    ref="Code1",
+                    title="c",
+                    content="c",
+                    properties={"name": "n", "type": "function", "responsibility": "r", "file_path": "f"},
+                )
+            ],
+            solutions=[
+                SolutionInput(ref="Sol1", title="s", content="c",
+                              properties={"approach": "a", "alternatives": "b"})
+            ],
+            design_intents=[
+                DesignIntentInput(ref="Intent1", title="i", content="c",
+                                  properties={"rationale": "r", "trade_offs": "t"})
+            ],
+            pitfalls=[
+                PitfallInput(ref="Pit1", title="p", content="c",
+                             properties={"symptom": "s", "root_cause": "rc", "solution": "sol", "severity": "P1"})
+            ],
+        )
+
+    def test_free_standing_links_to_profile(self):
+        """requirement_id=None 且 profile_id 给定：每个产物 1 条 references 边，无 implements 边。"""
+        profile_id = uuid.uuid4()
+        items = _build_dev_items(
+            project_id=uuid.uuid4(),
+            requirement_id=None,
+            artifacts=self._artifacts(),
+            relations=[],
+            created_by="ak",
+            profile_id=profile_id,
+        )
+        # 4 nodes + 4 profile references edges
+        assert len(items) == 8
+        node_refs = {i["payload"]["ref"] for i in items if i["item_type"] == "node"}
+        assert node_refs == {"Code1", "Sol1", "Intent1", "Pit1"}
+        edges = [i for i in items if i["item_type"] == "edge"]
+        assert all(e["payload"]["edge_type"] == "references" for e in edges)
+        assert all(e["payload"]["from_ref"] == str(profile_id) for e in edges)
+        assert {e["payload"]["to_ref"] for e in edges} == node_refs
+        # 游离提交不得生成 implements 边
+        assert not any(e["payload"]["edge_type"] == "implements" for e in edges)
+
+    def test_free_standing_no_profile_no_edges(self):
+        """requirement_id=None 且 profile_id=None：仅 4 node，无任意边。"""
+        items = _build_dev_items(
+            project_id=uuid.uuid4(),
+            requirement_id=None,
+            artifacts=self._artifacts(),
+            relations=[],
+            created_by="ak",
+            profile_id=None,
+        )
+        assert len(items) == 4
+        assert all(i["item_type"] == "node" for i in items)
+
+    def test_requirement_present_still_builds_implements(self):
+        """requirement_id 给定时行为不变：CodeSnippet 自动 implements，且不挂 profile。"""
+        req_id = uuid.uuid4()
+        items = _build_dev_items(
+            project_id=uuid.uuid4(),
+            requirement_id=req_id,
+            artifacts=self._artifacts(),
+            relations=[],
+            created_by="ak",
+            profile_id=None,
+        )
+        # 4 nodes + 1 implements (仅 CodeSnippet)
+        assert len(items) == 5
+        edge_types = [i["payload"]["edge_type"] for i in items if i["item_type"] == "edge"]
+        assert edge_types.count("implements") == 1
+        impl = next(i for i in items if i["item_type"] == "edge" and i["payload"]["edge_type"] == "implements")
+        assert impl["payload"]["from_ref"] == str(req_id)
+        assert impl["payload"]["to_ref"] == "Code1"
