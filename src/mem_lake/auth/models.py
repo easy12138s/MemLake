@@ -60,6 +60,19 @@ class AccessKey(Base):
     )
 
 
+def generate_secret() -> str:
+    """生成 Access Key 随机密钥片段（secret 部分）。
+
+    用于新建与轮换：轮换时保留 row id、仅替换 secret 并重算 key_hash。
+    """
+    return secrets.token_urlsafe(24)[:32]
+
+
+def build_plaintext(key_id: uuid.UUID, secret: str) -> str:
+    """由 row id 与 secret 拼装 Access Key 明文（ak_{id_hex}.{secret}）。"""
+    return f"{ACCESS_KEY_PREFIX}{key_id.hex}.{secret}"
+
+
 def generate_access_key() -> tuple[uuid.UUID, str]:
     """生成 Access Key。
 
@@ -67,8 +80,8 @@ def generate_access_key() -> tuple[uuid.UUID, str]:
     调用方存 id + hash_access_key(plaintext)，明文仅返回一次。
     """
     key_id = uuid.uuid4()
-    secret = secrets.token_urlsafe(24)[:32]
-    plaintext = f"{ACCESS_KEY_PREFIX}{key_id.hex}.{secret}"
+    secret = generate_secret()
+    plaintext = build_plaintext(key_id, secret)
     return key_id, plaintext
 
 

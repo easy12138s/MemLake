@@ -16,13 +16,15 @@ import pytest
 
 from mem_lake.auth.service import (
     AccessKeyNotFoundError,
+    AccessKeyRevokedError,
     authenticate_access_key,
     create_access_key,
     get_access_key_by_id,
     list_access_keys,
     revoke_access_key,
+    rotate_access_key,
+    update_access_key_scope,
 )
-
 
 # ============================================================================
 # create_access_key 端到端
@@ -275,3 +277,118 @@ class TestAccessKeyLifecycle:
         await revoke_access_key(db_session, key_id=key_id, actor="system")
         result = await authenticate_access_key(db_session, plaintext)
         assert result is None
+
+
+# ============================================================================
+# rotate_access_key 端到端
+# ============================================================================
+
+
+class TestRotateAccessKey:
+    """rotate_access_key 集成测试。"""
+
+    async def test_rotate_returns_new_plaintext_and_invalidates_old(self, db_session):
+        """轮换后返回新明文，旧明文认证失败、新明文认证成功。"""
+        key_id, old_plaintext = await create_access_key(
+            db_session, role="dev", project_scope=[uuid.uuid4()], created_by="admin_ak"
+        )
+        # 旧明文先认证通过
+        assert (await authenticate_access_key(db_session, old_plaintext)) is not None
+
+        ak, new_plaintext = await rotate_access_key(db_session, key_id=key_id, actor="admin_ak")
+        assert ak.id == key_id
+        assert new_plaintext.startswith("ak_")
+        assert new_plaintext != old_plaintext
+        # 解析出的 row id 不变（保留原 id）
+        from mem_lake.auth.models import parse_key_id
+
+        assert parse_key_id(new_plaintext) == key_id
+
+        # 旧明文立即失效，新明文可用
+        assert (await authenticate_access_key(db_session, old_plaintext)) is None
+        new_auth = await authenticate_access_key(db_session, new_plaintext)
+        assert new_auth is not None
+        assert new_auth["role"] == "dev"
+
+    async def test_rotate_revoked_raises(self, db_session):
+        """已吊销的 Key 不可轮换。"""
+        key_id, _ = await create_access_key(
+            db_session, role="dev", project_scope=[], created_by="admin_ak"
+        )
+        await revoke_access_key(db_session, key_id=key_id, actor="admin_ak")
+        with pytest.raises(AccessKeyRevokedError):
+            await rotate_access_key(db_session, key_id=key_id, actor="admin_ak")
+
+    async def test_rotate_nonexistent_raises(self, db_session):
+        """不存在的 Key 轮换抛 AccessKeyNotFoundError。"""
+        with pytest.raises(AccessKeyNotFoundError):
+            await rotate_access_key(db_session, key_id=uuid.uuid4(), actor="admin_ak")
+
+
+# ============================================================================
+# update_access_key_scope 端到端
+# ============================================================================
+
+
+class TestUpdateAccessKeyScope:
+    """update_access_key_scope 集成测试。"""
+
+    async def test_update_explicit_key_ids(self, db_session):
+        """显式指定 key_ids 仅更新这些 Key 的 project_scope。"""
+        pid_a = uuid.uuid4()
+        pid_b = uuid.uuid4()
+        k1, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
+        k2, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
+
+        updated = await update_access_key_scope(
+            db_session,
+            project_scope=[pid_a, pid_b],
+            key_ids=[k1],
+            actor="admin_ak",
+        )
+        assert len(updated) == 1
+        assert updated[0].id == k1
+        assert set(updated[0].project_scope) == {str(pid_a), str(pid_b)}
+
+        # k2 不受影响
+        k2_db = await get_access_key_by_id(db_session, k2)
+        assert k2_db.project_scope == []
+
+    async def test_update_by_role_filter(self, db_session):
+        """role_filter 批量更新该角色全部 Key（含既有行，断言覆盖本次创建的 Key）。"""
+        pid = uuid.uuid4()
+        d1, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
+        d2, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
+        pm_key, _ = await create_access_key(db_session, role="pm", project_scope=[], created_by="admin_ak")
+
+        updated = await update_access_key_scope(
+            db_session, project_scope=[pid], role_filter="dev", actor="admin_ak"
+        )
+        updated_ids = {u.id for u in updated}
+        # 本次创建的 dev Key 必须被更新，pm Key 必须不被更新
+        assert {d1, d2}.issubset(updated_ids)
+        assert pm_key not in updated_ids
+        for u in updated:
+            if u.id in {d1, d2}:
+                assert u.project_scope == [str(pid)]
+
+    async def test_update_grant_all_projects(self, db_session):
+        """grant_all_projects 更新全部 Key（空 scope = 不受限）。"""
+        d1, _ = await create_access_key(db_session, role="dev", project_scope=[uuid.uuid4()], created_by="admin_ak")
+        p1, _ = await create_access_key(db_session, role="pm", project_scope=[uuid.uuid4()], created_by="admin_ak")
+
+        updated = await update_access_key_scope(
+            db_session, project_scope=[], grant_all_projects=True, actor="admin_ak"
+        )
+        updated_ids = {u.id for u in updated}
+        assert {d1, p1}.issubset(updated_ids)
+        for u in updated:
+            if u.id in {d1, p1}:
+                assert u.project_scope == []
+
+    async def test_update_no_target_returns_empty(self, db_session):
+        """未指定任何定位方式时返回空列表（不改任何 Key）。"""
+        updated = await update_access_key_scope(
+            db_session, project_scope=[uuid.uuid4()], actor="admin_ak"
+        )
+        assert updated == []

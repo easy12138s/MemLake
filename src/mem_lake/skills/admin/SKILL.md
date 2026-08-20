@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, manage_access_key, manage_project_profile."
-version: 1.1.2
+version: 1.1.3
 ---
 
 # Admin Skills（管理员）
@@ -112,31 +112,43 @@ version: 1.1.2
 `reviewed_by` 由网关自动填充，无需传入。
 返回：`ApprovalResultOutput`（batch_id, status="rejected"）
 
-### manage_access_key — 创建/吊销/查看 Access Key
+### manage_access_key — 创建/吊销/查看/改范围/轮换 Access Key
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| action | str | 是 | `create` / `revoke` / `list` |
+| action | str | 是 | `create` / `revoke` / `list` / `update_scope` / `rotate` |
 | role | str | create 时必填 | 绑定角色：`admin` / `pm` / `dev` |
-| project_scope | list[UUID] | create 时必填 | 项目范围限制（admin 传空列表 `[]` 表示不受限）|
-| key_id | UUID | revoke 时必填 | 要吊销的 key_id |
+| project_scope | list[UUID] | create / update_scope 时必填 | 项目范围限制（admin 传空列表 `[]` 表示不受限）；update_scope 时为新的项目范围 |
+| key_id | UUID | revoke / rotate 时必填 | 目标 Access Key ID |
 | status_filter | str | list 时可选 | 按状态过滤：`active` / `revoked` |
+| key_ids | list[UUID] | update_scope 时可选 | 显式指定一个或多个目标 Key ID |
+| role_filter | str | update_scope 时可选 | 按角色批量授权（如 `"dev"` → 所有 dev Key）|
+| grant_all_projects | bool | update_scope 时可选 | `true` 时一键将全部 Key 授权为不受限（配合空 project_scope）|
 
-返回：create 时返回 `key_id` + `plaintext`（明文仅此一次，需安全保存）；revoke 返回 `revoked_key_id`；list 返回 `listed` 密钥列表（含 role / project_scope / status / created_at）。
-注：当前**没有** `expires_in_days` 参数，密钥默认长期有效。
+返回：
+- `create`：返回 `created.key_id` + `created.plaintext`（明文仅此一次，需安全保存）
+- `revoke`：返回 `revoked_key_id`
+- `list`：返回 `listed` 密钥列表（含 role / project_scope / status / created_at）
+- `update_scope`：返回 `scoped` 受影响 Key 列表（同 `listed` 结构）；未指定任何定位方式时返回空列表（空操作）
+- `rotate`：返回 `rotated.key_id` + `rotated.plaintext`（新明文仅此一次，旧明文立即失效）
+
+`update_scope` 三种定位方式优先级：`key_ids` > `role_filter` > `grant_all_projects`。
+注：当前**没有** `expires_in_days` 参数，密钥默认长期有效；轮换（rotate）可主动作废旧密钥。
 
 ### manage_project_profile — 直接写入项目画像（不走审批）
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | 是 | 项目 ID |
+| project_id | UUID | create 时可省略 | 项目 ID；省略时服务端自动生成新项目 ID 并通过出参 `project_id` 返回 |
 | action | str | 是 | `create` / `update` |
 | profile | dict | 是 | 画像内容：title, content, properties（必填 name/description/tech_stack/architecture 等；可选 work_dir/团队/repo）, tags |
 | node_id | UUID | update 时必填 | 现有 ProjectProfile 节点 ID |
 
-返回：`ManageProjectProfileOutput`（node_id, action, status="approved", version）
+返回：`ManageProjectProfileOutput`（**project_id**, node_id, action, status="approved", version）
 
 特殊：admin 专属，直接写入 ProjectProfile 节点，状态直接 approved，不产生审批批次。
+`project_id` 在 create 时若省略，服务端生成并返回，调用方无需预先自行生成 UUID；
+`get_project_info` 列表中的 `name` 优先取 `properties.name`（缺省回退画像 title）。
 `work_dir` / `repo` 为可选元数据，登记后 `get_project_info` 会回显，用于自证隔离与定位。
 
 ### get_project_info — 枚举/查询项目画像（三角色共享）
@@ -200,21 +212,36 @@ manage_access_key(action="create", role="pm", project_scope=[project_uuid])
 # 成员离职，吊销密钥
 manage_access_key(action="list")  → 找到对应 key_id
 manage_access_key(action="revoke", key_id="...")
+
+# 动态改范围：把所有 dev Key 授权到新项目
+manage_access_key(action="update_scope", project_scope=[new_project_uuid], role_filter="dev")
+
+# 一键全项目：所有 Key 不受限
+manage_access_key(action="update_scope", project_scope=[], grant_all_projects=true)
+
+# 轮换某 Key 密钥（旧明文立即失效，新明文仅返回一次）
+manage_access_key(action="rotate", key_id="...")
 ```
 
 ### 场景四：项目画像维护
 
 ```
-# 新项目接入，创建画像
+# 新项目接入，创建画像（不传 project_id，由服务端自动生成并返回）
 manage_project_profile(
-    project_id=uuid,
     action="create",
     profile={
-        "tech_stack": ["Python", "FastAPI", "PostgreSQL"],
-        "conventions": ["使用 async/await", "pytest 测试"],
-        "domain": "内部工具"
+        "title": "xxx 服务",
+        "content": "...",
+        "properties": {
+            "name": "xxx 服务",
+            "description": "...",
+            "tech_stack": ["Python", "FastAPI", "PostgreSQL"],
+            "architecture": "monolith"
+        },
+        "tags": []
     }
 )
+# 出参 project_id 即服务端生成的项目 ID，后续需求/产物提交复用它
 ```
 
 ## 冲突检测机制
@@ -273,6 +300,10 @@ manage_project_profile(
 5. **manage_project_profile 是直接写入**：不走审批流，不产生 batch_id，状态直接 approved。这是 admin 专属权限，PM/Dev 无权调用。
 
 6. **冲突检测的硬判定**：相同关键标识字段（如相同 requirement_id）一律判为重复冲突并升级人工审批，**不依赖内容相似度**（L0 硬判定）。若人类 admin 通过 `review_batch_detail` 确认确为重复，应手动 `review_reject` 并说明原因；若确认无冲突，可手动 `review_approve`。
+
+7. **rotate 轮换密钥**：`manage_access_key(action="rotate")` 返回的 `plaintext` 是新明文，仅返回一次，旧明文立即失效。用于密钥疑似泄露时主动作废，无需吊销重建（Key ID 不变）。
+
+8. **update_scope 改范围而非轮换**：仅调整 Key 的 `project_scope`（单/多个 key、按角色批量、或 `grant_all_projects` 一键全项目），不影响密钥明文本身；若要作废密钥请用 `rotate` 或 `revoke`。三者均未指定时为空操作（返回空列表）。
 
 ## 示例
 

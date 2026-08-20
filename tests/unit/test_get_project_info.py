@@ -53,6 +53,25 @@ def test_to_project_info_include_profile():
     assert info.profile == {"work_dir": "/a"}
 
 
+def test_to_project_info_name_from_properties():
+    """name 优先取 properties.name，缺省回退 node.title。"""
+    n = FakeNode(
+        uuid.uuid4(),
+        "TitleFallback",
+        "desc",
+        {"name": "BizName", "work_dir": "/a"},
+    )
+    info = _to_project_info(n)
+    assert info.name == "BizName"
+
+
+def test_to_project_info_name_fallback_to_title():
+    """properties 无 name 时回退 node.title。"""
+    n = FakeNode(uuid.uuid4(), "OnlyTitle", "desc", {"work_dir": "/a"})
+    info = _to_project_info(n)
+    assert info.name == "OnlyTitle"
+
+
 def test_build_scope_meta_admin():
     m = _build_scope_meta(True, [], [1, 2, 3])
     assert m.scope_type == "all"

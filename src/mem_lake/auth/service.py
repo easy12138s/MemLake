@@ -18,11 +18,14 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from mem_lake.audit.service import write_audit_log
 from mem_lake.auth.models import (
     AccessKey,
+    build_plaintext,
     generate_access_key,
+    generate_secret,
     hash_access_key,
     parse_key_id,
     verify_access_key,
@@ -195,5 +198,129 @@ async def list_access_keys(
         stmt = stmt.where(AccessKey.status == status)
 
     stmt = stmt.order_by(AccessKey.created_at.desc())
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def update_access_key_scope(
+    session: AsyncSession,
+    *,
+    project_scope: list[uuid.UUID],
+    key_ids: list[uuid.UUID] | None = None,
+    role_filter: str | None = None,
+    grant_all_projects: bool = False,
+    actor: str = "system",
+) -> list[AccessKey]:
+    """动态更新 Access Key 的项目范围（project_scope）。
+
+    定位目标 Key（三选一，优先级 key_ids > role_filter > grant_all_projects）：
+    - key_ids：显式指定一个或多个 Key
+    - role_filter：按角色批量（如 "dev" → 所有 dev Key）
+    - grant_all_projects：全部 Key（用于「一键全项目」授权）
+
+    未指定任何定位方式时抛 ValueError。project_scope 为新的项目 ID 列表
+    （空列表 = 不受限，语义同 admin 全项目）。仅改 project_scope，不动 role/hash/status。
+
+    返回受影响、且重新查回的 AccessKey 列表（key_hash 已 defer）。
+
+    不 commit。
+    """
+    target_ids = await _resolve_scope_targets(
+        session, key_ids, role_filter, grant_all_projects
+    )
+    if not target_ids:
+        return []
+
+    scope = [str(pid) for pid in project_scope]
+    await session.execute(
+        update(AccessKey)
+        .where(AccessKey.id.in_(target_ids))
+        .values(project_scope=scope)
+    )
+
+    # 重新查回（defer key_hash）用于出参，确保返回最新 project_scope
+    refreshed = await session.execute(
+        select(AccessKey)
+        .options(defer(AccessKey.key_hash))
+        .where(AccessKey.id.in_(target_ids))
+        .order_by(AccessKey.created_at.desc())
+    )
+    updated = list(refreshed.scalars().all())
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="update_scope",
+        target_type="access_key",
+        detail={
+            "target_count": len(updated),
+            "key_ids": [str(i) for i in target_ids],
+            "role_filter": role_filter,
+            "grant_all_projects": grant_all_projects,
+            "project_scope": scope,
+        },
+    )
+    return updated
+
+
+async def rotate_access_key(
+    session: AsyncSession,
+    *,
+    key_id: uuid.UUID,
+    actor: str = "system",
+) -> tuple[AccessKey, str]:
+    """轮换 Access Key 密钥（保留 row id，旧明文立即失效）。
+
+    流程：
+    1. 按 id 查 Key，不存在抛 AccessKeyNotFoundError
+    2. 已吊销抛 AccessKeyRevokedError（不可轮换）
+    3. 生成新 secret，拼装新明文（ak_{id_hex}.{new_secret}），重算 key_hash
+    4. 更新行 key_hash，旧明文因 hash 不匹配立即失效
+
+    返回 (access_key, plaintext)，明文仅此一次返回，调用方负责安全保存。
+
+    不 commit。
+    """
+    access_key = await get_access_key_by_id(session, key_id)
+    if access_key is None:
+        raise AccessKeyNotFoundError(f"Access Key 不存在: {key_id}")
+    if access_key.status != "active":
+        raise AccessKeyRevokedError(f"已吊销的 Access Key 不可轮换: {key_id}")
+
+    secret = generate_secret()
+    plaintext = build_plaintext(access_key.id, secret)
+    access_key.key_hash = hash_access_key(plaintext)
+    await session.flush()
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="rotate",
+        target_type="access_key",
+        target_id=key_id,
+    )
+    return access_key, plaintext
+
+
+async def _resolve_scope_targets(
+    session: AsyncSession,
+    key_ids: list[uuid.UUID] | None,
+    role_filter: str | None,
+    grant_all_projects: bool,
+) -> list[uuid.UUID]:
+    """解析 update_access_key_scope 的目标 Key ID 列表。
+
+    key_ids 优先；其次 role_filter（按角色查全部）；再次 grant_all_projects
+    （全部 Key）；都为空返回空列表（调用方据此视为非法入参）。
+    """
+    if key_ids:
+        return [uuid.UUID(str(k)) for k in key_ids]
+    if role_filter is None and not grant_all_projects:
+        # 未指定任何定位方式：视为非法入参，返回空（调用方据此返回 []）
+        return []
+    stmt = select(AccessKey.id)
+    if role_filter is not None:
+        stmt = stmt.where(AccessKey.role == role_filter)
+    # grant_all_projects=True 且不带 role_filter：不加 role 过滤 → 全部 Key
     result = await session.execute(stmt)
     return list(result.scalars().all())

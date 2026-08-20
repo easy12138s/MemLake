@@ -27,6 +27,8 @@ from mem_lake.auth.service import (
     create_access_key,
     list_access_keys,
     revoke_access_key,
+    rotate_access_key,
+    update_access_key_scope,
 )
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
@@ -79,10 +81,16 @@ class CreateAccessKeyOutput(BaseModel):
 class ManageAccessKeyOutput(BaseModel):
     """manage_access_key 工具出参。"""
 
-    action: str = Field(description="操作类型：create/revoke/list")
+    action: str = Field(description="操作类型：create/revoke/list/update_scope/rotate")
     created: CreateAccessKeyOutput | None = Field(default=None, description="create 结果")
     revoked_key_id: uuid.UUID | None = Field(default=None, description="revoke 结果")
     listed: list[AccessKeyOutput] | None = Field(default=None, description="list 结果")
+    scoped: list[AccessKeyOutput] | None = Field(
+        default=None, description="update_scope 结果（受影响 Key 列表）"
+    )
+    rotated: CreateAccessKeyOutput | None = Field(
+        default=None, description="rotate 结果（含新明文，仅返回一次）"
+    )
 
 
 # ============================================================================
@@ -114,10 +122,22 @@ class ProjectProfileInput(BaseModel):
 class ManageProjectProfileOutput(BaseModel):
     """manage_project_profile 工具出参。"""
 
+    project_id: uuid.UUID = Field(
+        description="归属项目 ID（create 时未传则服务端自动生成并返回）"
+    )
     node_id: uuid.UUID = Field(description="节点 ID")
     action: str = Field(description="操作类型：create/update")
     status: str = Field(description="节点状态：approved（直接审批豁免）")
     version: int = Field(description="版本号")
+
+
+def _resolve_profile_id(project_id: uuid.UUID | None) -> uuid.UUID:
+    """解析 ProjectProfile 归属项目 ID。
+
+    未传 project_id 时服务端自动生成新的项目 ID，便于「先建项目画像、再围绕该项目
+    沉淀需求/产物」的入门流程，避免调用方先自行生成 UUID。
+    """
+    return project_id or uuid.uuid4()
 
 
 class ReindexOutput(BaseModel):
@@ -138,7 +158,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def manage_access_key(
-        action: Literal["create", "revoke", "list"] = Field(
+        action: Literal["create", "revoke", "list", "update_scope", "rotate"] = Field(
             description="操作类型"
         ),
         role: str | None = Field(
@@ -146,20 +166,43 @@ def register_manage_tools(mcp: FastMCP) -> None:
         ),
         project_scope: list[uuid.UUID] | None = Field(
             default=None,
-            description="create 时指定项目范围（admin 为空列表表示不受限）",
+            description=(
+                "create 时指定初始项目范围（admin 为空列表表示不受限）；"
+                "update_scope 时指定新的项目范围"
+            ),
         ),
         key_id: uuid.UUID | None = Field(
-            default=None, description="revoke 时指定 Access Key ID"
+            default=None, description="revoke / rotate 时指定 Access Key ID"
         ),
         status_filter: str | None = Field(
             default=None, description="list 时按状态过滤：active/revoked"
         ),
+        key_ids: list[uuid.UUID] | None = Field(
+            default=None,
+            description="update_scope 时显式指定一个或多个目标 Key ID",
+        ),
+        role_filter: str | None = Field(
+            default=None,
+            description="update_scope 时按角色批量授权（如 'dev' → 所有 dev Key）",
+        ),
+        grant_all_projects: bool = Field(
+            default=False,
+            description="update_scope 时一键将全部 Key 授权为不受限（project_scope=[]）",
+        ),
     ) -> ManageAccessKeyOutput:
-        """管理 Access Key（创建/吊销/查看），指定角色与项目范围。
+        """管理 Access Key（创建/吊销/查看/改范围/轮换），指定角色与项目范围。
 
-        Admin 工具。create 返回明文 Access Key（仅此一次，调用方负责安全保存）。
-        role 决定可调用的工具集（admin 全部/pm 需求相关/dev 产物相关）。
-        project_scope 限定 pm/dev 可访问的项目（admin 为空列表表示不受限）。
+        Admin 工具。
+        - create：创建 Key，返回明文（仅此一次，调用方负责安全保存）。role 决定工具集，
+          project_scope 限定 pm/dev 可访问项目（admin 为空列表表示不受限）。
+        - revoke：吊销指定 key_id 的 Key（status=revoked）。
+        - list：按角色/状态查看 Key 列表。
+        - update_scope：动态修改 Key 的项目范围，支持三种定位（优先级
+          key_ids > role_filter > grant_all_projects）：显式指定多个 Key / 按角色批量 /
+          一键全项目（grant_all_projects 时 project_scope 留空表示不受限）。
+          三者均省略时为空操作（返回空列表，不改任何 Key）。
+        - rotate：轮换指定 key_id 的 Key 密钥（保留 Key ID，旧明文立即失效），
+          返回新明文（仅此一次）。
         """
         try:
             key_id_actor = get_current_key_id()
@@ -203,6 +246,38 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         action="list",
                         listed=[_to_access_key_output(k) for k in keys],
                     )
+                elif action == "update_scope":
+                    if project_scope is None:
+                        raise ValueError(
+                            "update_scope 操作必须指定 project_scope（新的项目范围）"
+                        )
+                    updated = await update_access_key_scope(
+                        session,
+                        project_scope=project_scope,
+                        key_ids=key_ids,
+                        role_filter=role_filter,
+                        grant_all_projects=grant_all_projects,
+                        actor=key_id_actor,
+                    )
+                    return ManageAccessKeyOutput(
+                        action="update_scope",
+                        scoped=[_to_access_key_output(k) for k in updated],
+                    )
+                elif action == "rotate":
+                    if not key_id:
+                        raise ValueError("rotate 操作必须指定 key_id")
+                    ak, plaintext = await rotate_access_key(
+                        session, key_id=key_id, actor=key_id_actor
+                    )
+                    return ManageAccessKeyOutput(
+                        action="rotate",
+                        rotated=CreateAccessKeyOutput(
+                            key_id=ak.id,
+                            plaintext=plaintext,
+                            role=ak.role,
+                            project_scope=ak.project_scope or [],
+                        ),
+                    )
                 else:
                     raise ValueError(f"未知 action: {action}")
         except (AccessKeyNotFoundError, ValueError, Exception) as e:
@@ -210,9 +285,15 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def manage_project_profile(
-        project_id: uuid.UUID = Field(description="归属项目 ID"),
         action: Literal["create", "update"] = Field(description="操作类型"),
         profile: ProjectProfileInput = Field(description="项目画像内容"),
+        project_id: uuid.UUID | None = Field(
+            default=None,
+            description=(
+                "归属项目 ID。create 时可省略，省略时服务端自动生成并返回"
+                "（project_id 出参）；update 时必填（与既有 ProjectProfile 同项目）"
+            ),
+        ),
         node_id: uuid.UUID | None = Field(
             default=None, description="update 时指定现有 ProjectProfile 节点 ID"
         ),
@@ -221,9 +302,14 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
         Admin 工具。ProjectProfile 为项目级元信息（技术栈/架构/约定/团队），
         admin 直接维护无需审批。create 新建节点，update 更新已有节点（需传 node_id）。
+
+        入门体验优化：create 时若未传 project_id，服务端自动生成新项目 ID
+        并通过出参 project_id 返回，调用方无需预先自行生成 UUID。
         """
         try:
-            validate_project_access(project_id)
+            profile_id = _resolve_profile_id(project_id)
+            if project_id is not None:
+                validate_project_access(project_id)
             ctx = get_context()
             lifespan_ctx = ctx.lifespan_context
             key_id = get_current_key_id()
@@ -235,7 +321,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         session,
                         graph_store=lifespan_ctx.graph_store,
                         embedding_client=lifespan_ctx.embedding_client,
-                        project_id=project_id,
+                        project_id=profile_id,
                         node_type="ProjectProfile",
                         title=profile.title,
                         content=profile.content,
@@ -245,6 +331,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         generate_vector=True,
                     )
                     return ManageProjectProfileOutput(
+                        project_id=profile_id,
                         node_id=node.id,
                         action="create",
                         status=node.status,
@@ -267,6 +354,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         regenerate_vector=True,
                     )
                     return ManageProjectProfileOutput(
+                        project_id=profile_id,
                         node_id=node.id,
                         action="update",
                         status=node.status,
