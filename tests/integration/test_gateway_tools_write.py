@@ -36,10 +36,11 @@ from mem_lake.gateway.tools.write_tools import (
     SolutionInput,
     _build_dev_items,
     _build_publish_items,
+    _get_project_profile_id,
     _validate_dev_artifacts,
 )
 from mem_lake.knowledge.models import KnowledgeNode
-from mem_lake.knowledge.repository import get_node
+from mem_lake.knowledge.repository import create_node, get_node
 
 
 # ============================================================================
@@ -871,3 +872,145 @@ class TestValidateDevArtifacts:
             )
         finally:
             await self._cleanup(req)
+
+
+# ============================================================================
+# 游离知识点（requirements_id 可选）端到端测试
+# ============================================================================
+
+
+class TestFreeStandingArtifacts:
+    """submit_dev_artifacts 省略 requirement_id 的端到端行为。"""
+
+    async def _seed_profile(self, db_session, graph_store, embedding_client, project_id, knowledge_helpers):
+        """为项目创建一个 ProjectProfile 节点，返回其 ID。"""
+        profile_props = knowledge_helpers["ProjectProfile"]()
+        profile_props["name"] = "游离测试项目画像"
+        node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=embedding_client,
+            project_id=project_id,
+            node_type="ProjectProfile",
+            title="游离测试项目画像",
+            content="项目画像",
+            properties=profile_props,
+            created_by="ak_admin",
+        )
+        return node.id
+
+    async def _submit_and_approve(
+        self, db_session, graph_store, embedding_client, project_id, requirement_id, profile_id, knowledge_helpers
+    ):
+        """构造游离/绑定产物批次并提交+审批，返回 (batch, artifact_target_id)。"""
+        pit_props = knowledge_helpers["Pitfall"]()
+        artifacts = ArtifactsInput(
+            pitfalls=[
+                PitfallInput(
+                    ref="FreePitfall",
+                    title="游离坑：配置项拼写",
+                    content="yaml 缩进错误导致服务启动失败",
+                    properties=pit_props,
+                )
+            ]
+        )
+        items = _build_dev_items(
+            project_id=project_id,
+            requirement_id=requirement_id,
+            artifacts=artifacts,
+            relations=[],
+            created_by="ak_dev",
+            profile_id=profile_id,
+        )
+        batch = await submit_batch(
+            db_session,
+            project_id=project_id,
+            batch_type="submit_dev_artifacts",
+            submitted_by="ak_dev",
+            submitter_role="dev",
+            items=items,
+        )
+        from mem_lake.search.vector import VectorSearcher
+
+        vector_searcher = VectorSearcher(embedding_client)
+        batch = await review_approve(
+            db_session,
+            batch_id=batch.id,
+            reviewed_by="ak_admin",
+            graph_store=graph_store,
+            embedding_client=embedding_client,
+            vector_searcher=vector_searcher,
+        )
+        artifact_item = next(
+            i for i in batch.items if i.payload.get("ref") == "FreePitfall"
+        )
+        return batch, artifact_item.target_id
+
+    async def test_free_standing_with_profile_links_to_profile(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """有 ProjectProfile：游离提交审批后，节点写入且自动生成 references 边。"""
+        project_id = uuid.uuid4()
+        profile_id = await self._seed_profile(
+            db_session, graph_store, mock_embedding_client, project_id, knowledge_helpers
+        )
+        # 确认 ProjectProfile 已入库（同会话内可见）
+        profile_node = await get_node(db_session, profile_id)
+        assert profile_node.type == "ProjectProfile"
+
+        batch, artifact_id = await self._submit_and_approve(
+            db_session,
+            graph_store,
+            mock_embedding_client,
+            project_id,
+            requirement_id=None,
+            profile_id=profile_id,
+            knowledge_helpers=knowledge_helpers,
+        )
+        assert batch.status == "approved"
+        assert artifact_id is not None
+
+        # 节点确实写入
+        node = await get_node(db_session, artifact_id)
+        assert node.type == "Pitfall"
+
+        # 自动生成 ProjectProfile --references--> Pitfall 边
+        edges = await graph_store.match_pattern(
+            db_session,
+            "MATCH (p:ProjectProfile)-[r:references]->(a) "
+            "WHERE p.id = $pid AND a.id = $aid RETURN r",
+            {"pid": str(profile_id), "aid": str(artifact_id)},
+        )
+        assert len(edges) >= 1
+
+    async def test_free_standing_without_profile_no_edge(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """无 ProjectProfile：游离提交审批后，节点写入但无 references 边。"""
+        project_id = uuid.uuid4()
+        resolved = await _get_project_profile_id(project_id)
+        assert resolved is None
+
+        batch, artifact_id = await self._submit_and_approve(
+            db_session,
+            graph_store,
+            mock_embedding_client,
+            project_id,
+            requirement_id=None,
+            profile_id=None,
+            knowledge_helpers=knowledge_helpers,
+        )
+        assert batch.status == "approved"
+        assert artifact_id is not None
+
+        node = await get_node(db_session, artifact_id)
+        assert node.type == "Pitfall"
+
+        # 无任何 references 边指向该产物
+        edges = await graph_store.match_pattern(
+            db_session,
+            "MATCH (p:ProjectProfile)-[r:references]->(a) "
+            "WHERE a.id = $aid RETURN r",
+            {"aid": str(artifact_id)},
+        )
+        assert len(edges) == 0
