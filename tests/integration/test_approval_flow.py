@@ -1666,3 +1666,175 @@ class TestApprovalEndToEnd:
         # 待审批列表无此批次
         pending = await list_pending_batches(db_session, project_id=project_id)
         assert all(b.id != batch.id for b in pending)
+
+
+# ============ L0 硬判定冲突检测（问题 3 修复） ============
+
+
+class TestExactKeyConflict:
+    """相同关键标识字段（如 requirement_id）无论内容相似度如何，一律判冲突。
+
+    覆盖：
+    - 相同 requirement_id + 内容差异大（向量相似度不足）→ 仍判冲突
+    - 不同 requirement_id → 不判冲突
+    - auto_process_batch 因此路由到 needs_human_review（正向审批路径可触发，问题 6）
+    """
+
+    async def test_same_requirement_id_different_content_conflicts(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        from mem_lake.approval.conflict import detect_conflicts
+        from mem_lake.knowledge.repository import create_node
+        from mem_lake.search.vector import VectorSearcher
+
+        project_id = uuid.uuid4()
+        props = knowledge_helpers["Requirement"]()
+        props["requirement_id"] = "REQ-2026-0818-1"
+
+        # 已存在的 approved 节点
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="用户登录需求 v1",
+            content="系统需要支持账号密码登录",
+            properties=props,
+            created_by="ak_pm",
+        )
+
+        # 新提交：相同 requirement_id，但标题/内容明显不同（向量相似度低）
+        vector_searcher = VectorSearcher(mock_embedding_client)
+        vector_searcher.search = AsyncMock(return_value=[])  # 模拟无相似候选召回
+
+        result = await detect_conflicts(
+            db_session,
+            vector_searcher=vector_searcher,
+            project_id=project_id,
+            node_type="Requirement",
+            title="登录模块重构需求（完全不同表述）",
+            content="将登录鉴权逻辑拆分为独立微服务并引入 OAuth2",
+            properties={"requirement_id": "REQ-2026-0818-1"},
+            tags=[],
+        )
+
+        assert result["has_conflict"] is True
+        assert len(result["conflicting_nodes"]) == 1
+        conflict = result["conflicting_nodes"][0]
+        assert conflict["matched_key_attrs"] == {"requirement_id": "REQ-2026-0818-1"}
+        assert conflict["conflict_type"] == "duplicate"
+
+    async def test_different_requirement_id_no_conflict(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        from mem_lake.approval.conflict import detect_conflicts
+        from mem_lake.knowledge.repository import create_node
+        from mem_lake.search.vector import VectorSearcher
+
+        project_id = uuid.uuid4()
+        props = knowledge_helpers["Requirement"]()
+        props["requirement_id"] = "REQ-2026-0818-1"
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="用户登录需求 v1",
+            content="系统需要支持账号密码登录",
+            properties=props,
+            created_by="ak_pm",
+        )
+
+        vector_searcher = VectorSearcher(mock_embedding_client)
+        vector_searcher.search = AsyncMock(return_value=[])
+
+        result = await detect_conflicts(
+            db_session,
+            vector_searcher=vector_searcher,
+            project_id=project_id,
+            node_type="Requirement",
+            title="用户登录需求",
+            content="系统需要支持账号密码登录与 JWT 令牌签发",
+            properties={"requirement_id": "REQ-2026-0818-2"},
+            tags=[],
+        )
+
+        assert result["has_conflict"] is False
+
+    async def test_auto_process_routes_to_human_review(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        from mem_lake.approval.service import auto_process_batch
+        from mem_lake.knowledge.repository import create_node
+        from mem_lake.search.vector import VectorSearcher
+
+        project_id = uuid.uuid4()
+        props = knowledge_helpers["Requirement"]()
+        props["requirement_id"] = "REQ-2026-0818-1"
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="用户登录需求 v1",
+            content="系统需要支持账号密码登录",
+            properties=props,
+            created_by="ak_pm",
+        )
+
+        # 新批次：相同 requirement_id，不同内容
+        new_props = knowledge_helpers["Requirement"]()
+        new_props["requirement_id"] = "REQ-2026-0818-1"
+        items = [
+            {
+                "item_type": "node",
+                "action": "create",
+                "entity_type": "Requirement",
+                "payload": {
+                    "project_id": str(project_id),
+                    "node_type": "Requirement",
+                    "title": "登录重构需求",
+                    "content": "登录鉴权拆分为独立微服务并引入 OAuth2",
+                    "properties": new_props,
+                    "tags": ["auth"],
+                    "source": {"agent": "pm_agent", "tool": "publish_requirement"},
+                    "created_by": "ak_pm",
+                },
+            }
+        ]
+        batch = await submit_batch(
+            db_session,
+            project_id=project_id,
+            batch_type="publish_requirement",
+            submitted_by="ak_pm",
+            submitter_role="pm",
+            items=items,
+        )
+
+        vector_searcher = VectorSearcher(mock_embedding_client)
+        result = await auto_process_batch(
+            db_session,
+            batch_id=batch.id,
+            reviewed_by="ak_admin",
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            vector_searcher=vector_searcher,
+        )
+
+        assert result["decision"] == "needs_human_review"
+        assert result["conflict_hint"]["has_conflict"] is True
+
+        # 正向审批路径：人工确认后 review_approve 通过
+        approved = await review_approve(
+            db_session,
+            batch_id=batch.id,
+            reviewed_by="ak_admin",
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            vector_searcher=vector_searcher,
+            review_comment="确认通过",
+        )
+        assert approved.status == STATUS_APPROVED

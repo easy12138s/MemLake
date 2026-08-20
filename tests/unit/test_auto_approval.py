@@ -148,6 +148,10 @@ class TestMatchKeyAttrs:
 # ============================================================================
 
 
+@patch(
+    "mem_lake.approval.conflict._detect_exact_key_conflicts",
+    new=AsyncMock(return_value=[]),
+)
 class TestDetectConflictsV2:
     """detect_conflicts 三层冲突检测逻辑测试。"""
 
