@@ -18,7 +18,6 @@
 import logging
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
 
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken
@@ -30,12 +29,11 @@ from fastmcp.server.dependencies import (
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 
-from mem_lake.auth.rbac import has_tool_access
+from mem_lake.auth.rbac import ROLE_TOOLSET, has_tool_access
 from mem_lake.auth.service import authenticate_access_key
 from mem_lake.config import get_settings
 from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.gateway.auth import (
-    ACCESS_KEY_HEADER,
     extract_access_key_from_headers,
     validate_protocol_version,
 )
@@ -121,7 +119,21 @@ class RBACMiddleware(Middleware):
 
     on_call_tool hook：从 AccessToken.claims 提取角色，校验是否有权调用该工具。
     无权调用 raise ToolError("Access denied")。
+    on_list_tools hook：按角色过滤工具列表（最小权限），仅返回该角色
+        有权调用的工具；未认证或无角色返回空列表，避免跨角色泄露工具形态。
     """
+
+    async def on_list_tools(self, context: MiddlewareContext, call_next) -> list:
+        """列举工具时按角色过滤，避免非 admin 角色看到 admin 专属工具。"""
+        tools = await call_next(context)
+        access_token = get_access_token()
+        if access_token is None:
+            return []  # 未认证：不泄露任何工具
+        role = access_token.claims.get("role")
+        if not role:
+            return []
+        allowed = ROLE_TOOLSET.get(role, frozenset())
+        return [t for t in tools if t.name in allowed]
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         tool_name = context.message.name

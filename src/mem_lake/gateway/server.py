@@ -97,7 +97,8 @@ def create_mcp_server() -> FastMCP:
     """创建 FastMCP 实例并注册所有工具。
 
     配置：
-    - cache_ttl=300s + cache_scope=public：MCP 2026-07-28 缓存特性
+    - cache_ttl=300s + cache_scope=private：MCP 2026-07-28 缓存特性
+      （private 避免角色相关的 tools/list 响应被共享缓存跨角色复用）
     - middleware：4 个中间件按序注册（认证→鉴权→限流→审计）
     - lifespan：初始化共享资源
     - auth 不设：AccessKeyAuthMiddleware 负责 X-MCP-Key 认证 + 设置 scope["user"]
@@ -107,7 +108,7 @@ def create_mcp_server() -> FastMCP:
     mcp = FastMCP(
         name=settings.MCP_SERVER_NAME,
         cache_ttl=300,
-        cache_scope="public",
+        cache_scope="private",
         # auth 不设：AccessKeyAuthMiddleware 负责 X-MCP-Key 认证 + 设置 scope["user"]
         middleware=[
             AccessKeyAuthMiddleware(),
