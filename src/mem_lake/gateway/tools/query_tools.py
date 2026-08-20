@@ -344,6 +344,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                     action=action,
                     target_type=target_type,
                     target_id=target_id,
+                    project_id=project_id,
                     limit=limit,
                     offset=offset,
                 )

@@ -161,6 +161,7 @@ async def submit_batch(
         action="submit",
         target_type="batch",
         target_id=batch.id,
+        project_id=project_id,
         operation_id=operation_id,
         detail={
             "batch_type": batch_type,
@@ -280,6 +281,7 @@ async def review_approve(
         action="approve",
         target_type="batch",
         target_id=batch.id,
+        project_id=batch.project_id,
         detail={
             "batch_type": batch.batch_type,
             "item_count": len(batch.items),
@@ -330,6 +332,7 @@ async def review_reject(
         action="reject",
         target_type="batch",
         target_id=batch.id,
+        project_id=batch.project_id,
         detail={
             "batch_type": batch.batch_type,
             "review_comment": review_comment,

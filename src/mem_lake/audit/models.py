@@ -36,6 +36,11 @@ class AuditLog(Base):
     target_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True, comment="目标 ID，部分操作无具体目标"
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="归属项目（节点/边写操作维度，admin/access_key 等跨项目操作留空）",
+    )
     operation_id: Mapped[str | None] = mapped_column(
         nullable=True, comment="幂等操作标识（可选）"
     )
@@ -52,4 +57,5 @@ class AuditLog(Base):
     __table_args__ = (
         Index("idx_audit_actor_created", "actor", "created_at"),
         Index("idx_audit_target", "target_type", "target_id"),
+        Index("idx_audit_project", "project_id"),
     )

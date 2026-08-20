@@ -20,6 +20,7 @@ async def write_audit_log(
     action: str,
     target_type: str,
     target_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
     operation_id: str | None = None,
     detail: dict | None = None,
 ) -> AuditLog:
@@ -33,6 +34,7 @@ async def write_audit_log(
         action=action,
         target_type=target_type,
         target_id=target_id,
+        project_id=project_id,
         operation_id=operation_id,
         detail=detail or {},
     )
@@ -48,12 +50,14 @@ async def query_audit_logs(
     action: str | None = None,
     target_type: str | None = None,
     target_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[AuditLog]:
     """查询审计日志。
 
     动态构建 WHERE 条件（非 None 才过滤），按 created_at DESC 排序，limit/offset 分页。
+    project_id 过滤实现按项目隔离审计（Admin 审计追溯）。
     """
     stmt = select(AuditLog)
     if actor is not None:
@@ -64,6 +68,8 @@ async def query_audit_logs(
         stmt = stmt.where(AuditLog.target_type == target_type)
     if target_id is not None:
         stmt = stmt.where(AuditLog.target_id == target_id)
+    if project_id is not None:
+        stmt = stmt.where(AuditLog.project_id == project_id)
 
     stmt = stmt.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
