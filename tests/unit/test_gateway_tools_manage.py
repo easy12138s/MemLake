@@ -2,6 +2,7 @@
 
 覆盖：
 - _resolve_profile_id：给定 ID 原样返回；None 时自动生成新 UUID
+- _normalize_uuid_list：列表 / 字符串（逗号/空格/JSON）/ None 归一化，容错非法片段
 - create_mcp_server 注册 manage_project_profile 时，project_id 为可选（参数排序合法，
   不触发 Pydantic "Non-default argument follows default argument"）
 """
@@ -9,7 +10,10 @@
 import uuid
 
 from mem_lake.gateway.server import create_mcp_server
-from mem_lake.gateway.tools.manage_tools import _resolve_profile_id
+from mem_lake.gateway.tools.manage_tools import (
+    _normalize_uuid_list,
+    _resolve_profile_id,
+)
 
 
 def test_resolve_profile_id_given_returns_same():
@@ -23,6 +27,35 @@ def test_resolve_profile_id_none_generates_new_uuid():
     generated = _resolve_profile_id(None)
     assert isinstance(generated, uuid.UUID)
     assert _resolve_profile_id(None) != generated
+
+
+def test_normalize_uuid_list_from_list():
+    """列表（UUID 或字符串）归一化为 UUID 列表。"""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    assert _normalize_uuid_list([a, str(b)]) == [a, b]
+
+
+def test_normalize_uuid_list_from_comma_string():
+    """逗号/空格/分号分隔字符串归一化为 UUID 列表。"""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    assert _normalize_uuid_list(f"{a}, {b}") == [a, b]
+    assert _normalize_uuid_list(f"{a} {b}") == [a, b]
+    assert _normalize_uuid_list(f"{a};{b}") == [a, b]
+
+
+def test_normalize_uuid_list_from_json_string():
+    """JSON 数组字符串归一化为 UUID 列表。"""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    assert _normalize_uuid_list(f'["{a}","{b}"]') == [a, b]
+
+
+def test_normalize_uuid_list_skips_invalid_and_empty():
+    """非法片段被跳过；空串/纯空白返回 None。"""
+    a = uuid.uuid4()
+    assert _normalize_uuid_list(f"{a}, not-a-uuid") == [a]
+    assert _normalize_uuid_list("") is None
+    assert _normalize_uuid_list("   ") is None
+    assert _normalize_uuid_list(None) is None
 
 
 def test_create_mcp_server_registers_manage_project_profile():
