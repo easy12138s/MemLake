@@ -31,6 +31,7 @@ class FilterSpec:
     status: str = "approved"
     exclude_deleted: bool = True
     tags: tuple[str, ...] | None = None
+    tags_op: str = "all"  # tags 匹配语义：all=AND（默认，JSONB @>），any=OR（JSONB &&）
     created_after: datetime | None = None
     created_before: datetime | None = None
 
@@ -42,6 +43,10 @@ class FilterSpec:
                 raise ValueError(
                     f"非法节点类型: {sorted(invalid)}，合法类型: {sorted(NODE_TYPES)}"
                 )
+        if self.tags_op not in ("all", "any"):
+            raise ValueError(
+                f"非法 tags_op: {self.tags_op!r}，合法值: all/any"
+            )
 
 
 def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
@@ -69,9 +74,12 @@ def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
         clauses.append(KnowledgeNode.is_deleted.is_(False))
 
     if spec.tags:
-        # JSONB 数组 @> 操作符：tags 列包含 spec.tags 的所有元素即为匹配
-        # PostgreSQL JSONB 数组语义：'["auth", "P0"]'::jsonb @> '["auth"]'::jsonb 为 True
-        clauses.append(KnowledgeNode.tags.contains(list(spec.tags)))
+        if spec.tags_op == "any":
+            # JSONB ?| 操作符（has_any）：tags 数组包含 spec.tags 中任意一项即匹配（OR）
+            clauses.append(KnowledgeNode.tags.has_any(list(spec.tags)))
+        else:
+            # 默认 all：JSONB @> 操作符（contains）：tags 数组包含 spec.tags 全部元素（AND）
+            clauses.append(KnowledgeNode.tags.contains(list(spec.tags)))
 
     if spec.created_after is not None:
         clauses.append(KnowledgeNode.created_at >= spec.created_after)

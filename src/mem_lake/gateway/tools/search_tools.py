@@ -57,7 +57,11 @@ class SearchItemOutput(BaseModel):
     title: str = Field(description="节点标题")
     content: str = Field(description="节点摘要（前 200 字符）")
     node_type: str = Field(description="节点类型")
-    score: float | None = Field(description="相似度分数（融合后为 RRF 分数，图为 None）")
+    score: float | None = Field(description="分数(fused=RRF排名分/vector=cosine/fulltext=ts_rank/graph=None)")
+    vector_score: float | None = Field(
+        default=None,
+        description="向量余弦相似度（0~1）；fused 结果附带其原始向量分，便于判相关性",
+    )
     source: str = Field(
         description="来源引擎：vector/fulltext/graph/fused"
     )
@@ -153,13 +157,24 @@ def register_search_tools(mcp: FastMCP) -> None:
         query: str = Field(description="查询文本（需求描述/关键词）"),
         top_n: int = Field(default=10, description="融合后返回数量上限"),
         tags: list[str] | None = Field(
-            default=None, description="标签过滤（AND 关系）"
+            default=None, description="标签过滤（tags_op 控制 AND/OR）"
+        ),
+        tags_op: str = Field(
+            default="all",
+            description="标签匹配语义：all=AND（默认，需包含所有标签），any=OR（命中任一标签）",
+        ),
+        min_score: float | None = Field(
+            default=None,
+            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；None 表示不过滤（返回相对 top_n）",
         ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索相似需求（同项目内 Requirement 类型）。
 
         PM/Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
+        注意：返回的是相对 top_n（按相关性排序的前 N 条），并非绝对高相关保证；
+        可用 min_score 滤除低相似度噪声。fused 结果的 score 为 RRF 排名分（较小），
+        vector_score 为原始向量余弦分，可据此判相关性。
         """
         try:
             validate_project_access(project_id)
@@ -169,6 +184,8 @@ def register_search_tools(mcp: FastMCP) -> None:
                 node_types=("Requirement",),
                 top_n=top_n,
                 tags=tuple(tags) if tags else None,
+                tags_op=tags_op,
+                min_score=min_score,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
@@ -179,13 +196,24 @@ def register_search_tools(mcp: FastMCP) -> None:
         query: str = Field(description="查询文本（代码功能/关键词）"),
         top_n: int = Field(default=10, description="融合后返回数量上限"),
         tags: list[str] | None = Field(
-            default=None, description="标签过滤（AND 关系）"
+            default=None, description="标签过滤（tags_op 控制 AND/OR）"
+        ),
+        tags_op: str = Field(
+            default="all",
+            description="标签匹配语义：all=AND（默认，需包含所有标签），any=OR（命中任一标签）",
+        ),
+        min_score: float | None = Field(
+            default=None,
+            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；None 表示不过滤（返回相对 top_n）",
         ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索代码片段（同项目内 CodeSnippet 类型）。
 
         Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
+        注意：返回的是相对 top_n（按相关性排序的前 N 条），并非绝对高相关保证；
+        可用 min_score 滤除低相似度噪声。fused 结果的 score 为 RRF 排名分（较小），
+        vector_score 为原始向量余弦分，可据此判相关性。
         """
         try:
             validate_project_access(project_id)
@@ -195,6 +223,8 @@ def register_search_tools(mcp: FastMCP) -> None:
                 node_types=("CodeSnippet",),
                 top_n=top_n,
                 tags=tuple(tags) if tags else None,
+                tags_op=tags_op,
+                min_score=min_score,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
@@ -369,11 +399,13 @@ async def _run_hybrid_search(
     node_types: tuple[str, ...],
     top_n: int,
     tags: tuple[str, ...] | None,
+    tags_op: str = "all",
+    min_score: float | None = None,
 ) -> HybridSearchOutput:
     """执行三引擎融合检索的共享辅助函数。
 
     search_similar_requirements 与 search_code_snippets 共用此函数，
-    仅 node_types 参数不同。
+    仅 node_types 参数不同。min_score 按向量余弦分过滤融合结果。
     """
     ctx = get_context()
     lifespan_ctx = ctx.lifespan_context
@@ -382,6 +414,7 @@ async def _run_hybrid_search(
         project_id=project_id,
         node_types=node_types,
         tags=tags,
+        tags_op=tags_op,
     )
 
     # hybrid_search 内部为每引擎自建独立 session（AsyncSession 非并发安全）
@@ -393,23 +426,37 @@ async def _run_hybrid_search(
         filters=filters,
     )
 
+    # 向量 cosine 分映射，用于 min_score 过滤与 fused 结果附带 vector_score
+    vector_score_map = {
+        r.node_id: r.score for r in result.get("vector", []) if r.score is not None
+    }
+
+    fused_raw = result.get("fused", [])
+    if min_score is not None:
+        fused_raw = [
+            r for r in fused_raw if vector_score_map.get(r.node_id, -1) >= min_score
+        ]
+
     return HybridSearchOutput(
         query=query,
-        fused=[_to_search_item_output(r) for r in result.get("fused", [])],
+        fused=[_to_search_item_output(r, vector_score_map.get(r.node_id)) for r in fused_raw],
         vector=[_to_search_item_output(r) for r in result.get("vector", [])],
         fulltext=[_to_search_item_output(r) for r in result.get("fulltext", [])],
-        total=len(result.get("fused", [])),
+        total=len(fused_raw),
     )
 
 
-def _to_search_item_output(result: SearchResult) -> SearchItemOutput:
-    """从 SearchResult 构造 SearchItemOutput。"""
+def _to_search_item_output(
+    result: SearchResult, vector_score: float | None = None
+) -> SearchItemOutput:
+    """从 SearchResult 构造 SearchItemOutput。vector_score 用于 fused 结果附带余弦分。"""
     return SearchItemOutput(
         node_id=result.node_id,
         title=result.title,
         content=result.content,
         node_type=result.node_type,
         score=result.score,
+        vector_score=vector_score,
         source=result.source,
         properties=result.properties,
         tags=result.tags,

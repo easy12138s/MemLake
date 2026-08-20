@@ -28,6 +28,7 @@ from mem_lake.approval.service import (
 )
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
+    get_readonly_session,
     transactional_session,
     validate_project_access,
 )
@@ -38,9 +39,21 @@ from mem_lake.gateway.tools._shared import (
     build_node_item,
     to_tool_error,
 )
+from mem_lake.knowledge.repository import NodeNotFoundError, get_node
 from mem_lake.knowledge.schema import SchemaValidationError
 
 logger = logging.getLogger("mem_lake.gateway.tools.write")
+
+# 单产物 content 长度上限，防止超长文本入库（审批 + 向量化成本高）
+MAX_CONTENT_LENGTH: int = 10000
+
+
+def _check_content_length(value: str, label: str) -> None:
+    """校验 content 长度不超过上限，超限抛 PayloadValidationError。"""
+    if value is not None and len(value) > MAX_CONTENT_LENGTH:
+        raise PayloadValidationError(
+            f"{label} 长度 {len(value)} 超过上限 {MAX_CONTENT_LENGTH} 字符"
+        )
 
 
 # ============================================================================
@@ -115,7 +128,7 @@ class SolutionInput(BaseModel):
     title: str = Field(description="方案标题")
     content: str = Field(description="方案描述")
     properties: dict[str, Any] = Field(
-        description="Solution 属性，必填：approach（方案）、alternatives（备选方案）；可选：version"
+        description="Solution 属性，必填：version（版本号）、approach（采用的方案）、alternatives（备选方案）"
     )
     tags: list[str] = Field(default=[], description="标签数组")
 
@@ -141,7 +154,7 @@ class PitfallInput(BaseModel):
     properties: dict[str, Any] = Field(
         description=(
             "Pitfall 属性，必填：symptom（症状）、root_cause（根因）、"
-            "solution（解决方案）、severity（严重程度 P0/P1/P2/P3）"
+            "solution（解决方案）；severity（严重程度，枚举 P0/P1/P2/P3，存在则校验）"
         )
     )
     tags: list[str] = Field(default=[], description="标签数组")
@@ -206,6 +219,7 @@ def register_write_tools(mcp: FastMCP) -> None:
         """
         try:
             validate_project_access(project_id)
+            _check_content_length(requirement.content, "Requirement.content")
             key_id = get_current_key_id()
             items = _build_publish_items(project_id, requirement, related, key_id)
 
@@ -294,6 +308,12 @@ def register_write_tools(mcp: FastMCP) -> None:
         """
         try:
             validate_project_access(project_id)
+            await _validate_dev_artifacts(
+                project_id=project_id,
+                requirement_id=requirement_id,
+                artifacts=artifacts,
+                relations=relations,
+            )
             key_id = get_current_key_id()
             items = _build_dev_items(
                 project_id=project_id,
@@ -324,6 +344,73 @@ def register_write_tools(mcp: FastMCP) -> None:
 # ============================================================================
 # items 构造辅助
 # ============================================================================
+
+
+async def _validate_dev_artifacts(
+    *,
+    project_id: uuid.UUID,
+    requirement_id: uuid.UUID,
+    artifacts: ArtifactsInput,
+    relations: list[ArtifactRelationInput],
+) -> None:
+    """提交前提前拦截批内 ref / requirement_id 不一致，避免延迟到审批期才失败。
+
+    校验项：
+    1. 产物 ref 在批次内必须唯一（重复 ref 会导致关系解析歧义）。
+    2. requirement_id 必须存在且类型为 Requirement、归属本项目。
+    3. 每条 relation 的 from_ref/to_ref：UUID 须存在（悬挂 UUID 拒）；
+       非 UUID 须为批次内已声明的 ref 名；from_ref == to_ref 视为自引用拒。
+    """
+    # 1. 收集已声明 ref，检测重复
+    declared_refs: list[str] = []
+    declared_refs.extend(a.ref for a in artifacts.code_snippets)
+    declared_refs.extend(a.ref for a in artifacts.solutions)
+    declared_refs.extend(a.ref for a in artifacts.design_intents)
+    declared_refs.extend(a.ref for a in artifacts.pitfalls)
+    ref_set = set(declared_refs)
+    if len(ref_set) != len(declared_refs):
+        dup = sorted({r for r in declared_refs if declared_refs.count(r) > 1})
+        raise PayloadValidationError(f"产物 ref 重复（批次内必须唯一）: {dup}")
+
+    # 2 & 3：requirement_id 存在性 + 类型 + 归属项目；relations 引用校验
+    session = await get_readonly_session()
+    try:
+        # 2. requirement_id 存在性 + 类型 + 归属项目
+        try:
+            req_node = await get_node(session, requirement_id)
+        except NodeNotFoundError:
+            raise PayloadValidationError(f"requirement_id 不存在: {requirement_id}")
+        if req_node.type != "Requirement":
+            raise PayloadValidationError(
+                f"requirement_id 类型非 Requirement: {req_node.type}"
+            )
+        if req_node.project_id != project_id:
+            raise PayloadValidationError(
+                f"requirement_id 不属于本项目: {requirement_id}"
+            )
+
+        # 3. relations 引用校验
+        errors: list[str] = []
+        for r in relations:
+            for ref in (r.from_ref, r.to_ref):
+                try:
+                    uuid.UUID(str(ref))
+                except (ValueError, TypeError, AttributeError):
+                    # 非 UUID：必须是批次内已声明的 ref 名
+                    if ref not in ref_set:
+                        errors.append(f"未知 ref 名（未在 artifacts 声明）: {ref}")
+                    continue
+                # UUID：必须存在
+                try:
+                    await get_node(session, uuid.UUID(str(ref)))
+                except NodeNotFoundError:
+                    errors.append(f"引用 UUID 不存在: {ref}")
+            if r.from_ref == r.to_ref:
+                errors.append(f"自引用（from_ref == to_ref）: {r.from_ref}")
+        if errors:
+            raise PayloadValidationError("; ".join(errors))
+    finally:
+        await session.close()
 
 
 def _build_publish_items(
@@ -392,6 +479,7 @@ def _build_dev_items(
 
     # 1. 构造 node items
     for code in artifacts.code_snippets:
+        _check_content_length(code.content, f"CodeSnippet[{code.ref}].content")
         items.append(
             build_node_item(
                 ref=code.ref,
@@ -406,6 +494,7 @@ def _build_dev_items(
         )
 
     for solution in artifacts.solutions:
+        _check_content_length(solution.content, f"Solution[{solution.ref}].content")
         items.append(
             build_node_item(
                 ref=solution.ref,
@@ -420,6 +509,7 @@ def _build_dev_items(
         )
 
     for intent in artifacts.design_intents:
+        _check_content_length(intent.content, f"DesignIntent[{intent.ref}].content")
         items.append(
             build_node_item(
                 ref=intent.ref,
@@ -434,6 +524,7 @@ def _build_dev_items(
         )
 
     for pitfall in artifacts.pitfalls:
+        _check_content_length(pitfall.content, f"Pitfall[{pitfall.ref}].content")
         items.append(
             build_node_item(
                 ref=pitfall.ref,

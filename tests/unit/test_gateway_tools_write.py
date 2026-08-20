@@ -324,3 +324,55 @@ class TestBuildDevItems:
         assert items[1]["payload"]["to_ref"] == "MyRef"
         # edge 的 from_ref 保留为 UUID 字符串
         assert items[1]["payload"]["from_ref"] == str(requirement_id)
+
+
+class TestContentLengthLimit:
+    """content 长度上限保护（纯逻辑，无 DB 依赖）。"""
+
+    def test_check_content_length_within_limit(self):
+        from mem_lake.gateway.tools.write_tools import _check_content_length
+
+        # 不抛即通过
+        _check_content_length("x" * 100, "label")
+        _check_content_length(None, "label")
+
+    def test_check_content_length_exceeds(self):
+        from mem_lake.gateway.tools.write_tools import (
+            MAX_CONTENT_LENGTH,
+            _check_content_length,
+        )
+
+        with pytest.raises(PayloadValidationError):
+            _check_content_length("x" * (MAX_CONTENT_LENGTH + 1), "label")
+
+    def test_build_dev_items_content_too_long(self):
+        from mem_lake.gateway.tools.write_tools import (
+            ArtifactsInput,
+            CodeSnippetInput,
+            MAX_CONTENT_LENGTH,
+            _build_dev_items,
+        )
+
+        artifacts = ArtifactsInput(
+            code_snippets=[
+                CodeSnippetInput(
+                    ref="C1",
+                    title="t",
+                    content="x" * (MAX_CONTENT_LENGTH + 1),
+                    properties={
+                        "name": "n",
+                        "type": "function",
+                        "responsibility": "r",
+                        "file_path": "f",
+                    },
+                )
+            ]
+        )
+        with pytest.raises(PayloadValidationError):
+            _build_dev_items(
+                project_id=uuid.uuid4(),
+                requirement_id=uuid.uuid4(),
+                artifacts=artifacts,
+                relations=[],
+                created_by="ak",
+            )

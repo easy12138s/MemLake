@@ -178,7 +178,9 @@ def knowledge_helpers():
     def _pitfall() -> dict:
         return {
             "symptom": "高并发下 token 续期冲突",
+            "root_cause": "分布式环境下锁竞争",
             "solution": "引入 Redis 分布式锁",
+            "severity": "P1",
         }
 
     return {
