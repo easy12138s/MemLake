@@ -35,7 +35,7 @@ version: 1.2.0
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | project_id | UUID | 是 | 项目 ID |
-| requirement_id | UUID | 是 | 关联的需求节点 ID（自动为每个 CodeSnippet 构造 implements 边） |
+| requirement_id | UUID | 否 | 关联的需求节点 ID（自动为每个 CodeSnippet 构造 implements 边）。省略则提交「游离知识点」，自动挂到本项目 ProjectProfile 节点（若存在） |
 | code_snippets | list[dict] | 否 | 代码片段列表 |
 | solutions | list[dict] | 否 | 解决方案列表 |
 | design_intents | list[dict] | 否 | 设计意图列表 |
@@ -104,9 +104,13 @@ version: 1.2.0
 ]
 ```
 
-**自动构造的关系**：系统根据提交的 `requirement_id` 参数，自动为批次内**每个** CodeSnippet 构造 `Requirement --implements--> CodeSnippet` 关系（无需在 relations 中手动声明）。
+**自动构造的关系**：
+- 传入 `requirement_id` 时，系统根据它自动为批次内**每个** CodeSnippet 构造 `Requirement --implements--> CodeSnippet` 关系（无需在 relations 中手动声明）。
+- 省略 `requirement_id`（游离知识点）时，系统把**每个产物**（CodeSnippet/Solution/DesignIntent/Pitfall）自动挂到本项目的 `ProjectProfile` 节点：`ProjectProfile --references--> 产物`。若项目尚无 ProjectProfile 节点，则产物仅入库、不建边。
 
-**⚠️ 坑/方案/意图不会自动挂载到需求**：自动关系**仅限 CodeSnippet**。Pitfall、Solution、DesignIntent 提交后只是孤立节点，**不会**自动与 `requirement_id` 建立任何边。若希望它们出现在某需求下（或在图谱中与其它节点相连），必须在 `relations` 中显式声明，例如把坑挂到需求：
+**⚠️ 坑/方案/意图不会自动挂载到需求**：自动 `implements` 边**仅限 CodeSnippet 且需提供 requirement_id**。Pitfall、Solution、DesignIntent 即使提供 `requirement_id` 也**不会**自动与需求建立边；若希望它们出现在某需求下，必须在 `relations` 中显式声明（见场景三）。游离提交（无 requirement_id）时它们会挂到 ProjectProfile，而非任何需求。
+
+若希望它们出现在某需求下（或在图谱中与其它节点相连），必须在 `relations` 中显式声明，例如把坑挂到需求：
 
 ```python
 relations=[
@@ -229,10 +233,33 @@ submit_dev_artifacts(
         "content": "知识图谱需要关系型 + 向量 + 全文检索...",
         "properties": {
             "rationale": "PostgreSQL 支持 pgvector + AGE + zhparser 三合一",
-            "trade_offs": "放弃 MongoDB 的 schema-free 灵活性，换取事务一致性"
+        "trade_offs": "放弃 MongoDB 的 schema-free 灵活性，换取事务一致性"
         }
     }]
 )
+
+### 场景五：记录游离知识点（不绑定需求）
+
+```
+# 通用踩坑/架构心得，不归属任何需求，自动挂到本项目 ProjectProfile
+submit_dev_artifacts(
+    project_id=uuid,
+    # 不传 requirement_id → 游离知识点
+    pitfalls=[{
+        "ref": "YamlIndentTrap",
+        "title": "YAML 缩进错误导致服务启动失败",
+        "content": "2 空格 vs 4 空格混用被解析为嵌套结构...",
+        "properties": {
+            "symptom": "service fails to start",
+            "root_cause": "mixed indentation",
+            "solution": "统一 2 空格缩进",
+            "severity": "P2"
+        },
+        "tags": ["yaml", "config"]
+    }]
+)
+# 审批通过后自动生成：ProjectProfile --references--> YamlIndentTrap
+# 检索：search_code_snippets(project_id, query="yaml 缩进") 可命中
 ```
 
 ## 常见陷阱

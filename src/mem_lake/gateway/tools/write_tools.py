@@ -310,10 +310,13 @@ def register_write_tools(mcp: FastMCP) -> None:
         """批量提交开发产物（代码片段+方案+意图+踩坑），产生审批批次等待 admin 审批。
 
         Dev 工具。审批通过后产物节点写入知识图谱。
-        自动关系：系统仅对批次内每个 CodeSnippet 自动建立 Requirement--implements-->CodeSnippet 边。
-        坑(Pitfall)/方案(Solution)/设计意图(DesignIntent) 不会自动挂载到需求，
-        如需把它们关联到需求（或在图谱中与其它节点相连），必须在 relations 中显式声明
-        （from_ref/to_ref 用 ref 名或节点 UUID，relation_type 如 relates_to/described_by/references 等）。
+        自动关系：
+        - 传入 requirement_id 时，系统为每个 CodeSnippet 自动建立 Requirement--implements-->CodeSnippet 边。
+        - 省略 requirement_id（游离知识点）时，系统把每个产物自动挂到本项目的
+          ProjectProfile 节点（ProjectProfile--references-->产物）；若项目无 ProjectProfile 节点则仅入库不建边。
+        坑(Pitfall)/方案(Solution)/设计意图(DesignIntent) 不会自动与需求建边，
+        如需把它们关联到具体需求，须在 relations 中显式声明
+        （from_ref/to_ref 用 ref 名或节点 UUID，relation_type 如 described_by/references 等）。
         使用 ref 机制在批次内引用未创建的节点：artifacts 中每个产物声明 ref 名，
         relations 中用 from_ref/to_ref 引用这些 ref 名（或已有节点的 UUID）。
         临时引用在审批通过时解析为实际节点 ID。

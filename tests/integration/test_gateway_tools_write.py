@@ -29,7 +29,6 @@ from mem_lake.gateway.tools.write_tools import (
     ArtifactRelationInput,
     ArtifactsInput,
     CodeSnippetInput,
-    DesignIntentInput,
     PitfallInput,
     RelatedInput,
     RequirementInput,
@@ -41,7 +40,6 @@ from mem_lake.gateway.tools.write_tools import (
 )
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import create_node, get_node
-
 
 # ============================================================================
 # _build_publish_items 构造测试
@@ -607,8 +605,9 @@ class TestReviewRejectEndToEnd:
             review_comment="拒绝",
         )
 
-        from mem_lake.search.vector import VectorSearcher
         from unittest.mock import MagicMock
+
+        from mem_lake.search.vector import VectorSearcher
         mock_embedding = MagicMock()
         mock_embedding.embed_one = MagicMock(return_value=[0.1] * 1024)
         with pytest.raises(BatchStatusError):
