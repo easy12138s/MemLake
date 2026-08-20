@@ -29,6 +29,11 @@ services:
       - "8001:8001"
     environment:
       DEVICE: cpu
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      HF_HOME: /tmp/hf
+    volumes:
+      - ../models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master:/models/bge-large-zh-v1.5:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 10s
