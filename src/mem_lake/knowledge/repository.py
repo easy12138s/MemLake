@@ -107,6 +107,7 @@ async def create_node(
         action="write",
         target_type="node",
         target_id=node.id,
+        project_id=project_id,
         detail={
             "node_type": node_type,
             "title": title,
@@ -208,6 +209,7 @@ async def update_node(
         action="update",
         target_type="node",
         target_id=node.id,
+        project_id=node.project_id,
         detail={
             "node_type": node.type,
             "version": node.version,
@@ -253,6 +255,7 @@ async def archive_node(
         action="archive",
         target_type="node",
         target_id=node.id,
+        project_id=node.project_id,
         detail={
             "node_type": node.type,
             "title": node.title,
@@ -329,6 +332,7 @@ async def regenerate_vector(
         action="update",
         target_type="node",
         target_id=node.id,
+        project_id=node.project_id,
         detail={"vector_regenerated": True, "trigger": "manual"},
     )
 

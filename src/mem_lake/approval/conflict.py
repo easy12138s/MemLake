@@ -17,7 +17,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.knowledge.models import KnowledgeNode
@@ -141,6 +141,21 @@ async def detect_conflicts(
             }
         )
 
+    # L0 硬判定：同项目同类型关键标识字段完全相同 → 直接判冲突
+    # （与向量召回无关，捕获「相同 requirement_id 但内容差异大」的漏检）
+    exact_conflicts = await _detect_exact_key_conflicts(
+        session,
+        project_id=project_id,
+        node_type=node_type,
+        properties=properties,
+        exclude_node_id=exclude_node_id,
+    )
+    _seen_ids = {c["existing_node_id"] for c in conflicting_nodes}
+    for c in exact_conflicts:
+        if c["existing_node_id"] not in _seen_ids:
+            conflicting_nodes.append(c)
+            _seen_ids.add(c["existing_node_id"])
+
     has_conflict = bool(conflicting_nodes)
     suggestion = "review" if has_conflict else None
 
@@ -150,6 +165,59 @@ async def detect_conflicts(
         "candidates_examined": candidates_examined,
         "suggestion": suggestion,
     }
+
+
+async def _detect_exact_key_conflicts(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    node_type: str,
+    properties: dict,
+    exclude_node_id: uuid.UUID | None = None,
+) -> list[dict]:
+    """L0 硬判定：同项目同类型下关键标识字段完全相同即判冲突（不依赖向量相似度）。
+
+    修复原三层检测只在向量相似度 ≥ 阈值时才比对关键属性，导致
+    「requirement_id 相同但内容/标题差异大」的重复节点漏检。
+    """
+    key_fields = KEY_IDENTITY_FIELDS.get(node_type, [])
+    if not key_fields:
+        return []
+
+    # 新节点必须携带全部关键字段，否则无法精确匹配
+    if any(properties.get(f) is None for f in key_fields):
+        return []
+
+    conditions = [
+        KnowledgeNode.project_id == project_id,
+        KnowledgeNode.type == node_type,
+        KnowledgeNode.status == "approved",
+        KnowledgeNode.is_deleted.is_(False),
+    ]
+    for field in key_fields:
+        conditions.append(KnowledgeNode.properties[field].astext == str(properties[field]))
+
+    stmt = select(KnowledgeNode).where(and_(*conditions))
+    if exclude_node_id is not None:
+        stmt = stmt.where(KnowledgeNode.id != exclude_node_id)
+
+    result = await session.execute(stmt)
+    nodes = list(result.scalars().all())
+
+    conflicts = []
+    for n in nodes:
+        matched = {f: properties[f] for f in key_fields}
+        conflicts.append(
+            {
+                "existing_node_id": str(n.id),
+                "existing_node_title": n.title,
+                "existing_node_type": node_type,
+                "similarity": None,
+                "matched_key_attrs": matched,
+                "conflict_type": "duplicate",
+            }
+        )
+    return conflicts
 
 
 def _match_key_attrs(
