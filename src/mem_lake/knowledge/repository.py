@@ -21,7 +21,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.audit.service import write_audit_log
@@ -367,3 +367,29 @@ async def list_nodes_by_project(
     stmt = stmt.order_by(KnowledgeNode.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def get_distinct_tags(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    node_type: str | None = None,
+) -> list[str]:
+    """返回项目内所有节点的去重标签集合（用于标签语义扩展的词表）。
+
+    仅统计未软删除节点（is_deleted=false）；tags 为 JSONB 数组，
+    用 jsonb_array_elements_text 展开后 DISTINCT。node_type 非空时按类型过滤。
+    """
+    base = (
+        "SELECT DISTINCT jsonb_array_elements_text(tags) AS tag "
+        "FROM knowledge_node "
+        "WHERE project_id = :pid AND is_deleted = false AND tags IS NOT NULL"
+    )
+    if node_type is not None:
+        base += " AND type = :nt"
+    stmt = text(base)
+    params = {"pid": project_id}
+    if node_type is not None:
+        params["nt"] = node_type
+    result = await session.execute(stmt, params)
+    return [row[0] for row in result if row[0]]

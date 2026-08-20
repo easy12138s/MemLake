@@ -5,7 +5,7 @@
 
 包含工具（PDD 6.1）：
 - search_similar_requirements（PM/Dev）：向量+全文融合检索相似需求
-- search_code_snippets（Dev）：向量+全文融合检索代码片段
+- search_code_snippets（Dev）：向量+全文融合检索研发资产（CodeSnippet/Pitfall/Solution/DesignIntent）
 - analyze_impact_scope（PM/Dev）：图检索分析变更影响范围（Requirement→Code→Solution→Intent）
 - check_requirement_conflicts（PM）：向量检索检测需求冲突（同项目同类型高相似度）
 - list_knowledge（Admin）：分页列出项目知识节点（不走融合检索）
@@ -41,6 +41,7 @@ from mem_lake.knowledge.repository import list_nodes_by_project
 from mem_lake.knowledge.schema import SchemaValidationError
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.fusion import SearchResult, hybrid_search
+from mem_lake.search.tag_expansion import expand_tags_for_project
 
 logger = logging.getLogger("mem_lake.gateway.tools.search")
 
@@ -167,6 +168,11 @@ def register_search_tools(mcp: FastMCP) -> None:
             default=0.5,
             description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；传 None 可关闭默认阈值（返回相对 top_n）",
         ),
+        semantic_tags: bool = Field(
+            default=False,
+            description="标签语义扩展：开启后用 embedding 将给定标签扩展为项目中语义相近的标签"
+            "（如「性能」≈「N+1」），放宽精确匹配；关闭时仅做精确 AND/OR 匹配",
+        ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索相似需求（同项目内 Requirement 类型）。
 
@@ -175,6 +181,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
         无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）。
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
+        tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
         """
         try:
             validate_project_access(project_id)
@@ -186,6 +193,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 tags=tuple(tags) if tags else None,
                 tags_op=tags_op,
                 min_score=min_score,
+                semantic_tags=semantic_tags,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
@@ -206,25 +214,34 @@ def register_search_tools(mcp: FastMCP) -> None:
             default=0.5,
             description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；传 None 可关闭默认阈值（返回相对 top_n）",
         ),
+        semantic_tags: bool = Field(
+            default=False,
+            description="标签语义扩展：开启后用 embedding 将给定标签扩展为项目中语义相近的标签"
+            "（如「性能」≈「N+1」），放宽精确匹配；关闭时仅做精确 AND/OR 匹配",
+        ),
     ) -> HybridSearchOutput:
-        """向量+全文融合检索代码片段（同项目内 CodeSnippet 类型）。
+        """向量+全文融合检索研发资产（同项目内 CodeSnippet/Pitfall/Solution/DesignIntent 类型）。
 
         Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
+        除代码片段外，踩坑(Pitfall)/方案(Solution)/设计意图(DesignIntent) 也会一并召回，
+        便于「踩过的坑」「采用的方案」等经验类检索。返回项的 node_type 区分具体类型。
         注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
         无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）。
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
+        tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
         """
         try:
             validate_project_access(project_id)
             return await _run_hybrid_search(
                 project_id=project_id,
                 query=query,
-                node_types=("CodeSnippet",),
+                node_types=("CodeSnippet", "Pitfall", "Solution", "DesignIntent"),
                 top_n=top_n,
                 tags=tuple(tags) if tags else None,
                 tags_op=tags_op,
                 min_score=min_score,
+                semantic_tags=semantic_tags,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
@@ -401,19 +418,40 @@ async def _run_hybrid_search(
     tags: tuple[str, ...] | None,
     tags_op: str = "all",
     min_score: float | None = None,
+    semantic_tags: bool = False,
 ) -> HybridSearchOutput:
     """执行三引擎融合检索的共享辅助函数。
 
     search_similar_requirements 与 search_code_snippets 共用此函数，
     仅 node_types 参数不同。min_score 按向量余弦分过滤融合结果。
+    semantic_tags=true 时，先用 embedding 将 tags 扩展为项目内语义相近标签再过滤。
     """
     ctx = get_context()
     lifespan_ctx = ctx.lifespan_context
 
+    effective_tags = tags
+    if semantic_tags and tags:
+        # 标签语义扩展：拉取项目标签词表 + 向量扩展；embedding 异常时降级为精确匹配
+        session = await get_readonly_session()
+        try:
+            expanded = await expand_tags_for_project(
+                lifespan_ctx.embedding_client,
+                session,
+                project_id=project_id,
+                tags=list(tags),
+                node_type=node_types[0] if len(node_types) == 1 else None,
+                threshold=0.7,
+            )
+            effective_tags = tuple(expanded)
+        except Exception as e:  # noqa: BLE001 - 降级而非让检索整体失败
+            logger.warning("semantic tag expansion failed, fall back to exact tags: %s", e)
+        finally:
+            await session.close()
+
     filters = FilterSpec(
         project_id=project_id,
         node_types=node_types,
-        tags=tags,
+        tags=effective_tags,
         tags_op=tags_op,
     )
 

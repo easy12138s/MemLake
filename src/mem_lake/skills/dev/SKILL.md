@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Dev Skills（开发者）
@@ -106,6 +106,16 @@ version: 1.1.0
 
 **自动构造的关系**：系统根据提交的 `requirement_id` 参数，自动为批次内**每个** CodeSnippet 构造 `Requirement --implements--> CodeSnippet` 关系（无需在 relations 中手动声明）。
 
+**⚠️ 坑/方案/意图不会自动挂载到需求**：自动关系**仅限 CodeSnippet**。Pitfall、Solution、DesignIntent 提交后只是孤立节点，**不会**自动与 `requirement_id` 建立任何边。若希望它们出现在某需求下（或在图谱中与其它节点相连），必须在 `relations` 中显式声明，例如把坑挂到需求：
+
+```python
+relations=[
+    {"from_ref": str(requirement_id), "relation_type": "described_by", "to_ref": "AsyncSessionLeak"}
+]
+```
+
+`relation_type` 可选 `implements / depends_on / realized_by / embodies / traces_to / described_by / references / relates_to` 等。
+
 返回：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"）
 
 ### get_role_skills — 获取角色 Skills 文档
@@ -180,12 +190,13 @@ submit_dev_artifacts(
 )
 ```
 
-### 场景三：记录踩坑
+### 场景三：记录踩坑并挂到需求
 
 ```
-# 开发中遇到并解决了坑，沉淀到知识图谱
+# 开发中遇到并解决了坑，沉淀到知识图谱，并关联到对应需求
 submit_dev_artifacts(
     project_id=uuid,
+    requirement_id=req_uuid,   # 必填；但坑不会自动挂到需求，需下方 relations 显式声明
     pitfalls=[{
         "ref": "AsyncSessionLeak",
         "title": "async SQLAlchemy Session 泄漏导致连接池耗尽",
@@ -197,16 +208,21 @@ submit_dev_artifacts(
             "severity": "P1"
         },
         "tags": ["async", "sqlalchemy", "bug"]
-    }]
+    }],
+    # 坑不会自动挂载到需求，必须显式声明关系，否则它只是孤立节点
+    relations=[
+        {"from_ref": str(req_uuid), "relation_type": "described_by", "to_ref": "AsyncSessionLeak"}
+    ]
 )
 ```
 
 ### 场景四：记录设计意图
 
 ```
-# 记录为什么选择当前架构
+# 记录为什么选择当前架构（同样需显式 relations 才会与需求/方案相连）
 submit_dev_artifacts(
     project_id=uuid,
+    requirement_id=req_uuid,
     design_intents=[{
         "ref": "WhyPGOverMongo",
         "title": "为什么选择 PostgreSQL 而非 MongoDB",
@@ -239,7 +255,7 @@ submit_dev_artifacts(
 
 8. **properties 字段缺失会被 schema 校验拒绝**：submit_dev_artifacts 在工具层即校验各类型 properties 必填字段，缺失会直接返回错误。
 
-9. **tags 为精确标签，AND/OR 由 tags_op 控制**：tags 是节点级精确标签。检索时默认 `tags_op="all"`（节点须包含全部给定标签，等价于子集匹配）；希望命中任一标签用 `tags_op="any"`（OR 语义）。语义相近但字面不同的标签（如「性能」与「N+1」）不会自动匹配，需调用方补全标签或改用 any。
+9. **tags 为精确标签，AND/OR 由 tags_op 控制**：tags 是节点级精确标签。检索时默认 `tags_op="all"`（节点须包含全部给定标签，等价于子集匹配）；希望命中任一标签用 `tags_op="any"`（OR 语义）。语义相近但字面不同的标签（如「性能」与「N+1」）默认不会自动匹配；若需语义相近召回，在 `search_similar_requirements` / `search_code_snippets` 中传 `semantic_tags=true`，系统会用 embedding 把给定标签扩展为项目内语义相近的标签（如「性能」≈「N+1」）。
 
 ## 示例
 
