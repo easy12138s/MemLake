@@ -75,3 +75,59 @@ async def test_target_id_nullable(db_session):
     result = await query_audit_logs(db_session, actor="actor_x")
     assert len(result) == 1
     assert result[0].target_id is None
+
+
+async def test_query_by_project_id_isolation(db_session):
+    """按 project_id 过滤实现项目隔离（问题 4 修复）。
+
+    写入两个不同项目的 node 写日志，按 project_a 查询只返回该项目的日志，
+    不混入 project_b 的日志。
+    """
+    project_a = uuid.uuid4()
+    project_b = uuid.uuid4()
+
+    await write_audit_log(
+        db_session,
+        actor="ak_a",
+        action="write",
+        target_type="node",
+        target_id=uuid.uuid4(),
+        project_id=project_a,
+    )
+    await write_audit_log(
+        db_session,
+        actor="ak_b",
+        action="write",
+        target_type="node",
+        target_id=uuid.uuid4(),
+        project_id=project_b,
+    )
+
+    result_a = await query_audit_logs(db_session, project_id=project_a)
+    assert len(result_a) == 1
+    assert result_a[0].project_id == project_a
+
+    result_b = await query_audit_logs(db_session, project_id=project_b)
+    assert len(result_b) == 1
+    assert result_b[0].project_id == project_b
+
+
+async def test_query_project_id_excludes_null(db_session):
+    """跨项目 admin 操作（project_id 为空）在按项目过滤时不返回。"""
+    project_a = uuid.uuid4()
+    await write_audit_log(
+        db_session,
+        actor="ak_a",
+        action="write",
+        target_type="node",
+        target_id=uuid.uuid4(),
+        project_id=project_a,
+    )
+    # access_key 管理类操作无项目维度
+    await write_audit_log(
+        db_session, actor="ak_admin", action="create", target_type="access_key"
+    )
+
+    result = await query_audit_logs(db_session, project_id=project_a)
+    assert len(result) == 1
+    assert result[0].project_id == project_a
