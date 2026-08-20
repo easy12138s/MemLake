@@ -209,8 +209,9 @@ manage_project_profile(
 
 | 层级 | 检测内容 | 不冲突条件 |
 |------|---------|-----------|
+| L0 硬判定 | 类型关键标识字段精确匹配（直接查库，不依赖向量） | 同项目同类型下关键标识字段**完全相同**（如相同 requirement_id）→ 直接判冲突（duplicate），升级人工 |
 | L1 硬门控 | 项目 + 节点类型 | 不同项目或不同类型 → 直接通过 |
-| L2 关键属性 | 类型特有标识字段 | 关键属性不同（如不同 requirement_id）→ 直接通过 |
+| L2 关键属性 | 类型特有标识字段 | 向量召回候选中关键属性不同（如不同 requirement_id）→ 排除 |
 | L3 内容语义 | f"{title}\n{content}" 向量相似度 | 相似度 < 0.92 → 直接通过 |
 
 各节点类型的关键标识字段：
@@ -257,7 +258,7 @@ manage_project_profile(
 
 5. **manage_project_profile 是直接写入**：不走审批流，不产生 batch_id，状态直接 approved。这是 admin 专属权限，PM/Dev 无权调用。
 
-6. **冲突检测的"假阴性"**：三层检测是保守的（宁可放过不误报）。如果人类 admin 通过 `review_batch_detail` 发现实际有冲突但 `review_auto_process` 未检测到，应手动 `review_reject` 并说明原因。
+6. **冲突检测的硬判定**：相同关键标识字段（如相同 requirement_id）一律判为重复冲突并升级人工审批，**不依赖内容相似度**（L0 硬判定）。若人类 admin 通过 `review_batch_detail` 确认确为重复，应手动 `review_reject` 并说明原因；若确认无冲突，可手动 `review_approve`。
 
 ## 示例
 
