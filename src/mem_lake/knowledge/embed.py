@@ -9,7 +9,7 @@ from typing import Any
 
 # 各节点类型参与嵌入的关键属性键（顺序即拼接顺序）
 EMBED_PROPERTY_FIELDS: dict[str, list[str]] = {
-    "ProjectProfile": ["name", "description", "tech_stack", "architecture"],
+    "ProjectProfile": ["name", "description", "tech_stack", "architecture", "work_dir", "repo"],
     "Requirement": ["requirement_id", "priority", "module", "acceptance_criteria"],
     "CodeSnippet": ["name", "type", "responsibility", "file_path", "language"],
     "Solution": ["approach", "version", "alternatives"],

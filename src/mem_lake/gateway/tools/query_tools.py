@@ -4,6 +4,7 @@
 
 包含工具（PDD 6.1）：
 - get_role_skills（三角色共享）：获取角色 Skills 指导文档
+- get_project_info（PM/Dev/Admin）：枚举/查询项目画像 + scope 自证
 - get_project_profile（PM/Dev/Admin）：查询项目画像（ProjectProfile 节点）
 - get_requirement_context（PM/Dev/Admin）：查询需求上下文（关联节点+关系链）
 - query_audit_log（Admin）：查询审计日志
@@ -20,14 +21,16 @@
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
 from mem_lake.audit.service import query_audit_logs
 from mem_lake.gateway.dependencies import (
+    get_current_project_scope,
     get_current_role,
     get_readonly_session,
     validate_project_access,
@@ -43,6 +46,7 @@ from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     get_node,
     list_nodes_by_project,
+    list_project_profiles,
 )
 
 logger = logging.getLogger("mem_lake.gateway.tools.query")
@@ -85,6 +89,45 @@ class GetProjectProfileOutput(BaseModel):
     project_id: uuid.UUID = Field(description="项目 ID")
     profile: ProjectProfileOutput | None = Field(
         default=None, description="项目画像（None 表示尚未创建）"
+    )
+
+
+class ProjectInfo(BaseModel):
+    """单个项目摘要信息（get_project_info 返回单元）。"""
+
+    project_id: uuid.UUID = Field(description="项目 ID")
+    name: str = Field(description="项目名称（ProjectProfile.title）")
+    work_dir: str | None = Field(default=None, description="项目本地工作目录")
+    repo: str | None = Field(default=None, description="代码仓库标识/名称")
+    description: str = Field(description="项目描述（ProjectProfile.content）")
+    tags: list[str] = Field(default=[], description="标签数组")
+    updated_at: Any = Field(description="更新时间（ISO 8601，取画像节点 created_at）")
+    profile: dict[str, Any] | None = Field(
+        default=None,
+        description="完整画像属性（仅 include_profile=true 时返回，否则 null）",
+    )
+
+
+class ScopeMeta(BaseModel):
+    """key 可见范围自证信息（include_scope_meta=true 时返回）。"""
+
+    scope_type: str = Field(description="范围类型：all（admin 不受限）/ scoped（受限）")
+    visible_count: int = Field(description="可见项目数量")
+    visible_uuids: list[str] = Field(
+        default=[], description="可见项目 UUID 列表（scope_type=all 时为空）"
+    )
+
+
+class GetProjectInfoOutput(BaseModel):
+    """get_project_info 工具出参。"""
+
+    action: str = Field(description="list / get")
+    scope: ScopeMeta | None = Field(
+        default=None, description="仅 include_scope_meta=true 时返回"
+    )
+    projects: list[ProjectInfo] = Field(default=[], description="list 结果数组")
+    project: ProjectInfo | None = Field(
+        default=None, description="get 结果（无画像时为 null）"
     )
 
 
@@ -209,6 +252,51 @@ def register_query_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except Exception as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
+    async def get_project_info(
+        action: Literal["list", "get"] = Field(
+            description="操作类型：list 枚举当前 key 可见项目 / get 查询单个项目"
+        ),
+        project_id: uuid.UUID | None = Field(
+            default=None, description="get 时必填的项目 ID"
+        ),
+        include_profile: bool = Field(
+            default=False,
+            description="为 true 时在每个项目结果附完整画像属性（properties）",
+        ),
+        include_scope_meta: bool = Field(
+            default=False,
+            description="为 true 时附 scope 自证信息（scope_type/visible_count/visible_uuids）",
+        ),
+    ) -> GetProjectInfoOutput:
+        """枚举/查询项目画像（PM/Dev/Admin 共享，只读）。
+
+        list：枚举当前 key 可见的项目（admin 全量；pm/dev 仅 scope 内），
+        每项含 name/work_dir/repo/description/tags/updated_at。
+        get：按 project_id 查询单个项目；越权（pm/dev 访问 scope 外）返回权限拒绝错误。
+        include_scope_meta=true 回显 key 的可见范围，用于自证项目隔离边界。
+        同一项目存在多个画像节点时取最新一条。
+        """
+        try:
+            role = get_current_role()
+            scope = get_current_project_scope()
+            session = await get_readonly_session()
+            try:
+                return await _get_project_info_core(
+                    action=action,
+                    project_id=project_id,
+                    include_profile=include_profile,
+                    include_scope_meta=include_scope_meta,
+                    role=role,
+                    scope=scope,
+                    list_fn=lambda **kw: list_project_profiles(session, **kw),
+                    validate_fn=validate_project_access,
+                )
+            finally:
+                await session.close()
+        except (ValueError, ToolError) as e:
             raise to_tool_error(e)
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
@@ -398,3 +486,82 @@ def _to_audit_log_item_output(log) -> AuditLogItemOutput:
         detail=log.detail or {},
         created_at=log.created_at.isoformat() if log.created_at else None,
     )
+
+
+def _to_project_info(node, include_profile: bool = False) -> ProjectInfo:
+    """从 ProjectProfile 节点构造 ProjectInfo。"""
+    props = node.properties or {}
+    return ProjectInfo(
+        project_id=node.project_id,
+        name=node.title,
+        work_dir=props.get("work_dir"),
+        repo=props.get("repo"),
+        description=node.content,
+        tags=node.tags or [],
+        updated_at=node.created_at.isoformat() if node.created_at else None,
+        profile=props if include_profile else None,
+    )
+
+
+def _build_scope_meta(is_admin: bool, scope: list[str], projects: list) -> ScopeMeta:
+    """构造 scope 自证信息。
+
+    admin（不受限）：scope_type="all"，visible_uuids 置空，visible_count 取实际可见项目数。
+    非 admin：scope_type="scoped"，visible_uuids 为 scope 列表，visible_count 为 scope 长度。
+    """
+    if is_admin:
+        return ScopeMeta(
+            scope_type="all", visible_count=len(projects), visible_uuids=[]
+        )
+    return ScopeMeta(
+        scope_type="scoped", visible_count=len(scope), visible_uuids=list(scope)
+    )
+
+
+async def _get_project_info_core(
+    *,
+    action: str,
+    project_id: uuid.UUID | None,
+    include_profile: bool,
+    include_scope_meta: bool,
+    role: str,
+    scope: list[str],
+    list_fn,
+    validate_fn,
+) -> GetProjectInfoOutput:
+    """get_project_info 的核心逻辑（与 FastMCP 上下文解耦，便于单测）。
+
+    list_fn(session 无关)：list_project_profiles 的封装（接收 project_ids/limit/offset）。
+    validate_fn：validate_project_access 的封装（越权抛 ToolError）。
+    """
+    is_admin = role == "admin"
+
+    if action == "list":
+        visible_ids = None if is_admin else [uuid.UUID(s) for s in scope]
+        nodes = await list_fn(project_ids=visible_ids)
+        # 同 project_id 去重（created_at desc 已排序，取首条）
+        seen: dict[uuid.UUID, ProjectInfo] = {}
+        for n in nodes:
+            if n.project_id in seen:
+                continue
+            seen[n.project_id] = _to_project_info(n, include_profile)
+        projects = list(seen.values())
+        scope_meta = (
+            _build_scope_meta(is_admin, scope, projects) if include_scope_meta else None
+        )
+        return GetProjectInfoOutput(action="list", scope=scope_meta, projects=projects)
+
+    elif action == "get":
+        if project_id is None:
+            raise ValueError("get 操作必须指定 project_id")
+        validate_fn(project_id)  # 越权抛 ToolError
+        nodes = await list_fn(project_ids=[project_id], limit=1)
+        project = _to_project_info(nodes[0], include_profile) if nodes else None
+        scope_meta = (
+            _build_scope_meta(is_admin, scope, [project] if project else [])
+            if include_scope_meta
+            else None
+        )
+        return GetProjectInfoOutput(action="get", scope=scope_meta, project=project)
+
+    raise ValueError(f"未知 action: {action}")

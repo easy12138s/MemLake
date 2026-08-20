@@ -23,7 +23,7 @@ def test_admin_has_all_tools():
 
 
 def test_pm_tools_exact():
-    """PM_TOOLS 精确匹配 PDD 3.5 的 8 个工具名。"""
+    """PM_TOOLS 精确匹配 PDD 3.5 的工具名（+ get_project_info）。"""
     expected = {
         "publish_requirement",
         "search_similar_requirements",
@@ -32,13 +32,14 @@ def test_pm_tools_exact():
         "update_requirement_relations",
         "get_project_profile",
         "get_requirement_context",
+        "get_project_info",
         "get_role_skills",
     }
     assert PM_TOOLS == expected
 
 
 def test_dev_tools_exact():
-    """DEV_TOOLS 精确匹配 PDD 3.5 的 7 个工具名。"""
+    """DEV_TOOLS 精确匹配 PDD 3.5 的工具名（+ get_project_info）。"""
     expected = {
         "get_project_profile",
         "get_requirement_context",
@@ -46,6 +47,7 @@ def test_dev_tools_exact():
         "submit_dev_artifacts",
         "search_similar_requirements",
         "analyze_impact_scope",
+        "get_project_info",
         "get_role_skills",
     }
     assert DEV_TOOLS == expected

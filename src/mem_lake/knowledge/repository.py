@@ -393,3 +393,29 @@ async def get_distinct_tags(
         params["nt"] = node_type
     result = await session.execute(stmt, params)
     return [row[0] for row in result if row[0]]
+
+
+async def list_project_profiles(
+    session: AsyncSession,
+    *,
+    project_ids: list[uuid.UUID] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[KnowledgeNode]:
+    """列出 ProjectProfile 节点（用于 get_project_info 枚举可见项目）。
+
+    仅返回未软删除且 approved 的画像节点。project_ids 非空时按项目 ID 过滤
+    （用于 pm/dev 仅查 scope 内项目、或 get 单项目）。按 created_at 倒序，
+    便于调用方按 project_id 去重时取最新。
+    """
+    stmt = (
+        select(KnowledgeNode)
+        .where(KnowledgeNode.type == "ProjectProfile")
+        .where(KnowledgeNode.is_deleted == False)  # noqa: E712
+        .where(KnowledgeNode.status == "approved")
+    )
+    if project_ids is not None:
+        stmt = stmt.where(KnowledgeNode.project_id.in_(project_ids))
+    stmt = stmt.order_by(KnowledgeNode.created_at.desc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
