@@ -233,11 +233,13 @@ submit_dev_artifacts(
 
 5. **不要假设提交即生效**：status="pending_review" 意味着产物尚未写入知识图谱。其他 Agent 此时检索不到。需等待 admin 审批通过后才可被检索。
 
-6. **content 应包含实际代码或详细说明**：content 会用于向量生成（f"{title}\n{content}"），内容越详细检索越准确。CodeSnippet 的 content 应包含实际代码片段，Pitfall 的 content 应包含错误堆栈和解决过程。
+6. **content 应包含实际代码或详细说明**：content 与核心属性都会用于向量生成（系统按类型纳入关键属性，如 CodeSnippet 的 name/responsibility、Pitfall 的 symptom/root_cause 等），内容越详细检索越准确。CodeSnippet 的 content 应包含实际代码片段，Pitfall 的 content 应包含错误堆栈和解决过程。
 
 7. **批量提交优于多次单条提交**：一次批量提交多个产物 + relations，系统会在审批通过时同事务写入所有节点和边，保证关系完整性。多次单条提交可能导致中间状态（节点已写入但关系未写入）。
 
 8. **properties 字段缺失会被 schema 校验拒绝**：submit_dev_artifacts 在工具层即校验各类型 properties 必填字段，缺失会直接返回错误。
+
+9. **tags 为精确标签，AND/OR 由 tags_op 控制**：tags 是节点级精确标签。检索时默认 `tags_op="all"`（节点须包含全部给定标签，等价于子集匹配）；希望命中任一标签用 `tags_op="any"`（OR 语义）。语义相近但字面不同的标签（如「性能」与「N+1」）不会自动匹配，需调用方补全标签或改用 any。
 
 ## 示例
 

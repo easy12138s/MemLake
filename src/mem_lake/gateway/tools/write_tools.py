@@ -128,7 +128,7 @@ class SolutionInput(BaseModel):
     title: str = Field(description="方案标题")
     content: str = Field(description="方案描述")
     properties: dict[str, Any] = Field(
-        description="Solution 属性，必填：version（版本号）、approach（采用的方案）、alternatives（备选方案）"
+        description="Solution 属性，必填：version（版本号）、approach（采用的方案）；可选：alternatives（备选方案）"
     )
     tags: list[str] = Field(default=[], description="标签数组")
 
