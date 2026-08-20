@@ -218,3 +218,42 @@ async def test_manage_access_key_update_scope_requires_target(admin_app):
         updated_data = _parse(updated)
         assert updated_data["action"] == "update_scope"
         assert updated_data["scoped"] == []
+
+
+async def test_manage_access_key_update_scope_key_ids_as_string(admin_app):
+    """update_scope 的 key_ids 以字符串（逗号分隔）传入时仍正确归一化并更新。
+
+    复现并修复：部分客户端将数组序列化成字符串，导致 pydantic 报
+    "Input should be a list"。工具层 _normalize_uuid_list 归一化后路径可用。
+    """
+    async with Client(admin_app) as client:
+        pid = uuid.uuid4()
+        c1 = _parse(
+            await client.call_tool(
+                "manage_access_key",
+                {"action": "create", "role": "dev", "project_scope": []},
+            )
+        )
+        c2 = _parse(
+            await client.call_tool(
+                "manage_access_key",
+                {"action": "create", "role": "dev", "project_scope": []},
+            )
+        )
+        k1, k2 = c1["created"]["key_id"], c2["created"]["key_id"]
+
+        # 以逗号分隔的字符串传入 key_ids（模拟客户端序列化）
+        updated = await client.call_tool(
+            "manage_access_key",
+            {
+                "action": "update_scope",
+                "project_scope": [str(pid)],
+                "key_ids": f"{k1},{k2}",
+            },
+        )
+        updated_data = _parse(updated)
+        assert updated_data["action"] == "update_scope"
+        scoped_ids = {k["key_id"] for k in updated_data["scoped"]}
+        assert {k1, k2} == scoped_ids
+        for k in updated_data["scoped"]:
+            assert k["project_scope"] == [str(pid)]

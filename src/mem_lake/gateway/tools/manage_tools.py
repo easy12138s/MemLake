@@ -13,7 +13,9 @@ manage_project_profile 为 PDD 3.4 + 8.5 要求的审批豁免入口（admin 直
 - manage_project_profile 绕过审批流直接调用 repository.create_node/update_node
 """
 
+import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -140,6 +142,43 @@ def _resolve_profile_id(project_id: uuid.UUID | None) -> uuid.UUID:
     return project_id or uuid.uuid4()
 
 
+def _normalize_uuid_list(
+    value: str | list[uuid.UUID] | list[str] | None,
+) -> list[uuid.UUID] | None:
+    """将 key_ids 入参规范为 UUID 列表（或 None）。
+
+    兼容两种客户端传参：
+    - 列表：[UUID | str, ...]
+    - 字符串：逗号/空格/分号分隔（或 JSON 数组字符串），如 "id1,id2" / "[id1,id2]"
+    部分客户端会将数组序列化成字符串，这里在工具层归一化，避免 pydantic 因
+    "收到字符串而非列表" 直接报错。非法片段会被跳过（保持容错）。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # JSON 数组字符串（如 "[\"id1\",\"id2\"]"）
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                items = [str(x) for x in parsed]
+            except (json.JSONDecodeError, TypeError):
+                items = []
+        else:
+            items = [p for p in re.split(r"[,\s;]+", s) if p]
+    else:
+        items = [str(x) for x in value]
+    result: list[uuid.UUID] = []
+    for item in items:
+        try:
+            result.append(uuid.UUID(str(item).strip()))
+        except (ValueError, AttributeError):
+            continue
+    return result
+
+
 class ReindexOutput(BaseModel):
     """reindex_project_vectors 工具出参。"""
 
@@ -177,9 +216,12 @@ def register_manage_tools(mcp: FastMCP) -> None:
         status_filter: str | None = Field(
             default=None, description="list 时按状态过滤：active/revoked"
         ),
-        key_ids: list[uuid.UUID] | None = Field(
+        key_ids: str | list[uuid.UUID] | None = Field(
             default=None,
-            description="update_scope 时显式指定一个或多个目标 Key ID",
+            description=(
+                "update_scope 时显式指定一个或多个目标 Key ID。"
+                "接受 UUID 列表，或逗号/空格/分号分隔的字符串（兼容客户端将数组序列化为字符串的场景）"
+            ),
         ),
         role_filter: str | None = Field(
             default=None,
@@ -254,7 +296,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     updated = await update_access_key_scope(
                         session,
                         project_scope=project_scope,
-                        key_ids=key_ids,
+                        key_ids=_normalize_uuid_list(key_ids),
                         role_filter=role_filter,
                         grant_all_projects=grant_all_projects,
                         actor=key_id_actor,

@@ -121,7 +121,7 @@ version: 1.1.3
 | project_scope | list[UUID] | create / update_scope 时必填 | 项目范围限制（admin 传空列表 `[]` 表示不受限）；update_scope 时为新的项目范围 |
 | key_id | UUID | revoke / rotate 时必填 | 目标 Access Key ID |
 | status_filter | str | list 时可选 | 按状态过滤：`active` / `revoked` |
-| key_ids | list[UUID] | update_scope 时可选 | 显式指定一个或多个目标 Key ID |
+| key_ids | list[UUID] \| str | update_scope 时可选 | 显式指定一个或多个目标 Key ID（接受 UUID 列表，或逗号/空格分隔的字符串，兼容客户端将数组序列化为字符串的场景）|
 | role_filter | str | update_scope 时可选 | 按角色批量授权（如 `"dev"` → 所有 dev Key）|
 | grant_all_projects | bool | update_scope 时可选 | `true` 时一键将全部 Key 授权为不受限（配合空 project_scope）|
 
