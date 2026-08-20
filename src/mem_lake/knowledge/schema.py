@@ -36,7 +36,10 @@ CODE_SNIPPET_REQUIRED: set[str] = {"name", "type", "responsibility"}
 SOLUTION_REQUIRED: set[str] = {"approach", "version"}
 DESIGN_INTENT_REQUIRED: set[str] = {"rationale"}
 DECISION_REQUIRED: set[str] = {"decision_id", "decision"}
-PITFALL_REQUIRED: set[str] = {"symptom", "solution"}
+PITFALL_REQUIRED: set[str] = {"symptom", "root_cause", "solution"}
+
+# Pitfall 严重级合法枚举（描述承诺 P0~P3，schema 层枚举校验）
+SEVERITY_ENUM: frozenset[str] = frozenset({"P0", "P1", "P2", "P3"})
 
 NODE_SCHEMA: dict[str, set[str]] = {
     "ProjectProfile": PROJECT_PROFILE_REQUIRED,
@@ -88,6 +91,14 @@ def validate_node(node_type: str, properties: dict) -> None:
             f"节点 {node_type} 缺失必填字段: {sorted(missing)}，"
             f"必填字段: {sorted(required)}"
         )
+
+    # Pitfall severity 枚举校验（存在则须合法，避免非法严重级入库）
+    if node_type == "Pitfall" and "severity" in properties:
+        if properties["severity"] not in SEVERITY_ENUM:
+            raise SchemaValidationError(
+                f"节点 Pitfall 的 severity 非法: {properties['severity']!r}，"
+                f"合法值: {sorted(SEVERITY_ENUM)}"
+            )
 
 
 def validate_edge_type(edge_type: str) -> None:

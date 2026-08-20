@@ -35,6 +35,7 @@ version: 1.1.0
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | project_id | UUID | 是 | 项目 ID |
+| requirement_id | UUID | 是 | 关联的需求节点 ID（自动为每个 CodeSnippet 构造 implements 边） |
 | code_snippets | list[dict] | 否 | 代码片段列表 |
 | solutions | list[dict] | 否 | 解决方案列表 |
 | design_intents | list[dict] | 否 | 设计意图列表 |
@@ -97,13 +98,13 @@ version: 1.1.0
 [
     {
         "from_ref": "LoginService",      # ref 名或已有节点 UUID
-        "edge_type": "implements",       # implements/depends_on/resolves/explains
-        "to_ref": "REQ-001-uuid"         # ref 名或已有节点 UUID
+        "relation_type": "implements",  # implements/depends_on/realized_by/embodies/traces_to/described_by/references
+        "to_ref": "req-uuid"             # ref 名或已有节点 UUID
     }
 ]
 ```
 
-**自动构造的关系**：当 code_snippets 中某片段的 ref 与 requirements 中某需求的 ref 匹配时，系统自动构造 `Requirement --implements--> CodeSnippet` 关系。
+**自动构造的关系**：系统根据提交的 `requirement_id` 参数，自动为批次内**每个** CodeSnippet 构造 `Requirement --implements--> CodeSnippet` 关系（无需在 relations 中手动声明）。
 
 返回：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"）
 
@@ -172,10 +173,10 @@ submit_dev_artifacts(
             "alternatives": "Session-based auth（因扩展性差未采用）"
         }
     }],
-    relations=[
-        {"from_ref": "LoginService", "edge_type": "implements", "to_ref": "REQ-001-uuid"},
-        {"from_ref": "TokenAuth", "edge_type": "explains", "to_ref": "LoginService"}
-    ]
+     relations=[
+         {"from_ref": "LoginService", "relation_type": "implements", "to_ref": "req-uuid"},
+         {"from_ref": "TokenAuth", "relation_type": "traces_to", "to_ref": "LoginService"}
+     ]
 )
 ```
 
@@ -273,10 +274,10 @@ Dev: "把登录模块的实现和方案录入 Mem Lake"
             "alternatives": "Session-based（因水平扩展困难未采用）"
         }
     }],
-    relations=[
-        {"from_ref": "LoginService", "edge_type": "implements", "to_ref": "req-001-uuid"},
-        {"from_ref": "TokenAuth", "edge_type": "explains", "to_ref": "LoginService"}
-    ]
+     relations=[
+         {"from_ref": "LoginService", "relation_type": "implements", "to_ref": "req-001-uuid"},
+         {"from_ref": "TokenAuth", "relation_type": "traces_to", "to_ref": "LoginService"}
+     ]
 )
 ← batch_id="abc-123", status="pending_review"
 

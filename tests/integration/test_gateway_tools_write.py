@@ -17,13 +17,16 @@ import pytest
 
 from mem_lake.approval.service import (
     BatchNotFoundError,
+    PayloadValidationError,
     get_batch_detail,
     list_pending_batches,
     review_approve,
     review_reject,
     submit_batch,
 )
+from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.gateway.tools.write_tools import (
+    ArtifactRelationInput,
     ArtifactsInput,
     CodeSnippetInput,
     DesignIntentInput,
@@ -33,7 +36,9 @@ from mem_lake.gateway.tools.write_tools import (
     SolutionInput,
     _build_dev_items,
     _build_publish_items,
+    _validate_dev_artifacts,
 )
+from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import get_node
 
 
@@ -675,3 +680,194 @@ class TestReviewQueryEndToEnd:
         """查询不存在批次抛 BatchNotFoundError。"""
         with pytest.raises(BatchNotFoundError):
             await get_batch_detail(db_session, uuid.uuid4())
+
+
+# ============================================================================
+# C 项：submit_dev_artifacts 提交前 ref / requirement_id 一致性与归属校验
+# ============================================================================
+
+
+class TestValidateDevArtifacts:
+    """_validate_dev_artifacts 提前拦截批内 ref / requirement_id 不一致。"""
+
+    @staticmethod
+    def _artifacts(ref: str = "CS1") -> ArtifactsInput:
+        return ArtifactsInput(
+            code_snippets=[
+                CodeSnippetInput(
+                    ref=ref,
+                    title="登录服务",
+                    content="x",
+                    properties={
+                        "name": "LoginService",
+                        "type": "class",
+                        "responsibility": "登录",
+                        "file_path": "a.py",
+                    },
+                )
+            ]
+        )
+
+    @staticmethod
+    async def _seed_node(project_id, node_type) -> KnowledgeNode:
+        """插入一个已提交的节点（独立 session），返回供测试引用。"""
+        node = KnowledgeNode(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            type=node_type,
+            title="seed",
+            content="seed",
+            created_by="ak_dev",
+        )
+        async with AsyncSessionLocal() as s:
+            s.add(node)
+            await s.commit()
+        return node
+
+    @staticmethod
+    async def _cleanup(node) -> None:
+        async with AsyncSessionLocal() as s:
+            await s.delete(node)
+            await s.commit()
+
+    async def test_duplicate_ref_rejected(self, db_session):
+        """重复 ref 触发 PayloadValidationError（批内必须唯一）。"""
+        arts = ArtifactsInput(
+            code_snippets=[
+                CodeSnippetInput(
+                    ref="CS1",
+                    title="a",
+                    content="x",
+                    properties={
+                        "name": "A",
+                        "type": "class",
+                        "responsibility": "r",
+                        "file_path": "a.py",
+                    },
+                ),
+                CodeSnippetInput(
+                    ref="CS1",
+                    title="b",
+                    content="x",
+                    properties={
+                        "name": "B",
+                        "type": "class",
+                        "responsibility": "r",
+                        "file_path": "b.py",
+                    },
+                ),
+            ]
+        )
+        with pytest.raises(PayloadValidationError, match="ref 重复"):
+            await _validate_dev_artifacts(
+                project_id=uuid.uuid4(),
+                requirement_id=uuid.uuid4(),
+                artifacts=arts,
+                relations=[],
+            )
+
+    async def test_unknown_ref_name_rejected(self, db_session):
+        """relation 引用未在 artifacts 声明的 ref 名 → 拦截。"""
+        project_id = uuid.uuid4()
+        req = await self._seed_node(project_id, "Requirement")
+        relations = [
+            ArtifactRelationInput(
+                from_ref="CS1", to_ref="NOPE", relation_type="depends_on"
+            )
+        ]
+        try:
+            with pytest.raises(PayloadValidationError, match="未知 ref 名"):
+                await _validate_dev_artifacts(
+                    project_id=project_id,
+                    requirement_id=req.id,
+                    artifacts=self._artifacts(),
+                    relations=relations,
+                )
+        finally:
+            await self._cleanup(req)
+
+    async def test_self_reference_rejected(self, db_session):
+        """relation 的 from_ref == to_ref 视为自引用 → 拦截。"""
+        project_id = uuid.uuid4()
+        req = await self._seed_node(project_id, "Requirement")
+        relations = [
+            ArtifactRelationInput(
+                from_ref="CS1", to_ref="CS1", relation_type="depends_on"
+            )
+        ]
+        try:
+            with pytest.raises(PayloadValidationError, match="自引用"):
+                await _validate_dev_artifacts(
+                    project_id=project_id,
+                    requirement_id=req.id,
+                    artifacts=self._artifacts(),
+                    relations=relations,
+                )
+        finally:
+            await self._cleanup(req)
+
+    async def test_dangling_uuid_rejected(self, db_session):
+        """relation 引用不存在的 UUID → 拦截。"""
+        project_id = uuid.uuid4()
+        req = await self._seed_node(project_id, "Requirement")
+        dangling = uuid.uuid4()
+        relations = [
+            ArtifactRelationInput(
+                from_ref="CS1", to_ref=str(dangling), relation_type="depends_on"
+            )
+        ]
+        try:
+            with pytest.raises(PayloadValidationError, match="引用 UUID 不存在"):
+                await _validate_dev_artifacts(
+                    project_id=project_id,
+                    requirement_id=req.id,
+                    artifacts=self._artifacts(),
+                    relations=relations,
+                )
+        finally:
+            await self._cleanup(req)
+
+    async def test_requirement_id_not_found_rejected(self, db_session):
+        """requirement_id 不存在 → 拦截。"""
+        with pytest.raises(PayloadValidationError, match="requirement_id 不存在"):
+            await _validate_dev_artifacts(
+                project_id=uuid.uuid4(),
+                requirement_id=uuid.uuid4(),
+                artifacts=self._artifacts(),
+                relations=[],
+            )
+
+    async def test_requirement_id_wrong_type_rejected(self, db_session):
+        """requirement_id 指向非 Requirement 节点 → 拦截。"""
+        project_id = uuid.uuid4()
+        node = await self._seed_node(project_id, "CodeSnippet")
+        try:
+            with pytest.raises(PayloadValidationError, match="类型非 Requirement"):
+                await _validate_dev_artifacts(
+                    project_id=project_id,
+                    requirement_id=node.id,
+                    artifacts=self._artifacts(),
+                    relations=[],
+                )
+        finally:
+            await self._cleanup(node)
+
+    async def test_valid_passes(self, db_session):
+        """合法 requirement_id + 内部引用 → 通过校验不抛异常。"""
+        project_id = uuid.uuid4()
+        req = await self._seed_node(project_id, "Requirement")
+        try:
+            await _validate_dev_artifacts(
+                project_id=project_id,
+                requirement_id=req.id,
+                artifacts=self._artifacts(),
+                relations=[
+                    ArtifactRelationInput(
+                        from_ref="CS1",
+                        to_ref=str(req.id),
+                        relation_type="implements",
+                    )
+                ],
+            )
+        finally:
+            await self._cleanup(req)

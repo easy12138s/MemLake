@@ -56,7 +56,12 @@ class TestValidateNode:
             ),
             (
                 "Pitfall",
-                {"symptom": "token 续期冲突", "solution": "Redis 锁"},
+                {
+                    "symptom": "token 续期冲突",
+                    "root_cause": "时钟不同步",
+                    "solution": "Redis 锁",
+                    "severity": "P1",
+                },
             ),
         ],
     )
@@ -91,6 +96,7 @@ class TestValidateNode:
             ("Decision", "decision_id"),
             ("Decision", "decision"),
             ("Pitfall", "symptom"),
+            ("Pitfall", "root_cause"),
             ("Pitfall", "solution"),
         ],
     )
@@ -102,6 +108,32 @@ class TestValidateNode:
         with pytest.raises(SchemaValidationError) as exc_info:
             validate_node(node_type, full_props)
         assert missing_field in str(exc_info.value)
+
+    @pytest.mark.parametrize("severity", ["P10", "p0", "CRITICAL", "0", 5, ""])
+    def test_pitfall_invalid_severity(self, severity):
+        """Pitfall severity 非法枚举抛 SchemaValidationError。"""
+        with pytest.raises(SchemaValidationError, match="severity"):
+            validate_node(
+                "Pitfall",
+                {
+                    "symptom": "s",
+                    "root_cause": "rc",
+                    "solution": "sol",
+                    "severity": severity,
+                },
+            )
+
+    def test_pitfall_valid_severity(self):
+        """合法 severity 不抛异常。"""
+        validate_node(
+            "Pitfall",
+            {
+                "symptom": "s",
+                "root_cause": "rc",
+                "solution": "sol",
+                "severity": "P2",
+            },
+        )
 
     def test_properties_not_dict(self):
         """properties 非 dict 抛 SchemaValidationError。"""
@@ -170,7 +202,7 @@ class TestValidateNode:
             "Solution": {"approach": "a", "version": "1"},
             "DesignIntent": {"rationale": "r"},
             "Decision": {"decision_id": "D1", "decision": "d"},
-            "Pitfall": {"symptom": "s", "solution": "sol"},
+            "Pitfall": {"symptom": "s", "root_cause": "rc", "solution": "sol"},
         }
         return dict(full[node_type])
 

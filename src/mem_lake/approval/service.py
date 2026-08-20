@@ -42,6 +42,9 @@ STATUS_REJECTED = "rejected"
 # 终态集合（不可再转换）
 TERMINAL_STATUSES: frozenset[str] = frozenset({STATUS_APPROVED, STATUS_REJECTED})
 
+# 单批次 items 上限（节点+边总数），防止一次灌入大量节点/边造成滥用
+MAX_ITEMS_PER_BATCH: int = 50
+
 
 class BatchNotFoundError(Exception):
     """批次不存在时抛出。"""
@@ -114,6 +117,12 @@ async def submit_batch(
     # 3. 校验 items 非空与 payload 合规性
     if not items:
         raise PayloadValidationError("items 不能为空")
+
+    if len(items) > MAX_ITEMS_PER_BATCH:
+        raise PayloadValidationError(
+            f"批次 items 数量 {len(items)} 超过上限 {MAX_ITEMS_PER_BATCH}"
+            f"（节点+边总数），请分批提交"
+        )
 
     for idx, item in enumerate(items):
         _validate_item_structure(item, idx)
