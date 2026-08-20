@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
+from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.schema import validate_edge_type, validate_node
@@ -69,8 +70,8 @@ async def create_node(
             raise ValueError(
                 "generate_vector=True 时必须提供 embedding_client"
             )
-        # 拼接标题与正文作为向量化输入（bge-large-zh-v1.5 推荐 query/doc 同维）
-        embed_input = f"{title}\n{content}"
+        # 拼接标题、正文与关键属性作为向量化输入（属性富集提升语义召回）
+        embed_input = build_embed_text(node_type, title, content, properties)
         content_vector = await embedding_client.embed_one(embed_input)
 
     node = KnowledgeNode(
@@ -197,7 +198,7 @@ async def update_node(
             raise ValueError(
                 "regenerate_vector=True 且 title/content 变更时必须提供 embedding_client"
             )
-        embed_input = f"{node.title}\n{node.content}"
+        embed_input = build_embed_text(node.type, node.title, node.content, node.properties)
         node.content_vector = await embedding_client.embed_one(embed_input)
         changes["vector_regenerated"] = True
 
@@ -322,7 +323,7 @@ async def regenerate_vector(
     不存在抛 NodeNotFoundError。不 commit。
     """
     node = await get_node(session, node_id)
-    embed_input = f"{node.title}\n{node.content}"
+    embed_input = build_embed_text(node.type, node.title, node.content, node.properties)
     node.content_vector = await embedding_client.embed_one(embed_input)
     await session.flush()
 
