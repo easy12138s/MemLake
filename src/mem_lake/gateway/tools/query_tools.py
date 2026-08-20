@@ -489,11 +489,15 @@ def _to_audit_log_item_output(log) -> AuditLogItemOutput:
 
 
 def _to_project_info(node, include_profile: bool = False) -> ProjectInfo:
-    """从 ProjectProfile 节点构造 ProjectInfo。"""
+    """从 ProjectProfile 节点构造 ProjectInfo。
+
+    name 优先取 properties.name（业务项目名），缺省回退 node.title，
+    避免列表中的 name 与画像内部 name 语义割裂。
+    """
     props = node.properties or {}
     return ProjectInfo(
         project_id=node.project_id,
-        name=node.title,
+        name=props.get("name", node.title),
         work_dir=props.get("work_dir"),
         repo=props.get("repo"),
         description=node.content,
