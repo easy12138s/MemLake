@@ -288,6 +288,13 @@ def register_write_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def submit_dev_artifacts(
         project_id: uuid.UUID = Field(description="归属项目 ID"),
+        artifacts: ArtifactsInput = Field(
+            description="开发产物集合（代码片段/方案/意图/踩坑）"
+        ),
+        relations: list[ArtifactRelationInput] = Field(
+            default=[],
+            description="产物间关系（from_ref/to_ref 可用 ref 名或 UUID）",
+        ),
         requirement_id: uuid.UUID | None = Field(
             default=None,
             description=(
@@ -295,13 +302,6 @@ def register_write_tools(mcp: FastMCP) -> None:
                 "省略则提交「游离知识点」，系统自动把每个产物挂到本项目的 ProjectProfile "
                 "节点（若该节点存在），无需绑定具体需求"
             ),
-        ),
-        artifacts: ArtifactsInput = Field(
-            description="开发产物集合（代码片段/方案/意图/踩坑）"
-        ),
-        relations: list[ArtifactRelationInput] = Field(
-            default=[],
-            description="产物间关系（from_ref/to_ref 可用 ref 名或 UUID）",
         ),
         operation_id: str | None = Field(
             default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
