@@ -81,7 +81,7 @@ docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 |------|------|------|
 | postgres | 5432 | PostgreSQL 17 + AGE + pgvector + zhparser，数据持久化在 `pg_data` 卷 |
 | embedding | 8001 | bge-large-zh-v1.5 向量化服务，mem-lake 通过 HTTP 调用 |
-| mem-lake | 8000 | MCP 网关，18 个工具 + RBAC + 限流 |
+| mem-lake | 8000 | MCP 网关，21 个工具 + RBAC + 限流 |
 
 启动顺序：postgres healthy → embedding healthy → mem-lake。生产环境仅放行 8000 端口。
 
