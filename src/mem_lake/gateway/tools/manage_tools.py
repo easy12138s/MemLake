@@ -15,7 +15,7 @@ manage_project_profile 为 PDD 3.4 + 8.5 要求的审批豁免入口（admin 直
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastmcp import FastMCP
@@ -265,12 +265,25 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
 
 def _to_access_key_output(access_key) -> AccessKeyOutput:
-    """从 AccessKey ORM 对象构造 AccessKeyOutput。"""
+    """从 AccessKey ORM 对象构造 AccessKeyOutput。
+
+    access_key.created_at/revoked_at 在 ORM 中为 naive datetime（列类型未带时区），
+    序列化为 ISO 串时缺少偏移，不满足 MCP 输出 schema 的 date-time（RFC 3339）校验。
+    此处统一补 UTC 时区，使其输出带偏移，通过 schema 校验。
+    """
+
+    def _as_utc_aware(dt: datetime | None) -> datetime | None:
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     return AccessKeyOutput(
         key_id=access_key.id,
         role=access_key.role,
         project_scope=access_key.project_scope or [],
         status=access_key.status,
-        created_at=access_key.created_at,
-        revoked_at=access_key.revoked_at,
+        created_at=_as_utc_aware(access_key.created_at),
+        revoked_at=_as_utc_aware(access_key.revoked_at),
     )
