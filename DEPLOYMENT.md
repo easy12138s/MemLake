@@ -33,6 +33,17 @@ docker compose up -d --build
 
 首次构建需编译 AGE/pgvector/zhparser 扩展 + 下载 Embedding 模型，约 15-20 分钟。
 
+### 2.1 复用本地模型（可选，跳过下载）
+
+若宿主机已下载过 bge 模型（默认位于仓库 `models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master`），可避免重复下载：叠加 `docker-compose.local.yml` 将本地模型挂载进容器，并通过 `DOWNLOAD_MODEL=false` 跳过构建期下载。
+
+```bash
+cd deploy
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+> 注意：该文件不会被 `docker compose up` 自动加载，必须显式 `-f` 指定。宿主机不存在该模型目录时**不要**使用，否则 embedding 容器会因加载不到模型而启动失败。普通首次部署直接 `docker compose up -d --build` 即可。
+
 ### 3. 验证
 
 ```bash
