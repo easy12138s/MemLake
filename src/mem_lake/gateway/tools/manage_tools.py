@@ -40,6 +40,8 @@ from mem_lake.gateway.tools._shared import (
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     create_node,
+    list_nodes_by_project,
+    regenerate_vector,
     update_node,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -109,6 +111,14 @@ class ManageProjectProfileOutput(BaseModel):
     action: str = Field(description="操作类型：create/update")
     status: str = Field(description="节点状态：approved（直接审批豁免）")
     version: int = Field(description="版本号")
+
+
+class ReindexOutput(BaseModel):
+    """reindex_project_vectors 工具出参。"""
+
+    project_id: uuid.UUID = Field(description="项目 ID")
+    reindexed: int = Field(description="已重建向量的节点数")
+    status: str = Field(description="执行状态：done")
 
 
 # ============================================================================
@@ -256,6 +266,47 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 else:
                     raise ValueError(f"未知 action: {action}")
         except (NodeNotFoundError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def reindex_project_vectors(
+        project_id: uuid.UUID = Field(description="归属项目 ID"),
+        limit: int = Field(
+            default=500, description="单次最多重建向量的节点数（避免超大项目单次超时）"
+        ),
+    ) -> ReindexOutput:
+        """重建项目内全部知识节点的向量（admin 运维工具）。
+
+        当嵌入文本构造逻辑变更（如纳入更多属性）后，存量节点的 content_vector 已过期，
+        需调用本工具刷新以恢复检索召回质量。逐节点重新生成向量并随事务提交。
+        仅重建 approved 状态节点。嵌入逻辑见 mem_lake.knowledge.embed。
+        """
+        try:
+            validate_project_access(project_id)
+            ctx = get_context()
+            lifespan_ctx = ctx.lifespan_context
+            actor = get_current_key_id()
+
+            async with transactional_session() as session:
+                nodes = await list_nodes_by_project(
+                    session,
+                    project_id=project_id,
+                    status="approved",
+                    limit=limit,
+                )
+                count = 0
+                for node in nodes:
+                    await regenerate_vector(
+                        session,
+                        embedding_client=lifespan_ctx.embedding_client,
+                        node_id=node.id,
+                        actor=actor,
+                    )
+                    count += 1
+                return ReindexOutput(
+                    project_id=project_id, reindexed=count, status="done"
+                )
+        except (NodeNotFoundError, ValueError) as e:
             raise to_tool_error(e)
 
 
