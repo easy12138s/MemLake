@@ -15,12 +15,14 @@ PM_TOOLS: frozenset[str] = frozenset({
     "update_requirement_relations",
     "get_project_profile",
     "get_requirement_context",
+    "get_project_info",
     "get_role_skills",
 })
 
 DEV_TOOLS: frozenset[str] = frozenset({
     "get_project_profile",
     "get_requirement_context",
+    "get_project_info",
     "search_code_snippets",
     "submit_dev_artifacts",
     "search_similar_requirements",

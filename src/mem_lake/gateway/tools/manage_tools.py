@@ -98,10 +98,17 @@ class ProjectProfileInput(BaseModel):
     properties: dict[str, Any] = Field(
         description=(
             "ProjectProfile 属性，必填：name（项目名）、description（描述）、"
-            "tech_stack（技术栈数组）、architecture（架构）；可选：conventions、team"
+            "tech_stack（技术栈数组）、architecture（架构）；可选：conventions、team、"
+            "work_dir（本地工作目录）、repo（代码仓库标识）"
         )
     )
     tags: list[str] = Field(default=[], description="标签数组")
+    work_dir: str | None = Field(
+        default=None, description="项目本地工作目录绝对路径（可选，登记便于自证隔离/定位）"
+    )
+    repo: str | None = Field(
+        default=None, description="代码仓库标识/名称（可选，登记便于检索与核对）"
+    )
 
 
 class ManageProjectProfileOutput(BaseModel):
@@ -223,6 +230,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
             async with transactional_session() as session:
                 if action == "create":
+                    props = _profile_properties(profile)
                     node = await create_node(
                         session,
                         graph_store=lifespan_ctx.graph_store,
@@ -231,7 +239,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         node_type="ProjectProfile",
                         title=profile.title,
                         content=profile.content,
-                        properties=profile.properties,
+                        properties=props,
                         tags=profile.tags,
                         created_by=key_id,
                         generate_vector=True,
@@ -245,6 +253,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 elif action == "update":
                     if not node_id:
                         raise ValueError("update 操作必须指定 node_id")
+                    props = _profile_properties(profile)
                     node = await update_node(
                         session,
                         graph_store=lifespan_ctx.graph_store,
@@ -252,7 +261,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         node_id=node_id,
                         title=profile.title,
                         content=profile.content,
-                        properties=profile.properties,
+                        properties=props,
                         tags=profile.tags,
                         actor=key_id,
                         regenerate_vector=True,
@@ -313,6 +322,19 @@ def register_manage_tools(mcp: FastMCP) -> None:
 # ============================================================================
 # 转换辅助函数
 # ============================================================================
+
+
+def _profile_properties(profile: "ProjectProfileInput") -> dict:
+    """合并 work_dir/repo 到 properties 副本，避免修改入参。
+
+    work_dir/repo 为可选元数据字段，仅当非空时写入，便于 get_project_info 回显。
+    """
+    props: dict = dict(profile.properties or {})
+    if profile.work_dir is not None:
+        props["work_dir"] = profile.work_dir
+    if profile.repo is not None:
+        props["repo"] = profile.repo
+    return props
 
 
 def _to_access_key_output(access_key) -> AccessKeyOutput:

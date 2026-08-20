@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import ARRAY, Text, cast
 from sqlalchemy.sql.elements import ColumnElement
 
 from mem_lake.knowledge.models import KnowledgeNode
@@ -76,7 +77,11 @@ def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
     if spec.tags:
         if spec.tags_op == "any":
             # JSONB ?| 操作符（has_any）：tags 数组包含 spec.tags 中任意一项即匹配（OR）
-            clauses.append(KnowledgeNode.tags.has_any(list(spec.tags)))
+            # ?| 右操作数必须是 text[]，需显式 cast，否则列表被按 jsonb 绑定导致
+            # "operator does not exist: jsonb ?| jsonb / missing cast" 错误
+            clauses.append(
+                KnowledgeNode.tags.op("?|")(cast(list(spec.tags), ARRAY(Text)))
+            )
         else:
             # 默认 all：JSONB @> 操作符（contains）：tags 数组包含 spec.tags 全部元素（AND）
             clauses.append(KnowledgeNode.tags.contains(list(spec.tags)))

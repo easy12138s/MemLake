@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, manage_access_key, manage_project_profile."
-version: 1.1.1
+version: 1.1.2
 ---
 
 # Admin Skills（管理员）
@@ -131,12 +131,26 @@ version: 1.1.1
 |------|------|------|------|
 | project_id | UUID | 是 | 项目 ID |
 | action | str | 是 | `create` / `update` |
-| profile | dict | 是 | 画像内容：title, content, properties（必填 name/description/tech_stack/architecture 等）, tags |
+| profile | dict | 是 | 画像内容：title, content, properties（必填 name/description/tech_stack/architecture 等；可选 work_dir/团队/repo）, tags |
 | node_id | UUID | update 时必填 | 现有 ProjectProfile 节点 ID |
 
 返回：`ManageProjectProfileOutput`（node_id, action, status="approved", version）
 
 特殊：admin 专属，直接写入 ProjectProfile 节点，状态直接 approved，不产生审批批次。
+`work_dir` / `repo` 为可选元数据，登记后 `get_project_info` 会回显，用于自证隔离与定位。
+
+### get_project_info — 枚举/查询项目画像（三角色共享）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| action | str | 是 | `list`（枚举当前 key 可见项目）/ `get`（查单个） |
+| project_id | UUID | get 时必填 | 项目 ID |
+| include_profile | bool | 否 | true 时附完整画像属性（properties） |
+| include_scope_meta | bool | 否 | true 时附 scope 自证（scope_type/visible_count/visible_uuids） |
+
+返回：`action` + `projects`（list）/ `project`（get）+ 可选 `scope`。
+list 时 admin 枚举全量项目，pm/dev 仅返回 scope 内项目；get 时 pm/dev 访问 scope 外项目返回权限拒绝。
+`include_scope_meta=true` 回显 key 可见范围，是自证项目隔离边界的载体。
 
 ### get_role_skills — 获取角色 Skills 文档
 

@@ -15,14 +15,21 @@
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from mem_lake.audit.service import query_audit_logs
-from mem_lake.gateway.tools.query_tools import _to_audit_log_item_output
+from mem_lake.gateway.tools.query_tools import (
+    _get_project_info_core,
+    _to_audit_log_item_output,
+)
+from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import (
     create_node,
     get_node,
     list_nodes_by_project,
+    list_project_profiles,
 )
+from mem_lake.search.filters import FilterSpec, compile_sqlalchemy
 
 
 # ============================================================================
@@ -519,6 +526,187 @@ class TestGetProjectProfile:
         assert len(nodes) == 1
         assert nodes[0].type == "ProjectProfile"
         assert nodes[0].title == "项目画像"
+
+
+# ============================================================================
+# get_project_info 端到端
+# ============================================================================
+
+
+class TestGetProjectInfo:
+    """get_project_info 端到端测试（核心逻辑 + list_project_profiles）。"""
+
+    async def test_list_project_profiles_repo(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """list_project_profiles 按项目过滤并返回 work_dir/repo 元数据。"""
+        project_id = uuid.uuid4()
+        props = knowledge_helpers["ProjectProfile"]()
+        props["work_dir"] = "d:/proj-a"
+        props["repo"] = "my-repo"
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="ProjectProfile",
+            title="项目A",
+            content="描述A",
+            properties=props,
+            created_by="ak_admin",
+        )
+        await db_session.commit()
+
+        nodes = await list_project_profiles(db_session, project_ids=[project_id])
+        assert len(nodes) == 1
+        assert nodes[0].properties.get("work_dir") == "d:/proj-a"
+        assert nodes[0].properties.get("repo") == "my-repo"
+
+    async def test_core_list_scoped_filters(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """非 admin 仅可见 scope 内项目（核心逻辑 + 真实 repo）。"""
+        pid_visible = uuid.uuid4()
+        pid_hidden = uuid.uuid4()
+        for pid in (pid_visible, pid_hidden):
+            await create_node(
+                db_session,
+                graph_store=graph_store,
+                embedding_client=mock_embedding_client,
+                project_id=pid,
+                node_type="ProjectProfile",
+                title=f"P-{pid}",
+                content="desc",
+                properties=knowledge_helpers["ProjectProfile"](),
+                created_by="ak_admin",
+            )
+        await db_session.commit()
+
+        out = await _get_project_info_core(
+            action="list",
+            project_id=None,
+            include_profile=False,
+            include_scope_meta=False,
+            role="dev",
+            scope=[str(pid_visible)],
+            list_fn=lambda **kw: list_project_profiles(db_session, **kw),
+            validate_fn=lambda x: None,
+        )
+        assert [i.project_id for i in out.projects] == [pid_visible]
+
+    async def test_core_get_returns_profile_meta(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """get 单项目返回 work_dir/repo 与 include_profile 完整属性。"""
+        project_id = uuid.uuid4()
+        props = knowledge_helpers["ProjectProfile"]()
+        props["work_dir"] = "d:/proj-b"
+        props["repo"] = "repo-b"
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="ProjectProfile",
+            title="项目B",
+            content="描述B",
+            properties=props,
+            created_by="ak_admin",
+        )
+        await db_session.commit()
+
+        out = await _get_project_info_core(
+            action="get",
+            project_id=project_id,
+            include_profile=True,
+            include_scope_meta=True,
+            role="admin",
+            scope=[],
+            list_fn=lambda **kw: list_project_profiles(db_session, **kw),
+            validate_fn=lambda x: None,
+        )
+        assert out.project is not None
+        assert out.project.work_dir == "d:/proj-b"
+        assert out.project.repo == "repo-b"
+        assert out.project.profile == props
+        assert out.scope is not None
+        assert out.scope.scope_type == "all"
+
+
+# ============================================================================
+# tags 过滤（all/any）端到端
+# ============================================================================
+
+
+class TestTagsFilter:
+    """tags_op=all/any 在真实 PG 上可执行（验证 ?| 缺 cast 的修复）。"""
+
+    async def test_tags_any_executes(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """tags_op='any' 编译为 tags ?| CAST(... AS TEXT[])，执行不报错且命中。"""
+        project_id = uuid.uuid4()
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="需求A",
+            content="内容A",
+            properties=knowledge_helpers["Requirement"](),
+            tags=["urgent", "bug"],
+            created_by="ak_pm",
+        )
+        await db_session.commit()
+
+        spec = FilterSpec(project_id=project_id, tags=("urgent",), tags_op="any")
+        clauses = compile_sqlalchemy(spec)
+        stmt = select(KnowledgeNode).where(*clauses)
+        rows = (await db_session.execute(stmt)).scalars().all()
+        assert len(rows) == 1
+        assert "urgent" in rows[0].tags
+
+    async def test_tags_all_executes(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """tags_op='all' 编译为 tags @> ...，执行不报错且需全包含。"""
+        project_id = uuid.uuid4()
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="需求B",
+            content="内容B",
+            properties=knowledge_helpers["Requirement"](),
+            tags=["urgent", "bug"],
+            created_by="ak_pm",
+        )
+        await db_session.commit()
+
+        # all：需同时含 urgent 与 bug → 命中
+        spec_hit = FilterSpec(
+            project_id=project_id, tags=("urgent", "bug"), tags_op="all"
+        )
+        rows_hit = (
+            await db_session.execute(
+                select(KnowledgeNode).where(*compile_sqlalchemy(spec_hit))
+            )
+        ).scalars().all()
+        assert len(rows_hit) == 1
+
+        # all：含不存在的标签 → 不命中
+        spec_miss = FilterSpec(
+            project_id=project_id, tags=("urgent", "nonexist"), tags_op="all"
+        )
+        rows_miss = (
+            await db_session.execute(
+                select(KnowledgeNode).where(*compile_sqlalchemy(spec_miss))
+            )
+        ).scalars().all()
+        assert len(rows_miss) == 0
 
 
 # ============================================================================
