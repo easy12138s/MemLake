@@ -39,7 +39,11 @@ from mem_lake.gateway.tools._shared import (
     build_node_item,
     to_tool_error,
 )
-from mem_lake.knowledge.repository import NodeNotFoundError, get_node
+from mem_lake.knowledge.repository import (
+    NodeNotFoundError,
+    get_node,
+    list_project_profiles,
+)
 from mem_lake.knowledge.schema import SchemaValidationError
 
 logger = logging.getLogger("mem_lake.gateway.tools.write")
@@ -284,8 +288,13 @@ def register_write_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def submit_dev_artifacts(
         project_id: uuid.UUID = Field(description="归属项目 ID"),
-        requirement_id: uuid.UUID = Field(
-            description="关联的需求节点 ID（自动构造 implements 关系）"
+        requirement_id: uuid.UUID | None = Field(
+            default=None,
+            description=(
+                "关联的需求节点 ID（自动为每个 CodeSnippet 构造 implements 边）。可选："
+                "省略则提交「游离知识点」，系统自动把每个产物挂到本项目的 ProjectProfile "
+                "节点（若该节点存在），无需绑定具体需求"
+            ),
         ),
         artifacts: ArtifactsInput = Field(
             description="开发产物集合（代码片段/方案/意图/踩坑）"
@@ -312,6 +321,12 @@ def register_write_tools(mcp: FastMCP) -> None:
         """
         try:
             validate_project_access(project_id)
+            # 游离知识点（无需求）：解析本项目最新 ProjectProfile 节点 ID
+            profile_id = (
+                await _get_project_profile_id(project_id)
+                if requirement_id is None
+                else None
+            )
             await _validate_dev_artifacts(
                 project_id=project_id,
                 requirement_id=requirement_id,
@@ -325,6 +340,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 artifacts=artifacts,
                 relations=relations,
                 created_by=key_id,
+                profile_id=profile_id,
             )
 
             if not items:
@@ -350,10 +366,26 @@ def register_write_tools(mcp: FastMCP) -> None:
 # ============================================================================
 
 
+async def _get_project_profile_id(project_id: uuid.UUID) -> uuid.UUID | None:
+    """解析本项目最新 ProjectProfile 节点 ID；不存在则返回 None。
+
+    用于游离知识点（requirement_id 为空）时自动挂到项目画像节点。
+    list_project_profiles 按 created_at 倒序，取第一条即为最新画像。
+    """
+    session = await get_readonly_session()
+    try:
+        profiles = await list_project_profiles(
+            session, project_ids=[project_id], limit=1
+        )
+        return profiles[0].id if profiles else None
+    finally:
+        await session.close()
+
+
 async def _validate_dev_artifacts(
     *,
     project_id: uuid.UUID,
-    requirement_id: uuid.UUID,
+    requirement_id: uuid.UUID | None,
     artifacts: ArtifactsInput,
     relations: list[ArtifactRelationInput],
 ) -> None:
@@ -379,19 +411,20 @@ async def _validate_dev_artifacts(
     # 2 & 3：requirement_id 存在性 + 类型 + 归属项目；relations 引用校验
     session = await get_readonly_session()
     try:
-        # 2. requirement_id 存在性 + 类型 + 归属项目
-        try:
-            req_node = await get_node(session, requirement_id)
-        except NodeNotFoundError:
-            raise PayloadValidationError(f"requirement_id 不存在: {requirement_id}")
-        if req_node.type != "Requirement":
-            raise PayloadValidationError(
-                f"requirement_id 类型非 Requirement: {req_node.type}"
-            )
-        if req_node.project_id != project_id:
-            raise PayloadValidationError(
-                f"requirement_id 不属于本项目: {requirement_id}"
-            )
+        # 2. requirement_id 存在性 + 类型 + 归属项目（仅当显式提供需求时校验）
+        if requirement_id is not None:
+            try:
+                req_node = await get_node(session, requirement_id)
+            except NodeNotFoundError:
+                raise PayloadValidationError(f"requirement_id 不存在: {requirement_id}")
+            if req_node.type != "Requirement":
+                raise PayloadValidationError(
+                    f"requirement_id 类型非 Requirement: {req_node.type}"
+                )
+            if req_node.project_id != project_id:
+                raise PayloadValidationError(
+                    f"requirement_id 不属于本项目: {requirement_id}"
+                )
 
         # 3. relations 引用校验
         errors: list[str] = []
@@ -467,10 +500,11 @@ def _build_publish_items(
 def _build_dev_items(
     *,
     project_id: uuid.UUID,
-    requirement_id: uuid.UUID,
+    requirement_id: uuid.UUID | None = None,
     artifacts: ArtifactsInput,
     relations: list[ArtifactRelationInput],
     created_by: str,
+    profile_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """构造 submit_dev_artifacts 的 items 列表。
 
@@ -542,15 +576,32 @@ def _build_dev_items(
             )
         )
 
-    # 2. 自动构造 Requirement --implements--> CodeSnippet 关系
-    for code in artifacts.code_snippets:
-        items.append(
-            build_edge_item(
-                from_ref=str(requirement_id),
-                to_ref=code.ref,
-                edge_type="implements",
+    # 2. 自动构造 Requirement --implements--> CodeSnippet 关系（仅当关联需求存在）
+    if requirement_id is not None:
+        for code in artifacts.code_snippets:
+            items.append(
+                build_edge_item(
+                    from_ref=str(requirement_id),
+                    to_ref=code.ref,
+                    edge_type="implements",
+                )
             )
-        )
+
+    # 2b. 游离知识点（无需求）：自动挂到 ProjectProfile 节点（若该节点存在）
+    if profile_id is not None:
+        for art in (
+            *artifacts.code_snippets,
+            *artifacts.solutions,
+            *artifacts.design_intents,
+            *artifacts.pitfalls,
+        ):
+            items.append(
+                build_edge_item(
+                    from_ref=str(profile_id),
+                    to_ref=art.ref,
+                    edge_type="references",
+                )
+            )
 
     # 3. 用户显式声明的 relations
     for r in relations:
