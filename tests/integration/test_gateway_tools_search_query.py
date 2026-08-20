@@ -156,6 +156,52 @@ class TestHybridSearchTools:
         finally:
             await _cleanup_project_data(db_session, graph_store, project_id)
 
+    async def test_fused_score_exposes_cosine_not_rrf(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """P4: fused 结果的 score 透出向量余弦分（0~1），而非 RRF 排名分（≈0.016）。
+
+        同时验证与同节点 vector 分一致（修复 check_requirement_conflicts 阈值失效）。
+        """
+        from mem_lake.search.filters import FilterSpec
+        from mem_lake.search.fusion import hybrid_search
+
+        project_id = uuid.uuid4()
+        req_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="登录需求",
+            content="需要登录功能",
+            properties=knowledge_helpers["Requirement"](),
+            created_by="ak_pm",
+        )
+        await db_session.commit()  # 独立 session 检索要求种子数据已提交
+
+        try:
+            result = await hybrid_search(
+                query="登录功能",
+                embedding_client=mock_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=10,
+                filters=FilterSpec(
+                    project_id=project_id, node_types=("Requirement",)
+                ),
+            )
+            vector_by_id = {r.node_id: r for r in result["vector"]}
+            assert result["fused"], "fused 不应为空"
+            for r in result["fused"]:
+                # 透出余弦分（mock 下为 1.0），而非 RRF 排名分（≈0.016）
+                assert r.score is not None
+                assert r.score > 0.9, f"fused.score 应透出余弦分，实际 {r.score}"
+                if r.node_id in vector_by_id:
+                    assert r.score == vector_by_id[r.node_id].score
+        finally:
+            await _cleanup_project_data(db_session, graph_store, project_id)
+
 
 # ============================================================================
 # analyze_impact_scope 端到端

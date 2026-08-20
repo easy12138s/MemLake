@@ -39,6 +39,9 @@ class SearchResult:
     properties: dict
     tags: list
 
+    # 注意：fused 结果的 score 为向量余弦分（0~1，来自 vector 引擎），便于判相关性；
+    # 排序仍由 RRF 排名决定。RRF 原始分数仅用于融合排序，不直接透出。
+
 
 # 摘要截断长度（PDD 3.3：返回结果含原文摘要）
 SUMMARY_MAX_LENGTH = 200
@@ -49,6 +52,28 @@ def _truncate(text: str, max_length: int = SUMMARY_MAX_LENGTH) -> str:
     if len(text) <= max_length:
         return text
     return text[:max_length] + "..."
+
+
+def _apply_vector_scores(
+    fused: list[SearchResult],
+    vector_results: list[SearchResult],
+) -> list[SearchResult]:
+    """将融合结果的 score 替换为对应节点的向量余弦分（0~1）。
+
+    排序仍由 RRF 决定（fused 已按 RRF 排好），此处仅替换展示/阈值用的 score。
+    无向量分（仅全文命中）的节点保留原 RRF 分（不入 map）。
+    """
+    vector_score_map = {
+        r.node_id: r.score for r in vector_results if r.score is not None
+    }
+    if not vector_score_map:
+        return fused
+    return [
+        replace(r, score=vector_score_map[r.node_id])
+        if r.node_id in vector_score_map
+        else r
+        for r in fused
+    ]
 
 
 def rrf_fuse(
@@ -163,6 +188,12 @@ async def hybrid_search(
 
     # 向量与全文 RRF 融合
     fused = rrf_fuse([vector_results, fulltext_results], k=60, top_n=top_n)
+
+    # 融合结果 score 透出向量余弦分（0~1）：便于调用方判相关性，并修复
+    # check_requirement_conflicts 用 r.score >= threshold(0.85) 过滤时 RRF 小数
+    # 永远不触发的问题。排序仍由 RRF 决定（fused_sorted 已按 RRF 排好），此处仅
+    # 替换展示/阈值用的 score；无向量分（仅全文命中）的节点保留原 RRF 分。
+    fused = _apply_vector_scores(fused, vector_results)
 
     return {
         "fused": fused,
