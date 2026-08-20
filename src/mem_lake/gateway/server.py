@@ -1,6 +1,6 @@
 """FastMCP 实例创建、工具注册、生命周期管理。
 
-对齐 PDD 6.1：FastMCP 4.0 实例，cache_ttl=300s + cache_scope=public，
+对齐 PDD 6.1：FastMCP 4.0 实例，cache_ttl=300s + cache_scope=private，
 4 个中间件按序注册，lifespan 初始化共享资源（EmbeddingClient/GraphStore/VectorSearcher）。
 
 不设置 auth= 参数：AccessKeyAuthMiddleware 在 on_request hook 中直接设置
@@ -9,7 +9,6 @@ request.scope["user"]，使 get_access_token() 正常工作（详见 gateway/mid
 
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastmcp import FastMCP
@@ -38,7 +37,7 @@ class LifespanContext:
     """
 
     embedding_client: EmbeddingClient
-    graph_store: "AGEGraphStore"  # noqa: F821（避免循环导入，用字符串引用）
+    graph_store: "AGEGraphStore"  # noqa: F821  # 避免循环导入，用字符串引用
     vector_searcher: VectorSearcher
 
 
@@ -61,7 +60,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
     )
 
     # DB 初始化：检查扩展 + 建业务表 + tsvector 触发器 + RLS 策略
-    from mem_lake.db.init import init_database, create_tables, init_knowledge_schema
+    from mem_lake.db.init import create_tables, init_database, init_knowledge_schema
     from mem_lake.db.session import AsyncSessionLocal
 
     logger.info("执行数据库初始化检查...")
