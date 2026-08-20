@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, manage_access_key, manage_project_profile."
-version: 1.1.0
+version: 1.1.1
 ---
 
 # Admin Skills（管理员）
@@ -95,9 +95,10 @@ version: 1.1.0
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | batch_id | UUID | 是 | 审批批次 ID |
-| reviewed_by | str | 是 | 审批人标识（通常为 "admin" 或 admin 用户名）|
+| review_comment | str | 否 | 审批意见（可选，记录到审计日志）|
 
-返回：`ApprovalResultOutput`（batch_id, status="approved", approved_items, conflict_hint）
+`reviewed_by` 由网关根据当前调用者的 Access Key 自动填充，**无需也不能**显式传入。
+返回：`ApprovalResultOutput`（batch_id, status="approved", reviewed_at, conflict_hint）
 
 行为：原子写入——节点 + 边 + 向量 + 审计日志在同一事务提交。
 
@@ -106,9 +107,9 @@ version: 1.1.0
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | batch_id | UUID | 是 | 审批批次 ID |
-| reviewed_by | str | 是 | 审批人标识 |
-| reason | str | 是 | 拒绝原因（记录到审计日志）|
+| review_comment | str | 是 | 拒绝原因（必填，记录到审计日志）|
 
+`reviewed_by` 由网关自动填充，无需传入。
 返回：`ApprovalResultOutput`（batch_id, status="rejected"）
 
 ### manage_access_key — 创建/吊销/查看 Access Key
@@ -117,20 +118,23 @@ version: 1.1.0
 |------|------|------|------|
 | action | str | 是 | `create` / `revoke` / `list` |
 | role | str | create 时必填 | 绑定角色：`admin` / `pm` / `dev` |
-| project_scope | list[UUID] | create 时可选 | 项目范围限制，None 表示所有项目 |
-| key_id | str | revoke 时必填 | 要吊销的 key_id |
-| expires_in_days | int | create 时可选 | 有效期天数，None 表示长期 |
+| project_scope | list[UUID] | create 时必填 | 项目范围限制（admin 传空列表 `[]` 表示不受限）|
+| key_id | UUID | revoke 时必填 | 要吊销的 key_id |
+| status_filter | str | list 时可选 | 按状态过滤：`active` / `revoked` |
 
-返回：create 时返回 `key_id` + `raw_key`（明文仅此一次，需安全保存）；revoke 返回成功状态；list 返回密钥列表。
+返回：create 时返回 `key_id` + `plaintext`（明文仅此一次，需安全保存）；revoke 返回 `revoked_key_id`；list 返回 `listed` 密钥列表（含 role / project_scope / status / created_at）。
+注：当前**没有** `expires_in_days` 参数，密钥默认长期有效。
 
 ### manage_project_profile — 直接写入项目画像（不走审批）
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | project_id | UUID | 是 | 项目 ID |
-| profile_data | dict | 是 | 画像数据（tech_stack, conventions, domain, etc.）|
+| action | str | 是 | `create` / `update` |
+| profile | dict | 是 | 画像内容：title, content, properties（必填 name/description/tech_stack/architecture 等）, tags |
+| node_id | UUID | update 时必填 | 现有 ProjectProfile 节点 ID |
 
-返回：`WriteToolOutput`（node_id, batch_id=None, status="approved"）
+返回：`ManageProjectProfileOutput`（node_id, action, status="approved", version）
 
 特殊：admin 专属，直接写入 ProjectProfile 节点，状态直接 approved，不产生审批批次。
 
@@ -158,8 +162,8 @@ version: 1.1.0
    └─ decision="needs_human_review"
        → 向人类 admin 描述冲突详情（见下方"冲突描述模板"）
        → 等待人类明确回复"通过"或"拒绝"
-       ├─ 人类回复"通过" → review_approve(batch_id, reviewed_by="admin")
-       └─ 人类回复"拒绝" → review_reject(batch_id, reviewed_by, reason="...")
+        ├─ 人类回复"通过" → review_approve(batch_id, review_comment="同意，无冲突")
+        └─ 人类回复"拒绝" → review_reject(batch_id, review_comment="...")
 ```
 
 ### 场景二：人工审查特定批次
@@ -169,8 +173,8 @@ version: 1.1.0
    → 查看批次内所有审批项的完整内容
 
 2. 基于内容判断是否通过
-   ├─ review_approve(batch_id, reviewed_by="admin")
-   └─ review_reject(batch_id, reviewed_by, reason="...")
+    ├─ review_approve(batch_id, review_comment="同意")
+    └─ review_reject(batch_id, review_comment="...")
 ```
 
 ### 场景三：密钥管理
@@ -190,7 +194,8 @@ manage_access_key(action="revoke", key_id="...")
 # 新项目接入，创建画像
 manage_project_profile(
     project_id=uuid,
-    profile_data={
+    action="create",
+    profile={
         "tech_stack": ["Python", "FastAPI", "PostgreSQL"],
         "conventions": ["使用 async/await", "pytest 测试"],
         "domain": "内部工具"
@@ -244,9 +249,9 @@ manage_project_profile(
 
 1. **不要跳过 review_auto_process 直接 review_approve**：自动审批的冲突检测是前置的，直接 approve 会跳过检测。正确流程是先 `review_auto_process`，仅在返回 `needs_human_review` 时才手动 `review_approve`。
 
-2. **Access Key 明文仅创建时返回一次**：`manage_access_key(action="create")` 返回的 `raw_key` 不会再次显示，必须首次返回时即安全保存。丢失后只能吊销重建。
+2. **Access Key 明文仅创建时返回一次**：`manage_access_key(action="create")` 返回的 `plaintext` 不会再次显示，必须首次返回时即安全保存。丢失后只能吊销重建。
 
-3. **review_reject 必须填 reason**：拒绝原因会写入审计日志（append-only），用于追溯。空字符串会被拒绝。
+3. **review_reject 必须填 review_comment**：拒绝原因会写入审计日志（append-only），用于追溯。空字符串会被拒绝。
 
 4. **已审批批次不能再次审批**：`review_auto_process` / `review_approve` / `review_reject` 都会校验 `status == pending_review`，对已审批批次调用会返回错误。
 
@@ -291,5 +296,5 @@ Admin Agent → 人类: "批次 def-456 检测到 1 个冲突节点：
   是否通过此批次？"
 
 人类: "拒绝，这是重复提交"
-→ review_reject(batch_id="def-456", reviewed_by="admin", reason="重复提交 REQ-001")
+→ review_reject(batch_id="def-456", review_comment="重复提交 REQ-001")
 ```
