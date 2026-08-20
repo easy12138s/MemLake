@@ -3,7 +3,8 @@
 ## 环境要求
 
 - Linux（Ubuntu 22.04+ / CentOS 8+），Docker 24+ 及 Compose v2+
-- 2GB+ 内存，5GB+ 磁盘
+- 4GB+ 内存（推荐 8GB+，Embedding 模型 CPU 推理约占 2-3GB）
+- 20GB+ 磁盘（推荐 50GB+；含约 5GB 模型文件、Docker 镜像与 pg_data 卷）
 
 ## 部署
 
@@ -23,6 +24,8 @@ cp .env.example .env
 | `CONFLICT_SIMILARITY_THRESHOLD` | `0.85` | 冲突检测相似度阈值 |
 
 `DATABASE_URL` 在 Compose 环境下由 `docker-compose.yml` 覆盖，无需手动改。
+
+生产环境请修改 `.env` 中的数据库密码（默认 `memlake`/`memlake`）与 Access Key，不要使用默认值。
 
 ### 2. 构建启动
 
@@ -83,7 +86,7 @@ docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 | embedding | 8001 | bge-large-zh-v1.5 向量化服务，mem-lake 通过 HTTP 调用 |
 | mem-lake | 8000 | MCP 网关，21 个工具 + RBAC + 限流 |
 
-启动顺序：postgres healthy → embedding healthy → mem-lake。生产环境仅放行 8000 端口。
+启动顺序：postgres healthy → embedding healthy → mem-lake。默认 compose 会发布 5432/8001 端口，生产环境请通过防火墙限制或移除对应 `ports` 映射，仅对外放行 8000。
 
 ## 数据备份与恢复
 
@@ -170,7 +173,7 @@ docker compose logs embedding
 ```
 
 - postgres 首次构建慢：扩展编译需 10-15 分钟
-- embedding 健康检查失败：检查 `models/bge-large-zh-v1.5/` 是否存在
+- embedding 健康检查失败：复用本地模型时确认 `models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master` 已挂载且非空；构建期下载模式则查看 embedding 镜像构建日志确认模型下载成功
 - mem-lake 连接数据库失败：检查 postgres healthcheck 状态
 
 ### 认证失败
