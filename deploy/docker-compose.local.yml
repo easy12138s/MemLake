@@ -16,3 +16,4 @@ services:
     build:
       args:
         DOWNLOAD_MODEL: "true"
+        DOWNLOAD_RERANK_MODEL: "true"

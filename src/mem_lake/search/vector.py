@@ -1,14 +1,16 @@
-"""向量语义检索：pgvector HNSW + cosine_distance。
+"""向量语义检索：pgvector HNSW + 归一化内积（max_inner_product / <#>）。
 
 对齐 PDD 3.3 向量引擎：负责"找描述用户登录的需求"等语义检索场景。
-pgvector HNSW 索引（idx_node_vector，vector_cosine_ops）在 M3 已创建，
-M4 实现检索调用。向量检索只查 knowledge_node 表，不涉及 AGE 图。
+pgvector HNSW 索引（idx_node_vector，vector_ip_ops，m=32/ef_construction=400）由
+create_all 创建；M4 实现检索调用。向量检索只查 knowledge_node 表，不涉及 AGE 图。
 
 技术参考（网络搜索 pgvector-python 官方文档）：
-- KnowledgeNode.content_vector.cosine_distance(query_vector) 是 pgvector-python 提供的
-  SQLAlchemy 混合方法，等价于 SQL `content_vector <=> :vector`
-- HNSW 索引自动用于 ORDER BY ... <=> 查询（vector_cosine_ops 操作符类）
-- cosine_distance 返回距离（0~2），越小越相似；score = 1 - distance 转换为相似度（0~1）
+- content_vector 均来自归一化 embedding 服务（/embed normalize_embeddings=True），
+  因此内积 `<#>` 与余弦等价。KnowledgeNode.content_vector.max_inner_product(query_vector)
+  是 pgvector-python 提供的 SQLAlchemy 混合方法，等价于 SQL `content_vector <#> :vector`
+  （注意：pgvector-python 的 `<#>` 对应方法名为 max_inner_product，无 inner_product）
+- HNSW 索引自动用于 ORDER BY <#> 查询（vector_ip_ops 操作符类）；<#> 返回负内积，
+  归一化下 score = -max_inner_product = 余弦 ∈[-1,1]，负值截断为 0
 - 查询向量通过参数化传入，非字符串拼接，零注入风险
 """
 
@@ -25,7 +27,7 @@ class VectorSearcher:
     """向量语义检索器。
 
     构造接收 EmbeddingClient 用于生成查询向量。
-    search 方法基于 pgvector cosine_distance 的 top-k 检索，返回按相似度降序的 SearchResult 列表。
+    search 方法基于 pgvector 内积（归一化向量下等价余弦）的 top-k 检索，返回按相似度降序的 SearchResult 列表。
     """
 
     def __init__(self, embedding_client: EmbeddingClient) -> None:
@@ -47,11 +49,16 @@ class VectorSearcher:
             filters: 统一过滤条件，None 时不过滤（生产环境应强制 project_id）
 
         返回：
-            按 cosine 相似度（1 - distance）降序排序的 SearchResult 列表，
+            按相似度（归一化向量下内积 = 余弦，`-max_inner_product`）降序排序的 SearchResult 列表，
             score 字段为相似度（0~1），source 字段为 "vector"。
 
+        前提：本向量检索依赖"content_vector 均来自经归一化的 embedding 服务"
+        （/embed 固定 normalize_embeddings=True），因此内积 `<#>` 与余弦等价且更快
+        （索引 opclass 为 vector_ip_ops，与知识库 models.py 对齐）。若存在非归一化入向量
+        （手工/历史导入），需先归一化或回退 cosine ops。
+
         边界：
-            - 无向量节点（content_vector IS NULL）被自动排除（cosine_distance 对 NULL 返回 NULL，
+            - 无向量节点（content_vector IS NULL）被自动排除（max_inner_product 对 NULL 返回 NULL，
               ORDER BY NULLS LAST 排在最后，LIMIT 截断后不出现）
             - 无匹配返回空列表
         """
@@ -62,13 +69,13 @@ class VectorSearcher:
         query_vector = await self._embedding_client.embed_one(query, prompt_name="query")
 
         # 2. 构造 SQLAlchemy 查询
-        # cosine_distance 是 pgvector-python 提供的混合方法，返回距离表达式
-        # 同时 select 节点对象与距离值，用于计算 score = 1 - distance
-        distance = KnowledgeNode.content_vector.cosine_distance(query_vector)
+        # max_inner_product 是 pgvector-python 提供的混合方法，对应 SQL `<#>`（内积），
+        # 归一化向量下 <#> = -余弦。dist 为该表达式的值（0~-1→cos∈[0,1]，越大越相似）。
+        # ORDER BY <#> ASC 等价于余弦降序（最近在前），保持与 cosine_distance 一致的排序语义。
+        distance = KnowledgeNode.content_vector.max_inner_product(query_vector)
         stmt = (
             select(KnowledgeNode, distance.label("distance"))
-            # 跳过未向量化节点（content_vector 为 NULL 时 cosine_distance 为 NULL，
-            # 既无意义也会在 score = 1 - dist 时报 TypeError）
+            # 跳过未向量化节点（content_vector 为 NULL 时 max_inner_product 为 NULL）
             .where(KnowledgeNode.content_vector.isnot(None))
             .order_by(distance.asc())
             .limit(top_k)
@@ -87,8 +94,8 @@ class VectorSearcher:
         for row in result:
             node: KnowledgeNode = row[0]
             dist: float = row[1]
-            # score = 1 - cosine_distance（0~1，越大越相似）
-            similarity = 1.0 - dist
+            # 归一化向量下 score = -max_inner_product = 余弦 ∈[-1,1]，负值截断为 0（兼容 0~1 语义）
+            similarity = max(0.0, -dist)
             search_results.append(
                 SearchResult(
                     node_id=node.id,
@@ -124,7 +131,7 @@ class VectorSearcher:
             top_k / filters: 同 search
         """
         # 2. 构造 SQLAlchemy 查询（复用 search 的检索逻辑，仅查询向量来自参数）
-        distance = KnowledgeNode.content_vector.cosine_distance(query_vector)
+        distance = KnowledgeNode.content_vector.max_inner_product(query_vector)
         stmt = (
             select(KnowledgeNode, distance.label("distance"))
             .where(KnowledgeNode.content_vector.isnot(None))
@@ -145,7 +152,8 @@ class VectorSearcher:
         for row in result:
             node: KnowledgeNode = row[0]
             dist: float = row[1]
-            similarity = 1.0 - dist
+            # 归一化向量下 score = -inner_product = 余弦，负值截断为 0
+            similarity = max(0.0, -dist)
             search_results.append(
                 SearchResult(
                     node_id=node.id,

@@ -79,7 +79,7 @@ async def test_indexes_exist(db_session):
     # HNSW 向量索引
     assert "idx_node_vector" in indexes
     assert "hnsw" in indexes["idx_node_vector"].lower()
-    assert "vector_cosine_ops" in indexes["idx_node_vector"]
+    assert "vector_ip_ops" in indexes["idx_node_vector"]
 
     # GIN tsvector 索引
     assert "idx_node_tsv" in indexes

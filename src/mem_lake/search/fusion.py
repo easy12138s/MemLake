@@ -11,14 +11,18 @@ and individual rank learning methods》。k=60 是论文在 TREC 数据集上扫
 """
 
 import asyncio
+import logging
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
+from mem_lake.config import get_settings
 from mem_lake.db.session import AsyncSessionLocal
-from mem_lake.embedding.client import EmbeddingClient
+from mem_lake.embedding.client import EmbeddingClient, EmbeddingError
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.search.filters import FilterSpec
+
+logger = logging.getLogger("mem_lake.search.fusion")
 
 
 @dataclass
@@ -74,6 +78,41 @@ def _apply_vector_scores(
         else r
         for r in fused
     ]
+
+
+async def _apply_rerank(
+    fused: list[SearchResult],
+    embedding_client: EmbeddingClient,
+    top_n: int,
+    query: str,
+) -> list[SearchResult]:
+    """对融合候选做 cross-encoder 精排（可选、可降级）。
+
+    - 仅当配置启用（settings.ENABLE_RERANK 且 RERANK_MODEL_PATH 非空）且服务端已加载
+      rerank 模型时执行。
+    - 取 fused[:RERANK_TOP_K] 交精排，按精排分数降序重组；尾部（超出 RERANK_TOP_K）
+      保持原 RRF 序，最终长度不超过 top_n。
+    - 容错：任何 rerank 异常（服务不可用/未加载/响应异常）静默回退为原顺序，不阻断检索。
+    - score 字段保持不变（保留向量余弦分），仅改变返回顺序。
+    """
+    settings = get_settings()
+    if not settings.ENABLE_RERANK or not settings.RERANK_MODEL_PATH or not fused:
+        return fused
+
+    rerank_candidate = fused[: settings.RERANK_TOP_K]
+    try:
+        if not await embedding_client.has_rerank():
+            return fused
+        # 精排对象用 "标题\n正文"（信息更完整，与向量化一致）；空正文退化为标题。
+        texts = [f"{r.content or r.title}\n{r.title}".strip() for r in rerank_candidate]
+        scores = await embedding_client.rerank(query, texts)
+    except EmbeddingError:
+        logger.warning("rerank 精排不可用，回退 RRF 原序", exc_info=True)
+        return fused
+
+    order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    reranked = [rerank_candidate[i] for i in order]
+    return (reranked + fused[settings.RERANK_TOP_K :])[:top_n]
 
 
 def rrf_fuse(
@@ -194,6 +233,11 @@ async def hybrid_search(
     # 永远不触发的问题。排序仍由 RRF 决定（fused_sorted 已按 RRF 排好），此处仅
     # 替换展示/阈值用的 score；无向量分（仅全文命中）的节点保留原 RRF 分。
     fused = _apply_vector_scores(fused, vector_results)
+
+    # 精排（可降级）：服务启用 rerank 时，对融合候选做 cross-encoder 重排。
+    # 排序改由精排分数决定，score 字段仍保留向量余弦分（与 "RRF 排序 + 向量 score" 的
+    # 既有设计一致，不破坏冲突检测/阈值过滤语义）。服务不可用/未加载时静默回退 RRF 原序。
+    fused = await _apply_rerank(fused, embedding_client, top_n, query)
 
     return {
         "fused": fused,
