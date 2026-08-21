@@ -1,4 +1,4 @@
-"""Embedding 服务：基于 sentence-transformers + bge-large-zh-v1.5 的独立推理服务"""
+"""Embedding 服务：基于 sentence-transformers + Qwen3-Embedding-0.6B 的独立推理服务"""
 
 import os
 from fastapi import FastAPI
@@ -7,7 +7,7 @@ from sentence_transformers import SentenceTransformer
 
 app = FastAPI(title="Mem Lake Embedding Service")
 
-model_path = os.environ.get("MODEL_PATH", "/models/bge-large-zh-v1.5")
+model_path = os.environ.get("MODEL_PATH", "/models/Qwen3-Embedding-0.6B")
 device = os.environ.get("DEVICE", "cpu")
 model = SentenceTransformer(model_path, device=device)
 

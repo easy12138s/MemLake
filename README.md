@@ -19,7 +19,7 @@ cp .env.example .env
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
-三个容器：PostgreSQL（pgvector + Apache AGE + zhparser）、Embedding 服务（bge-large-zh-v1.5）、Mem Lake 应用。MCP 网关在 `http://localhost:8000/mcp`。
+三个容器：PostgreSQL（pgvector + Apache AGE + zhparser）、Embedding 服务（Qwen3-Embedding-0.6B）、Mem Lake 应用。MCP 网关在 `http://localhost:8000/mcp`。
 
 MCP 客户端配置：
 

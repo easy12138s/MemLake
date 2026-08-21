@@ -202,10 +202,12 @@ class TestDetectConflictsV2:
 
     @pytest.mark.asyncio
     async def test_l3_threshold_boundary_no_conflict(self):
-        """L3 阈值边界：score 恰好 0.91（< 0.92）→ 无冲突。"""
+        """L3 阈值边界：score 恰好低于配置阈值（默认 0.85）→ 无冲突。"""
         session = AsyncMock()
         candidate = FakeSearchResult(
-            node_id=uuid.uuid4(), title="已有需求", score=0.91
+            node_id=uuid.uuid4(),
+            title="已有需求",
+            score=CONFLICT_SIMILARITY_THRESHOLD - 0.01,
         )
         vector_searcher = MagicMock()
         vector_searcher.search = AsyncMock(return_value=[candidate])
@@ -224,7 +226,7 @@ class TestDetectConflictsV2:
 
     @pytest.mark.asyncio
     async def test_l2_different_key_attr_no_conflict(self):
-        """L2 过滤：相似度 ≥ 0.92 但关键属性不同 → 无冲突。"""
+        """L2 过滤：相似度 ≥ 阈值（默认 0.85）但关键属性不同 → 无冲突。"""
         session = AsyncMock()
         candidate = FakeSearchResult(
             node_id=uuid.uuid4(), title="已有需求", score=0.95
@@ -254,7 +256,7 @@ class TestDetectConflictsV2:
 
     @pytest.mark.asyncio
     async def test_three_layers_pass_conflict_detected(self):
-        """三层全通过 → 冲突（相似度 ≥ 0.92 + 关键属性相同）。"""
+        """三层全通过 → 冲突（相似度 ≥ 阈值（默认 0.85）+ 关键属性相同）。"""
         session = AsyncMock()
         candidate = FakeSearchResult(
             node_id=uuid.uuid4(), title="已有需求", score=0.95
@@ -649,9 +651,9 @@ class TestReviewAutoProcessRBAC:
 class TestConflictConstants:
     """冲突检测常量校验。"""
 
-    def test_conflict_threshold_is_092(self):
-        """内容级冲突阈值固定为 0.92。"""
-        assert CONFLICT_SIMILARITY_THRESHOLD == 0.92
+    def test_conflict_threshold_is_config_driven(self):
+        """内容级冲突阈值由配置驱动（默认 0.85，随嵌入模型重新标定）。"""
+        assert CONFLICT_SIMILARITY_THRESHOLD == 0.85
 
     def test_key_identity_fields_covers_all_node_types(self):
         """KEY_IDENTITY_FIELDS 覆盖全部 7 种节点类型。"""

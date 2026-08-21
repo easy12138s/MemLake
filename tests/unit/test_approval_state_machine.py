@@ -714,7 +714,7 @@ class TestDetectConflictsSignature:
     def test_detect_conflicts_content_based_params(self):
         """detect_conflicts 以 content/properties 为检测输入（内容级检测契约）。
 
-        阈值为模块常量 CONFLICT_SIMILARITY_THRESHOLD（0.92），
+        阈值为模块常量 CONFLICT_SIMILARITY_THRESHOLD（0.85，由配置驱动），
         不再暴露 similarity_threshold 可调参数（统一三层实现）。
         """
         import inspect

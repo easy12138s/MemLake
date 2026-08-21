@@ -318,7 +318,7 @@ async def test_rls_no_context_returns_empty(db_session):
 
 
 async def test_vector_column_dimension(db_session):
-    """content_vector 列维度为 1024（对齐 bge-large-zh-v1.5）。"""
+    """content_vector 列维度为 1024（对齐 Qwen3-Embedding-0.6B）。"""
     # 通过插入 1024 维向量验证
     pid = uuid.uuid4()
     node_id = uuid.uuid4()

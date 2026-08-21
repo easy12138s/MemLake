@@ -1,11 +1,11 @@
 # Embedding 服务镜像
-# 基于 Python slim，内置 sentence-transformers + bge-large-zh-v1.5 模型
+# 基于 Python slim，内置 sentence-transformers + Qwen3-Embedding-0.6B 模型
 FROM python:3.11-slim
 
 # 使用清华 PyPI 镜像加速
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
     && pip install --no-cache-dir \
-    sentence-transformers>=3.0.0 \
+    sentence-transformers>=3.3.0 \
     fastapi>=0.115.0 \
     uvicorn[standard]>=0.30.0 \
     modelscope
@@ -15,15 +15,15 @@ RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
 # 并用 docker-compose.local.yml 将本地模型挂载进容器（见部署文档）。
 ARG DOWNLOAD_MODEL=true
 RUN if [ "$DOWNLOAD_MODEL" = "true" ]; then \
-      python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-large-zh-v1.5', cache_dir='/models')" \
-      && ln -s /models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master /models/bge-large-zh-v1.5 \
-      && rm -f /models/bge-large-zh-v1.5/pytorch_model.bin; \
+      python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3-Embedding-0.6B', cache_dir='/models')" \
+      && ln -s /models/models/Qwen--Qwen3-Embedding-0.6B/snapshots/master /models/Qwen3-Embedding-0.6B \
+      && rm -f /models/Qwen3-Embedding-0.6B/pytorch_model.bin; \
     fi
 
 WORKDIR /app
 COPY embedding_server.py /app/
 
-ENV MODEL_PATH=/models/bge-large-zh-v1.5
+ENV MODEL_PATH=/models/Qwen3-Embedding-0.6B
 
 EXPOSE 8001
 CMD ["uvicorn", "embedding_server:app", "--host", "0.0.0.0", "--port", "8001"]

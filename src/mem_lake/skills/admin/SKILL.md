@@ -267,7 +267,7 @@ manage_project_profile(
 | Pitfall | symptom | 不同症状 = 不同坑 |
 | ProjectProfile | name | 不同项目名 = 不同项目画像 |
 
-阈值依据：bge-large-zh-v1.5 在内容级语义等价判定中，0.92+ 视为高度重复（区分"相关"与"重复"）。
+阈值依据：`CONFLICT_SIMILARITY_THRESHOLD`（默认 0.85，由配置驱动）。该值随嵌入模型变化需重新标定（换模型后用样本对实测调整），0.85 起作为 Qwen3-Embedding-0.6B 的初始值（区分"相关"与"重复"）。
 
 ## 冲突描述模板
 
