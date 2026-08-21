@@ -5,7 +5,8 @@ FROM python:3.11-slim
 # 使用清华 PyPI 镜像加速
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
     && pip install --no-cache-dir \
-    sentence-transformers>=3.3.0 \
+    sentence-transformers==6.0.0 \
+    transformers==5.15.1 \
     fastapi>=0.115.0 \
     uvicorn[standard]>=0.30.0 \
     modelscope

@@ -72,6 +72,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
         await session.commit()
     logger.info("业务表与 schema 初始化完成")
 
+    # 启动对账：把残留 pending/running 的 reindex 任务置为 failed（进程重启后其 worker 已不存在）
+    from mem_lake.gateway.background_tasks import reconcile_orphan_tasks
+
+    await reconcile_orphan_tasks()
+
     # 初始化共享资源
     embedding_client = EmbeddingClient(
         base_url=f"http://{settings.EMBEDDING_HOST}:{settings.EMBEDDING_PORT}",

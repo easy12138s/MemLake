@@ -41,6 +41,7 @@ ADMIN_ONLY_TOOLS: frozenset[str] = frozenset({
     "manage_access_key",
     "manage_project_profile",
     "reindex_project_vectors",
+    "get_reindex_status",
 })
 
 # admin 拥有全部工具（含 pm 与 dev 工具集）

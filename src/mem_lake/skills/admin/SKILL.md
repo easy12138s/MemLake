@@ -112,6 +112,27 @@ version: 1.1.3
 `reviewed_by` 由网关自动填充，无需传入。
 返回：`ApprovalResultOutput`（batch_id, status="rejected"）
 
+### reindex_project_vectors — 异步重建项目向量
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 归属项目 ID |
+| batch_size | int | 否 | 后台批量向量化每批节点数（默认 50）|
+
+返回：`ReindexOutput`（project_id, task_id, reindexed, status）
+
+行为：提交即返回任务 ID（task_id），真正的向量重嵌在**后台分批执行**，避免大项目同步执行导致的 MCP 调用超时。若同一项目已有 pending/running 任务，直接返回已有任务（防重入，避免重复全量重嵌）。提交后用 `get_reindex_status` 轮询进度。
+
+### get_reindex_status — 查询重嵌任务进度
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| task_id | UUID | 是 | reindex_project_vectors 返回的任务 ID |
+
+返回：`ReindexStatusOutput`（task_id, project_id, status, total, processed, reindexed, error, started_at, finished_at, created_at）
+
+status 取值：`pending` / `running` / `done` / `failed`。`done` 表示全部向量已重建完成；`failed` 时 `error` 字段含失败原因。
+
 ### manage_access_key — 创建/吊销/查看/改范围/轮换 Access Key
 
 | 参数 | 类型 | 必填 | 说明 |
