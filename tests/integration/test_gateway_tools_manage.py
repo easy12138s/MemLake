@@ -170,6 +170,44 @@ async def test_manage_access_key_rotate(admin_app):
         assert new_plaintext.startswith("ak_")
         assert new_plaintext != old_plaintext
 
+        # create / rotate 均返回两部分初始化产物
+        _assert_onboarding(created_data["created"], old_plaintext, "dev")
+        _assert_onboarding(rotated_data["rotated"], new_plaintext, "dev")
+
+
+def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
+    """断言 create/rotate 出参含 mcp_config（给用户）与 onboarding_prompt（给 Agent）。"""
+    import json as _json
+
+    mcp_config = output["mcp_config"]
+    assert isinstance(mcp_config, str) and mcp_config.strip()
+    cfg = _json.loads(mcp_config)
+    assert cfg["mcpServers"]["mem-lake"]["url"]
+    assert cfg["mcpServers"]["mem-lake"]["headers"]["X-MCP-Key"] == plaintext
+
+    prompt = output["onboarding_prompt"]
+    assert isinstance(prompt, str) and prompt.strip()
+    assert f'get_role_skills(role="{role}")' in prompt
+    assert ".agents/skills/mem-lake-{role}/SKILL.md".replace("{role}", role) in prompt
+    # 安全：Key 不应出现在给 Agent 的提示词里
+    assert plaintext not in prompt
+
+
+async def test_manage_access_key_create_onboarding(admin_app):
+    """create 返回 mcp_config（JSON 给用户）与 onboarding_prompt（不含 Key，给 Agent）。"""
+    async with Client(admin_app) as client:
+        created = await client.call_tool(
+            "manage_access_key",
+            {
+                "action": "create",
+                "role": "pm",
+                "project_scope": [str(uuid.uuid4())],
+            },
+        )
+        data = _parse(created)
+        assert data["action"] == "create"
+        _assert_onboarding(data["created"], data["created"]["plaintext"], "pm")
+
 
 async def test_manage_access_key_update_scope_by_role(admin_app):
     """update_scope 按 role_filter 批量更新该角色 Key 的 project_scope。"""

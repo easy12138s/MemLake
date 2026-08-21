@@ -295,7 +295,12 @@ ROLE_SKILLS_VERSION = max(data[1] for data in _ROLE_SKILLS_DATA.values())
 
 INSTALLATION_GUIDE = """## Skills 文件放置指南
 
-将返回的 skills_markdown 内容保存为 SKILL.md 文件，根据你使用的 Agent 放置到对应目录：
+将返回的 skills_markdown 内容保存为 SKILL.md 文件，根据你使用的 Agent 放置到对应目录。
+首选跨客户端项目级路径（Claude Code / Cursor / Codex / Gemini 等主流 Agent 均识别）：
+
+### 跨客户端项目级（推荐，首选）
+- `.agents/skills/mem-lake-{role}/SKILL.md`
+  （符合 Agent Skills 标准 agentskills.io，所有主流 Agent 通用；不确定就用这个）
 
 ### Claude Code
 - 用户级（全局）：`~/.claude/skills/mem-lake-{role}/SKILL.md`
@@ -306,7 +311,8 @@ INSTALLATION_GUIDE = """## Skills 文件放置指南
 - 或旧格式：`.cursorrules`（追加到现有文件）
 
 ### Codex CLI (OpenAI)
-- 项目根目录：`AGENTS.md`（追加到现有文件，或创建新文件）
+- 项目级技能目录：`.agents/skills/mem-lake-{role}/SKILL.md`（同首选）
+- 或项目根目录：`AGENTS.md`（追加到现有文件，或创建新文件）
 - 或 `.codex/rules/mem-lake-{role}.md`
 
 ### Gemini CLI

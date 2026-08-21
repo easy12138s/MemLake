@@ -196,7 +196,10 @@ def register_query_tools(mcp: FastMCP) -> None:
 
         共享工具（三角色均可调用）。返回当前角色或指定角色的 Skills 文档，
         指导 Agent 如何使用 Mem Lake 工具集。返回值含 installation_guide 字段，
-        指导如何将 Skills 文件放置到对应 Agent 目录（Claude Code/Cursor/Codex CLI/Gemini CLI）。
+        指导如何将 Skills 文件放置到对应 Agent 目录（首推跨客户端项目级
+        `.agents/skills/mem-lake-{role}/SKILL.md`，并列出 Claude Code/Cursor/Codex CLI/Gemini CLI）。
+        首次接入 MemLake 时请先调用本工具，取 skills_markdown 按其指引安装技能，
+        安装后刷新/重启会话即可生效。
         """
         target_role = role or get_current_role()
         if target_role not in ROLE_SKILLS_MD:
