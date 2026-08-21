@@ -45,6 +45,7 @@ from mem_lake.gateway.tools._shared import (
     ApprovalResultOutput,
     to_tool_error,
 )
+from mem_lake.gateway.background_tasks import start_embed_nodes_task
 from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
 
@@ -220,6 +221,20 @@ def register_review_tools(mcp: FastMCP) -> None:
                     vector_searcher=lifespan_ctx.vector_searcher,
                     review_comment=review_comment,
                 )
+                # 新建节点 id 取自审批后 batch.items 中 node+create 项的 target_id
+                created_node_ids = [
+                    it.target_id
+                    for it in batch.items
+                    if it.item_type == "node"
+                    and it.action == "create"
+                    and it.target_id is not None
+                ]
+            # 审批已提交：将新建节点（content_vector 暂为 NULL）异步入队补向量，
+            # 复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
+            if created_node_ids:
+                await start_embed_nodes_task(
+                    batch.project_id, created_node_ids, get_current_key_id()
+                )
             return ApprovalResultOutput(
                 batch_id=batch.id,
                 status=batch.status,
@@ -293,6 +308,13 @@ def register_review_tools(mcp: FastMCP) -> None:
                     vector_searcher=lifespan_ctx.vector_searcher,
                 )
             batch = result["batch"]
+            # 审批已提交：将新建节点（content_vector 暂为 NULL）异步入队补向量，
+            # 复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
+            created_node_ids = result.get("created_node_ids") or []
+            if created_node_ids:
+                await start_embed_nodes_task(
+                    batch.project_id, created_node_ids, get_current_key_id()
+                )
             return AutoProcessOutput(
                 batch_id=batch.id,
                 decision=result["decision"],

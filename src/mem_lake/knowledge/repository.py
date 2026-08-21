@@ -145,6 +145,28 @@ async def get_node(
     return node
 
 
+async def get_nodes_by_ids(
+    session: AsyncSession,
+    *,
+    node_ids: list[uuid.UUID],
+    status: str | None = "approved",
+    include_deleted: bool = False,
+) -> list[KnowledgeNode]:
+    """按 id 列表批量查询节点（供审批异步嵌入 worker 加载指定节点）。
+
+    不 commit。空列表直接返回空。
+    """
+    if not node_ids:
+        return []
+    stmt = select(KnowledgeNode).where(KnowledgeNode.id.in_(node_ids))
+    if status is not None:
+        stmt = stmt.where(KnowledgeNode.status == status)
+    if not include_deleted:
+        stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def update_node(
     session: AsyncSession,
     *,

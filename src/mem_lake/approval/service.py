@@ -21,7 +21,6 @@ from mem_lake.approval.conflict import detect_conflicts
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
-from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.repository import add_edge, create_node, get_node, update_node
 from mem_lake.knowledge.schema import SchemaValidationError, validate_edge_type, validate_node
@@ -219,8 +218,22 @@ async def review_approve(
 
     # 2. 遍历 items 执行写入
     all_conflict_hints: list[dict] = []
-    created_nodes: list[Any] = []
 
+    # 冲突检测批量向量化：所有新建节点的查询文本一次性 embed（prompt_name="query"，
+    # 与 VectorSearcher.search 语义一致），避免每节点各 embed 一次（2N → 2）。
+    create_items = [
+        it
+        for it in batch.items
+        if it.item_type == "node" and it.action == "create"
+    ]
+    conflict_query_vectors: list[list[float]] = []
+    if create_items:
+        conflict_query_vectors = await embedding_client.embed(
+            [f"{it.payload['title']}\n{it.payload['content']}" for it in create_items],
+            prompt_name="query",
+        )
+
+    qv_index = 0
     for item in batch.items:
         if item.item_type == "node" and item.action == "create":
             node = await _execute_node_create(
@@ -230,9 +243,9 @@ async def review_approve(
                 item=item,
             )
             item.target_id = node.id
-            created_nodes.append(node)
 
-            # 冲突检测（节点已写入，排除自身；可捕获同批次内先写入的重复节点）
+            # 冲突检测（节点已写入，排除自身；可捕获同批次内先写入的重复节点）。
+            # 使用预计算查询向量（conflict_query_vectors[qv_index]），跳过内部 embed。
             conflict_hint = await detect_conflicts(
                 session,
                 vector_searcher=vector_searcher,
@@ -243,7 +256,9 @@ async def review_approve(
                 properties=node.properties or {},
                 tags=node.tags or [],
                 exclude_node_id=node.id,
+                query_vector=conflict_query_vectors[qv_index],
             )
+            qv_index += 1
             all_conflict_hints.append(
                 {
                     "node_id": str(node.id),
@@ -272,16 +287,10 @@ async def review_approve(
             )
             # 边无 target_id，留空
 
-    # 2.1 批量向量化所有新建节点（单次 embed 批量调用，替代逐节点 embed_one）
-    if created_nodes:
-        texts = [
-            build_embed_text(n.type, n.title, n.content, n.properties)
-            for n in created_nodes
-        ]
-        embeddings = await embedding_client.embed(texts)
-        for node, vec in zip(created_nodes, embeddings):
-            node.content_vector = vec
-        await session.flush()
+    # 2.1 新建节点向量化延迟到后台异步执行：content_vector 暂为 NULL（搜索已能安全
+    # 跳过 NULL），审批提交后由调用方经 start_embed_nodes_task 入队，复用 reindex
+    # worker 补向量。此处不再同步 embed，避免大批次审批阻塞 MCP 调用超时。
+    # 调用方从 batch.items（node+create 项的 target_id）即可取得新建节点 id。
 
     # 3. 合并 conflict_hint
     merged_conflict_hint = _merge_conflict_hints(all_conflict_hints)
@@ -417,9 +426,23 @@ async def auto_process_batch(
         )
 
     # 2. 遍历 node+create 项执行三层冲突检测
+    # 批量化：所有查询文本一次性 embed（prompt_name="query"），再逐条用预计算向量比对。
+    create_items = [
+        it
+        for it in batch.items
+        if it.item_type == "node" and it.action == "create"
+    ]
+    conflict_query_vectors: list[list[float]] = []
+    if create_items:
+        conflict_query_vectors = await embedding_client.embed(
+            [f"{it.payload['title']}\n{it.payload['content']}" for it in create_items],
+            prompt_name="query",
+        )
+
     all_conflicts: list[dict] = []
     candidates_total = 0
     checked_nodes = 0
+    qv_index = 0
 
     for item in batch.items:
         if item.item_type != "node" or item.action != "create":
@@ -437,7 +460,9 @@ async def auto_process_batch(
             content=payload["content"],
             properties=payload.get("properties", {}),
             tags=payload.get("tags", []),
+            query_vector=conflict_query_vectors[qv_index],
         )
+        qv_index += 1
 
         candidates_total += conflict_result.get("candidates_examined", 0)
         if conflict_result.get("has_conflict"):
@@ -456,6 +481,14 @@ async def auto_process_batch(
             vector_searcher=vector_searcher,
             review_comment="auto_approved: no conflict detected",
         )
+        # 新建节点 id 取自审批后 batch.items 中 node+create 项的 target_id
+        created_node_ids = [
+            it.target_id
+            for it in approved_batch.items
+            if it.item_type == "node"
+            and it.action == "create"
+            and it.target_id is not None
+        ]
         return {
             "decision": "auto_approved",
             "conflict_hint": {
@@ -464,6 +497,7 @@ async def auto_process_batch(
                 "candidates_examined": candidates_total,
             },
             "batch": approved_batch,
+            "created_node_ids": created_node_ids,
         }
 
     # 4. 有冲突 → 升级人工审查（不写入图谱）

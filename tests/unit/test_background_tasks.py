@@ -28,6 +28,7 @@ from mem_lake.gateway.background_tasks import (
     get_task_record,
     reconcile_orphan_tasks,
     start_reindex_task,
+    start_embed_nodes_task,
     _reindex_worker,
 )
 from mem_lake.gateway.models import ReindexTask
@@ -124,6 +125,107 @@ async def test_reindex_worker_marks_failed_on_error(init_tables, mock_embedding_
     record = await get_task_record(task_id)
     assert record.status == TASK_STATUS_FAILED
     assert record.error is not None and "embedding down" in record.error
+
+
+async def test_reindex_worker_node_scope_fills_target_nodes(
+    init_tables, mock_embedding_client
+):
+    """节点级嵌入：仅嵌入 target_node_ids 指定的节点（审批异步嵌入路径）。
+
+    验证：worker 跳过整库扫描，仅对指定节点批量向量化；任务 total=1、status=done，
+    指定节点 content_vector 被填充，其余节点保持 NULL。
+    """
+    _mock_embed(mock_embedding_client)
+    project_id = uuid.uuid4()
+    await _seed_nodes(project_id, 3)  # 3 个节点，仅嵌入其中 1 个
+
+    async with AsyncSessionLocal() as s:
+        seeded = (
+            await s.execute(
+                select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
+            )
+        ).scalars().all()
+    target = seeded[0]
+    other_ids = [n.id for n in seeded[1:]]
+
+    task_id = await create_task_record(
+        project_id, "ak_admin", target_node_ids=[target.id]
+    )
+    await _reindex_worker(project_id, task_id, "ak_admin", 50, mock_embedding_client)
+
+    record = await get_task_record(task_id)
+    assert record.status == TASK_STATUS_DONE
+    assert record.total == 1
+    assert record.reindexed == 1
+
+    async with AsyncSessionLocal() as s:
+        refreshed = (
+            await s.execute(
+                select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
+            )
+        ).scalars().all()
+    by_id = {n.id: n for n in refreshed}
+    assert by_id[target.id].content_vector is not None
+    # 其余节点未被嵌入（仍为 NULL）
+    for oid in other_ids:
+        assert by_id[oid].content_vector is None
+
+
+async def test_start_embed_nodes_task_schedules_node_scope_worker(
+    init_tables, mock_embedding_client, monkeypatch
+):
+    """start_embed_nodes_task 建节点级任务记录并调度后台 worker。
+
+    验证：返回 task_id、reindex_task.target_node_ids 正确落库，且 worker 完成
+    后指定节点被向量化。
+    """
+    import asyncio
+
+    _mock_embed(mock_embedding_client)
+    monkeypatch.setattr(
+        background_tasks, "get_embedding_client", lambda: mock_embedding_client
+    )
+    # 捕获调度的 asyncio.Task，便于测试内 await 完成
+    scheduled: list[asyncio.Task] = []
+    original_create = asyncio.create_task
+
+    def _capture(task, *a, **k):
+        t = original_create(task, *a, **k)
+        scheduled.append(t)
+        return t
+
+    monkeypatch.setattr(asyncio, "create_task", _capture)
+
+    project_id = uuid.uuid4()
+    await _seed_nodes(project_id, 2)
+    async with AsyncSessionLocal() as s:
+        seeded = (
+            await s.execute(
+                select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
+            )
+        ).scalars().all()
+    target_ids = [seeded[0].id]
+
+    task_id = await start_embed_nodes_task(project_id, target_ids, "ak_admin")
+    record = await get_task_record(task_id)
+    assert record.target_node_ids == target_ids
+
+    # 驱动后台 worker 完成
+    for t in scheduled:
+        await t
+    record = await get_task_record(task_id)
+    assert record.status == TASK_STATUS_DONE
+    assert record.reindexed == 1
+
+    async with AsyncSessionLocal() as s:
+        refreshed = (
+            await s.execute(
+                select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
+            )
+        ).scalars().all()
+    by_id = {n.id: n for n in refreshed}
+    assert by_id[seeded[0].id].content_vector is not None
+    assert by_id[seeded[1].id].content_vector is None
 
 
 async def test_find_running_task_states(init_tables):

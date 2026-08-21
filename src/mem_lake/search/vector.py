@@ -103,3 +103,60 @@ class VectorSearcher:
             )
 
         return search_results
+
+    async def search_by_vector(
+        self,
+        session: AsyncSession,
+        query_vector: list[float],
+        *,
+        top_k: int = 50,
+        filters: FilterSpec | None = None,
+    ) -> list[SearchResult]:
+        """向量语义检索（预计算查询向量）。
+
+        与 search 逻辑一致，但跳过内部 embed_one，直接使用调用方提供的查询向量。
+        用于冲突检测批量化：调用方一次性批量 embed 所有查询文本后，逐条传入
+        预计算向量比对，避免每节点各 embed 一次。查询向量的生成方式（含指令感知
+        prompt_name）由调用方保证与 search 一致。
+
+        参数：
+            query_vector: 1024 维查询向量
+            top_k / filters: 同 search
+        """
+        # 2. 构造 SQLAlchemy 查询（复用 search 的检索逻辑，仅查询向量来自参数）
+        distance = KnowledgeNode.content_vector.cosine_distance(query_vector)
+        stmt = (
+            select(KnowledgeNode, distance.label("distance"))
+            .where(KnowledgeNode.content_vector.isnot(None))
+            .order_by(distance.asc())
+            .limit(top_k)
+        )
+
+        # 3. 编译 FilterSpec 为 WHERE 子句
+        where_clauses = compile_sqlalchemy(filters)
+        if where_clauses:
+            stmt = stmt.where(*where_clauses)
+
+        # 4. 执行查询
+        result = await session.execute(stmt)
+
+        # 5. 构造 SearchResult 列表
+        search_results: list[SearchResult] = []
+        for row in result:
+            node: KnowledgeNode = row[0]
+            dist: float = row[1]
+            similarity = 1.0 - dist
+            search_results.append(
+                SearchResult(
+                    node_id=node.id,
+                    title=node.title,
+                    content=_truncate(node.content),
+                    node_type=node.type,
+                    score=similarity,
+                    source="vector",
+                    properties=node.properties or {},
+                    tags=node.tags or [],
+                )
+            )
+
+        return search_results
