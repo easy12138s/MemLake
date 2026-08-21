@@ -150,9 +150,10 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
         if result.check(err is None, "1.1 get_role_skills(admin)"):
             version = r.get("version", "")
             has_md = bool(r.get("skills_markdown"))
+            # version 由 skills frontmatter 动态取 max，不硬编码具体值，避免 stale 断言
             result.check(
-                version == "1.1.0" and has_md,
-                "1.1 验证 version=1.1.0 + markdown 非空",
+                bool(version) and "." in version and has_md,
+                "1.1 验证 version 非空(形如 x.y.z) + markdown 非空",
                 f"version={version}",
             )
         else:

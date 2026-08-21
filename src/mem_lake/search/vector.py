@@ -56,7 +56,10 @@ class VectorSearcher:
             - 无匹配返回空列表
         """
         # 1. 生成查询向量（1024 维）
-        query_vector = await self._embedding_client.embed_one(query)
+        # 指令感知：检索查询使用模型内置 "query" 指令，将查询摆入与文档对齐的子空间，
+        # 提升召回/精度（官方称通常 +1~5%）。文档落库向量保持默认（无指令），
+        # 二者配套使用，不可对文档侧加 query 指令，否则空间错配。
+        query_vector = await self._embedding_client.embed_one(query, prompt_name="query")
 
         # 2. 构造 SQLAlchemy 查询
         # cosine_distance 是 pgvector-python 提供的混合方法，返回距离表达式
