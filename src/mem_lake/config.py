@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     MCP_RATE_LIMIT_QPS: int = 100
 
     # ========== Embedding 服务 ==========
-    EMBEDDING_MODEL_PATH: str = "./models/bge-large-zh-v1.5"
+    EMBEDDING_MODEL_PATH: str = "./models/Qwen3-Embedding-0.6B"
     EMBEDDING_DIMENSION: int = 1024
     EMBEDDING_DEVICE: str = "cpu"
     EMBEDDING_HOST: str = "localhost"

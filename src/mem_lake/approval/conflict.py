@@ -11,7 +11,7 @@
 2. 内容级 embedding 比标题级 embedding 更精准（标题噪声大、信号弱、偏主题相关）
 3. 关键属性比对是区分"同一实体"与"相关但不同实体"的硬判据
    （不同 requirement_id 的需求是不同实体，即使标题完全相同）
-4. 内容级阈值 0.92 在语义等价判定中 F1 最优，能区分"相关"与"重复"
+ 4. 内容级阈值（CONFLICT_SIMILARITY_THRESHOLD，默认 0.85）随嵌入模型变化需重新标定，
 5. 标签共享只说明主题相关，不代表内容重复，不参与冲突判定
 """
 
@@ -20,6 +20,7 @@ import uuid
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mem_lake.config import get_settings
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.vector import VectorSearcher
@@ -37,8 +38,10 @@ KEY_IDENTITY_FIELDS: dict[str, list[str]] = {
 }
 
 # 内容级冲突检测阈值
-# 0.92：bge-large-zh-v1.5 在内容级语义等价判定中，0.92+ 视为高度重复
-CONFLICT_SIMILARITY_THRESHOLD = 0.92
+# 由配置驱动（不再硬编码模型相关值）：不同嵌入模型的余弦分布不同，
+# 换模型后需按样本对实测重新标定该值（见配置 CONFLICT_SIMILARITY_THRESHOLD）。
+
+CONFLICT_SIMILARITY_THRESHOLD = get_settings().CONFLICT_SIMILARITY_THRESHOLD
 
 
 async def detect_conflicts(

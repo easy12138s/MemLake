@@ -38,7 +38,7 @@ docker compose up -d --build
 
 ### 2.1 复用本地模型（可选，跳过下载）
 
-若宿主机已下载过 bge 模型（默认位于仓库 `models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master`），可避免重复下载：叠加 `docker-compose.local.yml` 将本地模型挂载进容器，并通过 `DOWNLOAD_MODEL=false` 跳过构建期下载。
+若宿主机已下载过 Qwen3-Embedding-0.6B 模型（默认位于仓库 `models/models/Qwen--Qwen3-Embedding-0.6B/snapshots/master`），可避免重复下载：叠加 `docker-compose.local.yml` 将本地模型挂载进容器，并通过 `DOWNLOAD_MODEL=false` 跳过构建期下载。
 
 ```bash
 cd deploy
@@ -83,7 +83,7 @@ docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 | 容器 | 端口 | 职责 |
 |------|------|------|
 | postgres | 5432 | PostgreSQL 17 + AGE + pgvector + zhparser，数据持久化在 `pg_data` 卷 |
-| embedding | 8001 | bge-large-zh-v1.5 向量化服务，mem-lake 通过 HTTP 调用 |
+| embedding | 8001 | Qwen3-Embedding-0.6B 向量化服务，mem-lake 通过 HTTP 调用 |
 | mem-lake | 8000 | MCP 网关，21 个工具 + RBAC + 限流 |
 
 启动顺序：postgres healthy → embedding healthy → mem-lake。默认 compose 会发布 5432/8001 端口，生产环境请通过防火墙限制或移除对应 `ports` 映射，仅对外放行 8000。
@@ -173,7 +173,7 @@ docker compose logs embedding
 ```
 
 - postgres 首次构建慢：扩展编译需 10-15 分钟
-- embedding 健康检查失败：复用本地模型时确认 `models/models/AI-ModelScope--bge-large-zh-v1.5/snapshots/master` 已挂载且非空；构建期下载模式则查看 embedding 镜像构建日志确认模型下载成功
+- embedding 健康检查失败：复用本地模型时确认 `models/models/Qwen--Qwen3-Embedding-0.6B/snapshots/master` 已挂载且非空；构建期下载模式则查看 embedding 镜像构建日志确认模型下载成功
 - mem-lake 连接数据库失败：检查 postgres healthcheck 状态
 
 ### 认证失败

@@ -40,7 +40,7 @@ class KnowledgeNode(Base):
     title: Mapped[str] = mapped_column(Text, comment="节点标题")
     content: Mapped[str] = mapped_column(Text, comment="节点正文内容")
     content_vector: Mapped[list[float] | None] = mapped_column(
-        Vector(1024), nullable=True, comment="内容向量（bge-large-zh-v1.5，1024 维）"
+        Vector(1024), nullable=True, comment="内容向量（Qwen3-Embedding-0.6B，1024 维）"
     )
     content_tsv: Mapped[Any] = mapped_column(
         TSVECTOR(), nullable=True, comment="全文检索向量（触发器自动维护）"
