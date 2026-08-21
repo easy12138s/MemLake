@@ -21,10 +21,25 @@ RUN if [ "$DOWNLOAD_MODEL" = "true" ]; then \
       && rm -f /models/Qwen3-Embedding-0.6B/pytorch_model.bin; \
     fi
 
+# 精排模型（bge-reranker-base，CrossEncoder）。默认构建期下载，可用 DOWNLOAD_RERANK_MODEL=false
+# 跳过（不启用精排，服务仍可运行）；宿主机有本地模型时也可经 compose 挂载。
+#
+# 体积说明：ModelScope 仓库自带同一权重的多份副本（model.safetensors + pytorch_model.bin +
+# onnx 导出，各 ~1.1G）。CrossEncoder 运行时只用 model.safetensors，故构建后删除
+# pytorch_model.bin 与 onnx/，避免把冗余 ~2.2G 打进镜像（无需手动清，新环境部署即干净）。
+ARG DOWNLOAD_RERANK_MODEL=true
+RUN if [ "$DOWNLOAD_RERANK_MODEL" = "true" ]; then \
+      python -c "from modelscope import snapshot_download; snapshot_download('BAAI/bge-reranker-base', cache_dir='/models')" \
+      && ln -s /models/models/BAAI--bge-reranker-base/snapshots/master /models/bge-reranker-base \
+      && rm -f /models/models/BAAI--bge-reranker-base/snapshots/master/pytorch_model.bin \
+      && rm -rf /models/models/BAAI--bge-reranker-base/snapshots/master/onnx; \
+    fi
+
 WORKDIR /app
 COPY embedding_server.py /app/
 
 ENV MODEL_PATH=/models/Qwen3-Embedding-0.6B
+ENV RERANK_MODEL_PATH=/models/bge-reranker-base
 
 EXPOSE 8001
 CMD ["uvicorn", "embedding_server:app", "--host", "0.0.0.0", "--port", "8001"]
