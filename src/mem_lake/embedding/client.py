@@ -28,14 +28,28 @@ class EmbeddingClient:
         self._dimension = dimension
         self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self,
+        texts: list[str],
+        prompt: str | None = None,
+        prompt_name: str | None = None,
+    ) -> list[list[float]]:
         """批量向量化。
 
-        POST /embed body {"texts": [...]} → {"embeddings": [[...]], "dimension": 1024}。
+        POST /embed body {"texts": [...], "prompt"?, "prompt_name"?}
+        → {"embeddings": [[...]], "dimension": 1024}。
+
+        prompt / prompt_name 为指令感知参数，仅查询侧（如 VectorSearcher）按需传入，
+        文档侧（落库节点）保持 None 以维持与历史向量的兼容。二者均为 None 时退化为默认编码。
         校验响应 dimension 与 config.EMBEDDING_DIMENSION 一致，不符抛 EmbeddingError。
         """
+        body: dict = {"texts": texts}
+        if prompt is not None:
+            body["prompt"] = prompt
+        if prompt_name is not None:
+            body["prompt_name"] = prompt_name
         try:
-            resp = await self._client.post("/embed", json={"texts": texts})
+            resp = await self._client.post("/embed", json=body)
         except httpx.HTTPError as exc:
             raise EmbeddingError(f"Embedding 服务请求失败: {exc}") from exc
 
@@ -57,9 +71,17 @@ class EmbeddingClient:
 
         return embeddings
 
-    async def embed_one(self, text: str) -> list[float]:
-        """单文本向量化，便捷方法，调用 embed([text]) 取首元素。"""
-        result = await self.embed([text])
+    async def embed_one(
+        self,
+        text: str,
+        prompt: str | None = None,
+        prompt_name: str | None = None,
+    ) -> list[float]:
+        """单文本向量化，便捷方法，调用 embed([text]) 取首元素。
+
+        prompt / prompt_name 透传指令感知参数（见 embed）。
+        """
+        result = await self.embed([text], prompt=prompt, prompt_name=prompt_name)
         return result[0]
 
     async def health(self) -> dict:
