@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     MCP_SERVER_HOST: str = "0.0.0.0"
     MCP_SERVER_PORT: int = 8000
     MCP_RATE_LIMIT_QPS: int = 100
+    MCP_PUBLIC_URL: str = "http://localhost:8000/mcp"
 
     # ========== Embedding 服务 ==========
     EMBEDDING_MODEL_PATH: str = "./models/Qwen3-Embedding-0.6B"

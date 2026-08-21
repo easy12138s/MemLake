@@ -7,10 +7,13 @@
   不触发 Pydantic "Non-default argument follows default argument"）
 """
 
+import json
 import uuid
 
 from mem_lake.gateway.server import create_mcp_server
 from mem_lake.gateway.tools.manage_tools import (
+    _build_mcp_config,
+    _build_onboarding_prompt,
     _normalize_uuid_list,
     _resolve_profile_id,
 )
@@ -56,6 +59,26 @@ def test_normalize_uuid_list_skips_invalid_and_empty():
     assert _normalize_uuid_list("") is None
     assert _normalize_uuid_list("   ") is None
     assert _normalize_uuid_list(None) is None
+
+
+def test_build_mcp_config_contains_url_and_key():
+    """_build_mcp_config 产出合法 JSON，含 url 与 X-MCP-Key 头。"""
+    url = "http://example:8000/mcp"
+    key = "ak_test_123"
+    cfg = json.loads(_build_mcp_config(url, key))
+    assert cfg["mcpServers"]["mem-lake"]["url"] == url
+    assert cfg["mcpServers"]["mem-lake"]["headers"]["X-MCP-Key"] == key
+
+
+def test_build_onboarding_prompt_references_skill_and_excludes_key():
+    """_build_onboarding_prompt 指引调用 get_role_skills 并写入 .agents/skills/，且不出现 Key。"""
+    role = "dev"
+    key = "ak_secret_should_not_appear"
+    prompt = _build_onboarding_prompt(role)
+    assert f'get_role_skills(role="{role}")' in prompt
+    assert f".agents/skills/mem-lake-{role}/SKILL.md" in prompt
+    assert "## 3. 完成" in prompt
+    assert key not in prompt
 
 
 def test_create_mcp_server_registers_manage_project_profile():

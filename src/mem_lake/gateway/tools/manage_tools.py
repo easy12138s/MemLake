@@ -42,6 +42,7 @@ from mem_lake.gateway.dependencies import (
     transactional_session,
     validate_project_access,
 )
+from mem_lake.config import get_settings
 from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     to_tool_error,
@@ -73,7 +74,7 @@ class AccessKeyOutput(BaseModel):
 
 
 class CreateAccessKeyOutput(BaseModel):
-    """create 操作出参（含明文，仅返回一次）。"""
+    """create / rotate 操作出参（含明文，仅返回一次）。"""
 
     key_id: uuid.UUID = Field(description="Access Key ID")
     plaintext: str = Field(
@@ -81,6 +82,19 @@ class CreateAccessKeyOutput(BaseModel):
     )
     role: str = Field(description="角色")
     project_scope: list[str] = Field(description="项目范围")
+    mcp_config: str | None = Field(
+        default=None,
+        description=(
+            "拼装好的 MCP 客户端配置（JSON 字符串），交由用户粘贴到自己的 "
+            "MCP 客户端（Claude Desktop / Cursor / Codex 等），目标 Agent 不自行安装 MCP"
+        ),
+    )
+    onboarding_prompt: str | None = Field(
+        default=None,
+        description=(
+            "给目标 Agent 的技能安装提示词（不含 Key，MCP 接通后复制给 Agent 执行一次性安装）"
+        ),
+    )
 
 
 class ManageAccessKeyOutput(BaseModel):
@@ -95,6 +109,54 @@ class ManageAccessKeyOutput(BaseModel):
     )
     rotated: CreateAccessKeyOutput | None = Field(
         default=None, description="rotate 结果（含新明文，仅返回一次）"
+    )
+
+
+# ============================================================================
+# Access Key 初始化产物构造（onboarding）
+# ============================================================================
+
+
+def _build_mcp_config(mcp_url: str, plaintext: str) -> str:
+    """拼装给用户粘贴的 MCP 客户端配置（JSON 字符串）。
+
+    目标 Agent 通常无法自行给自己安装 MCP，因此这部分交由用户处理：
+    用户把返回的 JSON 写入自己的 MCP 客户端（Claude Desktop / Cursor / Codex 等），
+    Agent 侧只需在 MCP 接通后执行技能安装（见 _build_onboarding_prompt）。
+    """
+    import json
+
+    cfg = {
+        "mcpServers": {
+            "mem-lake": {
+                "url": mcp_url,
+                "headers": {"X-MCP-Key": plaintext},
+            }
+        }
+    }
+    return json.dumps(cfg, ensure_ascii=False, indent=2)
+
+
+def _build_onboarding_prompt(role: str) -> str:
+    """给目标 Agent 的技能安装提示词（不含 Key，MCP 已接通后执行）。
+
+    仅指导 Agent 调用 get_role_skills 取回 SKILL.md 并写入其客户端约定目录，
+    安全相关提醒不在 Agent 侧（Key 仅出现在 mcp_config 的 JSON 里，由用户保管）。
+    """
+    return (
+        f"你是当前项目的 {role}。MemLake MCP 已接通，现在执行一次性操作："
+        "安装团队知识共享技能。\n\n"
+        "## 1. 获取技能\n"
+        f'调用 get_role_skills(role="{role}")，读取返回的 skills_markdown'
+        "（完整 SKILL.md，含你的角色工具用法、最佳实践与字段规范）和 installation_guide。\n\n"
+        "## 2. 安装技能\n"
+        "将 skills_markdown 写入 installation_guide 中对应你当前客户端的目录；"
+        "不确定时用通用路径：\n"
+        f".agents/skills/mem-lake-{role}/SKILL.md\n"
+        "若无文件写入权限或写入失败，将 skills_markdown 完整输出给用户手动保存。\n\n"
+        "## 3. 完成\n"
+        "写入成功后告知用户：技能已安装，重启或刷新当前会话后生效。生效后该技能会指导你在"
+        "日常工作中使用 MemLake 工具检索和沉淀团队知识。"
     )
 
 
@@ -256,6 +318,11 @@ def register_manage_tools(mcp: FastMCP) -> None:
         Admin 工具。
         - create：创建 Key，返回明文（仅此一次，调用方负责安全保存）。role 决定工具集，
           project_scope 限定 pm/dev 可访问项目（admin 为空列表表示不受限）。
+          同时返回两部分初始化产物，请按需分发给对应接收方：
+            · created.mcp_config：拼装好的 MCP 客户端配置 JSON，交【用户】粘贴到其
+              MCP 客户端（Claude Desktop / Cursor / Codex 等），Agent 不自行安装 MCP；
+            · created.onboarding_prompt：给【目标 Agent】的技能安装提示词（不含 Key），
+              MCP 接通后复制给 Agent 执行一次性技能安装。
         - revoke：吊销指定 key_id 的 Key（status=revoked）。
         - list：按角色/状态查看 Key 列表。
         - update_scope：动态修改 Key 的项目范围，支持三种定位（优先级
@@ -263,7 +330,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
           一键全项目（grant_all_projects 时 project_scope 留空表示不受限）。
           三者均省略时为空操作（返回空列表，不改任何 Key）。
         - rotate：轮换指定 key_id 的 Key 密钥（保留 Key ID，旧明文立即失效），
-          返回新明文（仅此一次）。
+          返回新明文（仅此一次），同样附带 mcp_config 与 onboarding_prompt。
         """
         try:
             key_id_actor = get_current_key_id()
@@ -281,6 +348,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         project_scope=project_scope,
                         created_by=key_id_actor,
                     )
+                    mcp_url = get_settings().MCP_PUBLIC_URL
                     return ManageAccessKeyOutput(
                         action="create",
                         created=CreateAccessKeyOutput(
@@ -288,6 +356,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
                             plaintext=plaintext,
                             role=role,
                             project_scope=[str(pid) for pid in project_scope],
+                            mcp_config=_build_mcp_config(mcp_url, plaintext),
+                            onboarding_prompt=_build_onboarding_prompt(role),
                         ),
                     )
                 elif action == "revoke":
@@ -330,6 +400,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     ak, plaintext = await rotate_access_key(
                         session, key_id=key_id, actor=key_id_actor
                     )
+                    mcp_url = get_settings().MCP_PUBLIC_URL
                     return ManageAccessKeyOutput(
                         action="rotate",
                         rotated=CreateAccessKeyOutput(
@@ -337,6 +408,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
                             plaintext=plaintext,
                             role=ak.role,
                             project_scope=ak.project_scope or [],
+                            mcp_config=_build_mcp_config(mcp_url, plaintext),
+                            onboarding_prompt=_build_onboarding_prompt(ak.role),
                         ),
                     )
                 else:

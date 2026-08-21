@@ -173,6 +173,18 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
                 "1.2 验证返回 plaintext",
                 f"key_id={created.get('key_id', 'N/A')}",
             )
+            mcp_cfg = created.get("mcp_config")
+            prompt = created.get("onboarding_prompt")
+            result.check(
+                bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
+                "1.2 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
+            )
+            result.check(
+                bool(prompt)
+                and "get_role_skills" in prompt
+                and ctx.pm_key not in prompt,
+                "1.2 验证返回 onboarding_prompt(含技能指引, 不含 Key)",
+            )
         else:
             result.fail("1.2 创建 PM Key", err or "未知错误")
 
@@ -189,6 +201,18 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
                 bool(ctx.dev_key),
                 "1.3 验证返回 plaintext",
                 f"key_id={created.get('key_id', 'N/A')}",
+            )
+            mcp_cfg = created.get("mcp_config")
+            prompt = created.get("onboarding_prompt")
+            result.check(
+                bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
+                "1.3 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
+            )
+            result.check(
+                bool(prompt)
+                and "get_role_skills" in prompt
+                and ctx.dev_key not in prompt,
+                "1.3 验证返回 onboarding_prompt(含技能指引, 不含 Key)",
             )
         else:
             result.fail("1.3 创建 Dev Key", err or "未知错误")
