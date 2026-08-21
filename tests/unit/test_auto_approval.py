@@ -29,6 +29,20 @@ from mem_lake.approval.service import (
 from mem_lake.auth.rbac import ADMIN_ONLY_TOOLS, has_tool_access
 
 
+def _mock_embedding_client():
+    """返回 embed / embed_one 可 await 的 MagicMock（对齐真实 EmbeddingClient 签名）。
+
+    auto_process_batch / review_approve 现在直接 await embedding_client.embed(...,
+    prompt_name="query")，故测试用客户端需提供可 await 的 embed。
+    """
+    client = MagicMock()
+    client.embed = AsyncMock(
+        side_effect=lambda texts, **kwargs: [[0.1] * 1024 for _ in texts]
+    )
+    client.embed_one = AsyncMock(return_value=[0.1] * 1024)
+    return client
+
+
 # ============================================================================
 # 辅助：模拟 SearchResult（避免依赖真实 DB）
 # ============================================================================
@@ -441,7 +455,7 @@ class TestAutoProcessBatch:
                 batch_id=batch.id,
                 reviewed_by="admin-key",
                 graph_store=MagicMock(),
-                embedding_client=MagicMock(),
+                embedding_client=_mock_embedding_client(),
                 vector_searcher=MagicMock(),
             )
 
@@ -492,7 +506,7 @@ class TestAutoProcessBatch:
                 batch_id=batch.id,
                 reviewed_by="admin-key",
                 graph_store=MagicMock(),
-                embedding_client=MagicMock(),
+                embedding_client=_mock_embedding_client(),
                 vector_searcher=MagicMock(),
             )
 
@@ -522,7 +536,7 @@ class TestAutoProcessBatch:
                     batch_id=batch.id,
                     reviewed_by="admin-key",
                     graph_store=MagicMock(),
-                    embedding_client=MagicMock(),
+                    embedding_client=_mock_embedding_client(),
                     vector_searcher=MagicMock(),
                 )
 
@@ -565,7 +579,7 @@ class TestAutoProcessBatch:
                 batch_id=batch.id,
                 reviewed_by="admin-key",
                 graph_store=MagicMock(),
-                embedding_client=MagicMock(),
+                embedding_client=_mock_embedding_client(),
                 vector_searcher=MagicMock(),
             )
 
@@ -609,7 +623,7 @@ class TestAutoProcessBatch:
                 batch_id=batch.id,
                 reviewed_by="admin-key",
                 graph_store=MagicMock(),
-                embedding_client=MagicMock(),
+                embedding_client=_mock_embedding_client(),
                 vector_searcher=MagicMock(),
             )
 

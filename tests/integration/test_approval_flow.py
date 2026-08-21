@@ -14,6 +14,7 @@
 """
 
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -406,7 +407,7 @@ class TestReviewApprove:
         detail = await get_batch_detail(db_session, batch.id)
         assert detail.items[0].target_id == node.id
 
-    async def test_review_approve_generates_vector(
+    async def test_review_approve_defers_vector(
         self,
         db_session,
         graph_store,
@@ -414,7 +415,11 @@ class TestReviewApprove:
         vector_searcher_mock,
         sample_batch_payloads,
     ):
-        """审批通过时向量延迟生成（content_vector 非 None）。"""
+        """审批通过时向量延迟生成：节点先以 NULL 向量落库，由后台异步补向量。
+
+        同步审批路径不再阻塞于 embedding（避免大批次超时）；content_vector 在
+        审批返回时为 NULL，搜索已能安全跳过 NULL，后台 worker 随后填充。
+        """
         project_id = uuid.uuid4()
         items = sample_batch_payloads["publish_requirement"](project_id)
 
@@ -439,8 +444,8 @@ class TestReviewApprove:
         stmt = select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
         result = await db_session.execute(stmt)
         node = result.scalar_one()
-        assert node.content_vector is not None
-        assert len(node.content_vector) == 1024
+        # 同步审批路径不再 embed：向量暂为 NULL（异步补向量在审批返回之后）
+        assert node.content_vector is None
 
     async def test_review_approve_writes_edge_to_age_graph(
         self,
@@ -1598,8 +1603,10 @@ class TestApprovalEndToEnd:
         nodes = list(result.scalars().all())
         assert len(nodes) == 1
         assert nodes[0].status == "approved"
-        assert nodes[0].content_vector is not None
-        assert len(nodes[0].content_vector) == 1024
+        # 同步审批路径延迟向量化：审批返回时向量暂为 NULL（搜索已能安全跳过 NULL）；
+        # 异步补向量由后台 worker（start_embed_nodes_task）完成，见 unit 测试
+        # test_start_embed_nodes_task_schedules_node_scope_worker 等。
+        assert nodes[0].content_vector is None
 
         # approval_item.target_id 已回填
         detail_after = await get_batch_detail(db_session, batch.id)

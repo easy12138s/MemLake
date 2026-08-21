@@ -42,6 +42,15 @@ async def create_tables(session: AsyncSession) -> None:
     conn = await session.connection()
     await conn.run_sync(Base.metadata.create_all)
 
+    # create_all 不会给已有表追加新列，显式补齐 reindex_task.target_node_ids
+    # （审批异步嵌入场景使用；存量库升级兼容）。
+    await session.execute(
+        text(
+            "ALTER TABLE reindex_task "
+            "ADD COLUMN IF NOT EXISTS target_node_ids UUID[]"
+        )
+    )
+
 
 async def check_extensions(session: AsyncSession) -> dict[str, bool]:
     """检查三个扩展是否已安装。返回 {扩展名: 是否已安装}。"""

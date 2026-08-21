@@ -83,9 +83,15 @@ def mock_embedding_client() -> MagicMock:
     用于 unit 测试或不依赖真实 embedding 服务的场景。
     """
     client = MagicMock()
-    # 按输入文本数返回等长向量列表（兼容批量 embed：一次 embed 多段文本）
-    client.embed = AsyncMock(side_effect=lambda texts: [[0.1] * 1024 for _ in texts])
-    client.embed_one = AsyncMock(return_value=[0.1] * 1024)
+    # 按输入文本数返回等长向量列表（兼容批量 embed：一次 embed 多段文本）。
+    # 接受 prompt_name/prompt 等关键字参数（与真实 EmbeddingClient.embed 签名对齐），
+    # 供冲突检测等处传入 prompt_name="query" 时不被 mock 拒绝。
+    client.embed = AsyncMock(
+        side_effect=lambda texts, **kwargs: [[0.1] * 1024 for _ in texts]
+    )
+    client.embed_one = AsyncMock(
+        side_effect=lambda text, **kwargs: [0.1] * 1024
+    )
     client.health = AsyncMock(return_value={"status": "ok", "model": "mock", "dimension": 1024})
     client.close = AsyncMock()
     return client

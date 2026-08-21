@@ -56,6 +56,7 @@ async def detect_conflicts(
     tags: list[str],
     exclude_node_id: uuid.UUID | None = None,
     top_k: int = 5,
+    query_vector: list[float] | None = None,
 ) -> dict:
     """三层架构检测节点是否与已有知识冲突。
 
@@ -100,12 +101,18 @@ async def detect_conflicts(
     candidates_examined = 0
 
     # L1 + L3：向量检索（FilterSpec 内含 project_id + node_type + status=approved 过滤）
-    # 用 f"{title}\n{content}" 做查询（与 repository.create_node 向量生成方式一致）
-    embed_input = f"{title}\n{content}"
+    # 用 f"{title}\n{content}" 做查询（与 repository.create_node 向量生成方式一致）。
+    # query_vector 非空时跳过内部 embed，直接使用调用方批量预计算的查询向量（批量化优化）。
     filters = FilterSpec(project_id=project_id, node_types=(node_type,))
-    vector_results = await vector_searcher.search(
-        session, embed_input, top_k=top_k, filters=filters
-    )
+    if query_vector is not None:
+        vector_results = await vector_searcher.search_by_vector(
+            session, query_vector, top_k=top_k, filters=filters
+        )
+    else:
+        embed_input = f"{title}\n{content}"
+        vector_results = await vector_searcher.search(
+            session, embed_input, top_k=top_k, filters=filters
+        )
 
     for result in vector_results:
         # 排除自身节点（写入后检测场景）

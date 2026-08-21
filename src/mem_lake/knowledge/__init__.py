@@ -17,6 +17,7 @@ from mem_lake.knowledge.repository import (
     archive_node,
     create_node,
     get_node,
+    get_nodes_by_ids,
     list_nodes_by_project,
     regenerate_vector,
     update_node,
@@ -45,6 +46,7 @@ __all__ = [
     # Repository
     "create_node",
     "get_node",
+    "get_nodes_by_ids",
     "update_node",
     "archive_node",
     "add_edge",
