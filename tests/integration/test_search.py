@@ -209,7 +209,7 @@ class TestVectorSearch:
     async def test_vector_search_score_is_similarity(
         self, db_session, graph_store, vector_searcher, knowledge_helpers
     ):
-        """score = 1 - cosine_distance，范围 0~1，越大越相似。"""
+        """score = -inner_product（归一化向量下等价余弦），范围 0~1，越大越相似。"""
         pid, *_ = await _seed_three_nodes(
             db_session, graph_store, vector_searcher._embedding_client, knowledge_helpers
         )

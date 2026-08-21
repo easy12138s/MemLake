@@ -642,3 +642,33 @@ class TestAddEdgeEdgeCases:
                 edge_type="implements",
                 properties={"invalid-key": "value"},  # 含连字符，非法
             )
+
+
+# ============ sync_node_title ============
+
+class TestSyncNodeTitle:
+    """sync_node_title 测试。"""
+
+    async def test_sync_node_title_updates_projection(self, db_session, store):
+        """节点标题变更后，图投影 title 同步为新值。"""
+        project_id = uuid.uuid4()
+        node_id = uuid.uuid4()
+        await store.add_node(
+            db_session, node_id, "Requirement", _props(node_id, project_id, "旧标题")
+        )
+
+        await store.sync_node_title(db_session, node_id, "新标题")
+
+        rows = await store.match_pattern(
+            db_session,
+            "MATCH (n {id: $nid}) RETURN n",
+            {"nid": str(node_id)},
+        )
+        assert len(rows) == 1
+        assert rows[0]["properties"]["title"] == "新标题"
+
+    async def test_sync_node_title_nonexistent_idempotent(self, db_session, store):
+        """不存在的节点更新 title 幂等（静默无操作，不抛异常）。"""
+        fake_id = uuid.uuid4()
+        await store.sync_node_title(db_session, fake_id, "任意标题")
+        # 不抛异常即可

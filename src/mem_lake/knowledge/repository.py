@@ -229,6 +229,11 @@ async def update_node(
         node.content_vector = await embedding_client.embed_one(embed_input)
         changes["vector_regenerated"] = True
 
+    # 标题变更时同步图投影的 title，避免 impact_analysis 等返回旧标题（同事务，不 commit）。
+    # 节点不存在时 sync_node_title 静默无操作（图投影非真相源，一致性以 PG 为准）。
+    if "title" in changes:
+        await graph_store.sync_node_title(session, node.id, node.title)
+
     await session.flush()
 
     await write_audit_log(

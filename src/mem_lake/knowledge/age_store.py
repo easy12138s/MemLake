@@ -199,6 +199,21 @@ class AGEGraphStore(GraphStore):
                 f"edge_type={edge_type}（MATCH 失败导致 CREATE 未执行）"
             )
 
+    async def sync_node_title(
+        self,
+        session: AsyncSession,
+        node_id: uuid.UUID,
+        title: str,
+    ) -> None:
+        """按 id 幂等更新图节点的 title。
+
+        title 为属性值，通过 _exec_cypher 参数化（非 Cypher 语法片段），无需白名单校验。
+        节点不存在时 MATCH 返回 0 行，静默无操作（图投影"非真相源"定位，一致性以 PG 为准）。
+        """
+        cypher = "MATCH (n {id: $node_id}) SET n.title = $title RETURN n"
+        params = {"node_id": str(node_id), "title": str(title)}
+        await self._exec_cypher(session, cypher, params)
+
     async def neighbors(
         self,
         session: AsyncSession,

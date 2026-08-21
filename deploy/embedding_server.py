@@ -1,16 +1,35 @@
-"""Embedding 服务：基于 sentence-transformers + Qwen3-Embedding-0.6B 的独立推理服务"""
+"""Embedding 服务：基于 sentence-transformers + Qwen3-Embedding-0.6B 的独立推理服务。
+
+可选加载 bge-reranker-base（CrossEncoder）提供 /rerank 精排；未配置 RERANK_MODEL_PATH 时
+仅提供 /embed 与 /health，不阻断启动（精排为可降级依赖）。
+"""
 
 import os
 
-from fastapi import FastAPI
+import numpy as np
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
 app = FastAPI(title="Mem Lake Embedding Service")
 
 model_path = os.environ.get("MODEL_PATH", "/models/Qwen3-Embedding-0.6B")
 device = os.environ.get("DEVICE", "cpu")
 model = SentenceTransformer(model_path, device=device)
+
+# 可选 rerank 模型：仅当 RERANK_MODEL_PATH 非空时加载（不阻断启动）
+rerank_model_path = os.environ.get("RERANK_MODEL_PATH", "")
+_reranker = None
+if rerank_model_path:
+    try:
+        _reranker = CrossEncoder(rerank_model_path, device=device)
+    except Exception as exc:  # noqa: BLE001 - 加载失败不阻断启动，health 反映不可用
+        _reranker = None
+        import logging
+
+        logging.getLogger("embedding_server").warning(
+            "rerank 模型加载失败: %s，精排不可用", exc
+        )
 
 
 class EmbedRequest(BaseModel):
@@ -27,9 +46,26 @@ class EmbedResponse(BaseModel):
     dimension: int
 
 
+class RerankRequest(BaseModel):
+    query: str
+    texts: list[str]
+
+
+class RerankResponse(BaseModel):
+    # scores 与 order 同长。order[i] 表示第 i 个高分值在原 texts 中的索引；
+    # 客户端按 order 还原即可得到按分数降序的 texts 顺序。
+    scores: list[float]
+    order: list[int]
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": model_path, "dimension": model.get_sentence_embedding_dimension()}
+    return {
+        "status": "ok",
+        "model": model_path,
+        "dimension": model.get_sentence_embedding_dimension(),
+        "has_rerank": _reranker is not None,
+    }
 
 
 @app.post("/embed", response_model=EmbedResponse)
@@ -41,3 +77,18 @@ def embed(req: EmbedRequest):
         prompt_name=req.prompt_name,
     )
     return EmbedResponse(embeddings=embs.tolist(), dimension=embs.shape[1])
+
+
+@app.post("/rerank", response_model=RerankResponse)
+def rerank(req: RerankRequest):
+    if _reranker is None:
+        raise HTTPException(status_code=503, detail="rerank 模型未加载")
+    if not req.texts:
+        return RerankResponse(scores=[], order=[])
+    pairs = [(req.query, t) for t in req.texts]
+    # predict 返回数组：bge-reranker-base 为一维标量 (N,)，部分模型为 (N,1)。
+    # ravel() 统一展平为标量后取 float，兼容两种形状。
+    pred = np.asarray(_reranker.predict(pairs)).ravel()
+    scores = [float(s) for s in pred]
+    order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    return RerankResponse(scores=[scores[i] for i in order], order=order)

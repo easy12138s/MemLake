@@ -2,7 +2,8 @@
 
 对齐 PDD 4.2 节点主表 Schema。节点统一存储于 knowledge_node 表，通过 type 字段区分实体类型，
 properties JSONB 存储类型特有属性。content_vector 支撑向量检索，content_tsv 支撑全文检索。
-HNSW 向量索引通过 pgvector-python 官方方案放入 __table_args__，随 create_all 创建。
+HNSW 向量索引通过 pgvector-python 官方方案放入 __table_args__，随 create_all 创建
+（opclass 为 vector_ip_ops，配 1024 维归一化向量；参数 m=32、ef_construction=400）。
 content_tsv 使用 PostgreSQL 内置 TSVECTOR 类型（GIN 索引默认 tsvector_ops opclass）。
 """
 
@@ -85,11 +86,14 @@ class KnowledgeNode(Base):
         Index("idx_node_project_tags", "tags", postgresql_using="gin"),
         Index("idx_node_tsv", "content_tsv", postgresql_using="gin"),
         # HNSW 向量索引（pgvector-python 官方方案，随 create_all 创建）
+        # 适配 1024 维高维向量：m=32、ef_construction=400（业界建议 m≈32-48、ef_construction≈m*10-20）。
+        # opclass 用 vector_ip_ops（内积）：向量均来自归一化 embedding 服务，内积 <#> 与余弦等价且更快，
+        # 与搜索层 search/vector.py 的 max_inner_product 调用对齐。存量库需重建索引，见 deploy/init/002_*.
         Index(
             "idx_node_vector",
             "content_vector",
             postgresql_using="hnsw",
-            postgresql_with={"m": 16, "ef_construction": 64},
-            postgresql_ops={"content_vector": "vector_cosine_ops"},
+            postgresql_with={"m": 32, "ef_construction": 400},
+            postgresql_ops={"content_vector": "vector_ip_ops"},
         ),
     )

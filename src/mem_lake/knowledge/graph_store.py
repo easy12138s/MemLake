@@ -53,6 +53,18 @@ class GraphStore(ABC):
         """
 
     @abstractmethod
+    async def sync_node_title(
+        self,
+        session: AsyncSession,
+        node_id: uuid.UUID,
+        title: str,
+    ) -> None:
+        """按 id 幂等更新图节点的 title（title 冗余同步，图节点非真相源）。
+
+        用于节点标题变更时保持图投影与 PG 表一致；节点不存在时静默无操作。
+        """
+
+    @abstractmethod
     async def neighbors(
         self,
         session: AsyncSession,

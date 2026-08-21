@@ -87,7 +87,7 @@ class EmbeddingClient:
     async def health(self) -> dict:
         """健康检查。
 
-        GET /health → {"status":"ok","model":"...","dimension":1024}。
+        GET /health → {"status":"ok","model":"...","dimension":1024,"has_rerank":bool}。
         校验 status == "ok"，返回完整响应 dict。
         """
         try:
@@ -105,6 +105,52 @@ class EmbeddingClient:
             raise EmbeddingError(f"Embedding 服务状态异常: {data}")
 
         return data
+
+    async def has_rerank(self) -> bool:
+        """查询服务端是否已加载 rerank 模型。
+
+        精排为可降级依赖：健康检查失败返回 False（不抛异常），调用方回退 RRF 原序。
+        """
+        try:
+            data = await self.health()
+            return bool(data.get("has_rerank", False))
+        except EmbeddingError:
+            return False
+
+    async def rerank(self, query: str, texts: list[str]) -> list[float]:
+        """对候选文本做 cross-encoder 精排，返回与 texts 同序的分数。
+
+        POST /rerank body {"query": str, "texts": [...]} → {"scores": [...], "order": [...]}。
+        scores 与 order 同长、均按分数降序：order[i] 为原 texts 中的索引，据此还原为原序分数。
+        """
+        if not texts:
+            return []
+        body = {"query": query, "texts": texts}
+        try:
+            resp = await self._client.post("/rerank", json=body)
+        except httpx.HTTPError as exc:
+            raise EmbeddingError(f"Rerank 服务请求失败: {exc}") from exc
+
+        if resp.status_code != 200:
+            raise EmbeddingError(
+                f"Rerank 返回非 200: status={resp.status_code} body={resp.text}"
+            )
+
+        data = resp.json()
+        scores = data.get("scores")
+        order = data.get("order")
+        if not isinstance(scores, list) or not isinstance(order, list):
+            raise EmbeddingError(f"Rerank 响应格式错误: {data}")
+        if len(scores) != len(order) or len(scores) != len(texts):
+            raise EmbeddingError(
+                f"Rerank 返回长度不符: scores={len(scores)} order={len(order)} texts={len(texts)}"
+            )
+
+        # order 按分数降序给出原索引；还原为与 texts 同序的分数
+        restored = [0.0] * len(texts)
+        for rank, idx in enumerate(order):
+            restored[idx] = scores[rank]
+        return restored
 
     async def close(self) -> None:
         """关闭底层 httpx 连接池。"""
