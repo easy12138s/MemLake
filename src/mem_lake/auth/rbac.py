@@ -40,6 +40,7 @@ ADMIN_ONLY_TOOLS: frozenset[str] = frozenset({
     "query_audit_log",
     "manage_access_key",
     "manage_project_profile",
+    "reindex_project_vectors",
 })
 
 # admin 拥有全部工具（含 pm 与 dev 工具集）
