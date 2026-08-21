@@ -28,10 +28,12 @@ services:
       args:
         DOWNLOAD_MODEL: ${DOWNLOAD_MODEL:-true}
         DOWNLOAD_RERANK_MODEL: ${DOWNLOAD_RERANK_MODEL:-true}
+        TORCH_CUDA: ${TORCH_CUDA:-false}
     ports:
       - "8001:8001"
     environment:
-      DEVICE: cpu
+      # 推理设备：默认 cpu；GPU（TORCH_CUDA=true）时改为 cuda
+      DEVICE: ${EMBEDDING_DEVICE:-cpu}
       # 精排模型路径（默认镜像内置 bge-reranker-base；留空则不加载精排）
       RERANK_MODEL_PATH: ${RERANK_MODEL_PATH:-/models/bge-reranker-base}
     healthcheck:

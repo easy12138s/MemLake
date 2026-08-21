@@ -2,14 +2,33 @@
 # 基于 Python slim，内置 sentence-transformers + Qwen3-Embedding-0.6B 模型
 FROM python:3.11-slim
 
+# torch 构建类型：false=cpu（默认，无 CUDA 运行时，镜像小约省4G）；true=cuda（镜像大，需 GPU 推理）。
+# 由 docker-compose 通过 build arg TORCH_CUDA 传递。GPU 时 DEVICE 应配为 cuda（见 compose）。
+ARG TORCH_CUDA=false
+
 # 使用清华 PyPI 镜像加速
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-    && pip install --no-cache-dir \
-    sentence-transformers==6.0.0 \
-    transformers==5.15.1 \
-    fastapi>=0.115.0 \
-    uvicorn[standard]>=0.30.0 \
-    modelscope
+    && if [ "$TORCH_CUDA" = "true" ]; then \
+          pip install --no-cache-dir \
+          sentence-transformers==6.0.0 \
+          transformers==5.15.1 \
+          fastapi>=0.115.0 \
+          uvicorn[standard]>=0.30.0 \
+          modelscope; \
+      else \
+          # CPU 版：torch 本体从官方 cpu index 拉（--no-deps，只有它在这里发布），
+          # 其传递依赖交由第 2 步从清华统一解析（download.pytorch.org 国内极慢）。
+          # --timeout/--retries 容忍慢网络。
+          pip install --no-cache-dir --timeout 120 --retries 10 --no-deps "torch>=2.2" \
+              --index-url https://download.pytorch.org/whl/cpu \
+          && pip install --no-cache-dir --timeout 120 --retries 10 \
+              --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+              sentence-transformers==6.0.0 \
+              transformers==5.15.1 \
+              fastapi>=0.115.0 \
+              uvicorn[standard]>=0.30.0 \
+              modelscope; \
+      fi
 
 # 默认在构建期从 modelscope 下载模型并软链到 MODEL_PATH，保证「克隆即部署」可用。
 # 若宿主机已存在本地模型（如仓库内 models/ 目录），可传 DOWNLOAD_MODEL=false 跳过下载，
