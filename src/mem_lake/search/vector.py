@@ -64,6 +64,9 @@ class VectorSearcher:
         distance = KnowledgeNode.content_vector.cosine_distance(query_vector)
         stmt = (
             select(KnowledgeNode, distance.label("distance"))
+            # 跳过未向量化节点（content_vector 为 NULL 时 cosine_distance 为 NULL，
+            # 既无意义也会在 score = 1 - dist 时报 TypeError）
+            .where(KnowledgeNode.content_vector.isnot(None))
             .order_by(distance.asc())
             .limit(top_k)
         )

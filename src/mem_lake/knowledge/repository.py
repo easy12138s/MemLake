@@ -21,7 +21,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.audit.service import write_audit_log
@@ -50,6 +50,7 @@ async def create_node(
     source: dict[str, Any] | None = None,
     created_by: str,
     generate_vector: bool = True,
+    content_vector: list[float] | None = None,
 ) -> KnowledgeNode:
     """创建知识节点（PG 表 + AGE 图节点 + 审计日志，事务性共写）。
 
@@ -64,22 +65,26 @@ async def create_node(
     """
     validate_node(node_type, properties)
 
-    content_vector: list[float] | None = None
+    content_vector_value: list[float] | None = None
     if generate_vector:
-        if embedding_client is None:
+        if content_vector is not None:
+            # 复用调用方批量预计算的向量（审批批量 embed 场景）
+            content_vector_value = content_vector
+        elif embedding_client is None:
             raise ValueError(
-                "generate_vector=True 时必须提供 embedding_client"
+                "generate_vector=True 且未提供 content_vector 时必须提供 embedding_client"
             )
-        # 拼接标题、正文与关键属性作为向量化输入（属性富集提升语义召回）
-        embed_input = build_embed_text(node_type, title, content, properties)
-        content_vector = await embedding_client.embed_one(embed_input)
+        else:
+            # 拼接标题、正文与关键属性作为向量化输入（属性富集提升语义召回）
+            embed_input = build_embed_text(node_type, title, content, properties)
+            content_vector_value = await embedding_client.embed_one(embed_input)
 
     node = KnowledgeNode(
         project_id=project_id,
         type=node_type,
         title=title,
         content=content,
-        content_vector=content_vector,
+        content_vector=content_vector_value,
         properties=properties,
         tags=tags or [],
         source=source or {},
@@ -348,6 +353,7 @@ async def list_nodes_by_project(
     status: str | None = "approved",
     limit: int = 100,
     offset: int = 0,
+    order_by: str | None = None,
 ) -> list[KnowledgeNode]:
     """按项目列出节点（支持类型与状态过滤，分页）。
 
@@ -364,9 +370,68 @@ async def list_nodes_by_project(
     if node_type is not None:
         stmt = stmt.where(KnowledgeNode.type == node_type)
 
-    stmt = stmt.order_by(KnowledgeNode.created_at.desc()).limit(limit).offset(offset)
+    if order_by == "id":
+        # 按主键排序（唯一且稳定），用于 offset 分页遍历全量，避免非唯一排序键导致漏页/重页
+        stmt = stmt.order_by(KnowledgeNode.id.asc())
+    else:
+        stmt = stmt.order_by(KnowledgeNode.created_at.desc())
+    stmt = stmt.limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_nodes_by_project(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    status: str | None = "approved",
+) -> int:
+    """统计项目内节点数（与 list_nodes_by_project 同过滤规则）。
+
+    供 reindex 后台任务预估总量、驱动进度展示。
+    """
+    stmt = select(func.count()).select_from(KnowledgeNode).where(
+        KnowledgeNode.project_id == project_id
+    )
+    if status is not None:
+        stmt = stmt.where(KnowledgeNode.status == status)
+        if status == "approved":
+            stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
+    result = await session.execute(stmt)
+    return int(result.scalar() or 0)
+
+
+async def batch_regenerate_vectors(
+    session: AsyncSession,
+    *,
+    embedding_client: EmbeddingClient,
+    nodes: list[KnowledgeNode],
+    actor: str,
+) -> int:
+    """批量重新生成节点向量（不 commit，由调用方事务控制）。
+
+    收集节点 embed 文本 → 一次批量 embed 调用 → 逐节点写回 content_vector +
+    审计日志。相比逐节点 embed_one 大幅减少 HTTP 往返，供 reindex 后台任务使用。
+    """
+    if not nodes:
+        return 0
+    texts = [
+        build_embed_text(n.type, n.title, n.content, n.properties) for n in nodes
+    ]
+    embeddings = await embedding_client.embed(texts)
+    for node, vec in zip(nodes, embeddings):
+        node.content_vector = vec
+        await write_audit_log(
+            session,
+            actor=actor,
+            action="update",
+            target_type="node",
+            target_id=node.id,
+            project_id=node.project_id,
+            detail={"vector_regenerated": True, "trigger": "reindex"},
+        )
+    await session.flush()
+    return len(nodes)
 
 
 async def get_distinct_tags(

@@ -21,11 +21,11 @@ from mem_lake.approval.conflict import detect_conflicts
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
+from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.repository import add_edge, create_node, get_node, update_node
 from mem_lake.knowledge.schema import SchemaValidationError, validate_edge_type, validate_node
 from mem_lake.search.vector import VectorSearcher
-
 
 # 批次类型白名单（PDD 3.4）
 BATCH_TYPES: frozenset[str] = frozenset({
@@ -219,6 +219,7 @@ async def review_approve(
 
     # 2. 遍历 items 执行写入
     all_conflict_hints: list[dict] = []
+    created_nodes: list[Any] = []
 
     for item in batch.items:
         if item.item_type == "node" and item.action == "create":
@@ -229,6 +230,7 @@ async def review_approve(
                 item=item,
             )
             item.target_id = node.id
+            created_nodes.append(node)
 
             # 冲突检测（节点已写入，排除自身；可捕获同批次内先写入的重复节点）
             conflict_hint = await detect_conflicts(
@@ -269,6 +271,17 @@ async def review_approve(
                 batch=batch,
             )
             # 边无 target_id，留空
+
+    # 2.1 批量向量化所有新建节点（单次 embed 批量调用，替代逐节点 embed_one）
+    if created_nodes:
+        texts = [
+            build_embed_text(n.type, n.title, n.content, n.properties)
+            for n in created_nodes
+        ]
+        embeddings = await embedding_client.embed(texts)
+        for node, vec in zip(created_nodes, embeddings):
+            node.content_vector = vec
+        await session.flush()
 
     # 3. 合并 conflict_hint
     merged_conflict_hint = _merge_conflict_hints(all_conflict_hints)
@@ -616,7 +629,7 @@ async def _execute_node_create(
         tags=payload.get("tags", []),
         source=payload.get("source", {}),
         created_by=payload["created_by"],
-        generate_vector=True,  # 审批通过时延迟生成向量（PDD 3.4 暂存机制）
+        generate_vector=False,  # 延迟生成：在 review_approve 内统一批量 embed
     )
 
 

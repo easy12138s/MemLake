@@ -32,6 +32,11 @@ from mem_lake.auth.service import (
     rotate_access_key,
     update_access_key_scope,
 )
+from mem_lake.gateway.background_tasks import (
+    find_running_task,
+    get_task_record,
+    start_reindex_task,
+)
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
     transactional_session,
@@ -44,8 +49,6 @@ from mem_lake.gateway.tools._shared import (
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     create_node,
-    list_nodes_by_project,
-    regenerate_vector,
     update_node,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -183,8 +186,24 @@ class ReindexOutput(BaseModel):
     """reindex_project_vectors 工具出参。"""
 
     project_id: uuid.UUID = Field(description="项目 ID")
-    reindexed: int = Field(description="已重建向量的节点数")
-    status: str = Field(description="执行状态：done")
+    task_id: uuid.UUID = Field(description="异步重嵌任务 ID，用于 get_reindex_status 轮询")
+    reindexed: int = Field(description="已重建向量的节点数（任务未结束时为 0）")
+    status: str = Field(description="任务状态：pending/running/done/failed")
+
+
+class ReindexStatusOutput(BaseModel):
+    """get_reindex_status 工具出参。"""
+
+    task_id: uuid.UUID = Field(description="任务 ID")
+    project_id: uuid.UUID = Field(description="项目 ID")
+    status: str = Field(description="任务状态：pending/running/done/failed")
+    total: int | None = Field(default=None, description="总量（已开始执行后为节点总数）")
+    processed: int = Field(default=0, description="已处理节点数")
+    reindexed: int = Field(default=0, description="已重建向量节点数")
+    error: str | None = Field(default=None, description="失败原因（status=failed 时）")
+    started_at: datetime | None = Field(default=None, description="开始时间")
+    finished_at: datetime | None = Field(default=None, description="结束时间")
+    created_at: datetime | None = Field(default=None, description="任务创建时间")
 
 
 # ============================================================================
@@ -410,42 +429,61 @@ def register_manage_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def reindex_project_vectors(
         project_id: uuid.UUID = Field(description="归属项目 ID"),
-        limit: int = Field(
-            default=500, description="单次最多重建向量的节点数（避免超大项目单次超时）"
+        batch_size: int = Field(
+            default=50, description="后台批量向量化每批节点数（默认 50）"
         ),
     ) -> ReindexOutput:
-        """重建项目内全部知识节点的向量（admin 运维工具）。
+        """异步重建项目内全部知识节点的向量（admin 运维工具）。
 
-        当嵌入文本构造逻辑变更（如纳入更多属性）后，存量节点的 content_vector 已过期，
-        需调用本工具刷新以恢复检索召回质量。逐节点重新生成向量并随事务提交。
-        仅重建 approved 状态节点。嵌入逻辑见 mem_lake.knowledge.embed。
+        本工具立即返回任务 ID（task_id），真正的向量重嵌在后台分批执行，
+        避免大项目同步执行导致的 MCP 调用超时。提交后通过 get_reindex_status 轮询进度。
+        若同一项目已有进行中（pending/running）任务，直接返回该任务（防重入，避免重复全量重嵌）。
+        仅重建 approved 状态节点。
         """
         try:
             validate_project_access(project_id)
-            ctx = get_context()
-            lifespan_ctx = ctx.lifespan_context
             actor = get_current_key_id()
 
-            async with transactional_session() as session:
-                nodes = await list_nodes_by_project(
-                    session,
-                    project_id=project_id,
-                    status="approved",
-                    limit=limit,
-                )
-                count = 0
-                for node in nodes:
-                    await regenerate_vector(
-                        session,
-                        embedding_client=lifespan_ctx.embedding_client,
-                        node_id=node.id,
-                        actor=actor,
-                    )
-                    count += 1
+            existing = await find_running_task(project_id)
+            if existing is not None:
                 return ReindexOutput(
-                    project_id=project_id, reindexed=count, status="done"
+                    project_id=project_id,
+                    task_id=existing.id,
+                    reindexed=existing.reindexed or 0,
+                    status=existing.status,
                 )
+
+            task_id = await start_reindex_task(
+                project_id, actor, batch_size=batch_size
+            )
+            return ReindexOutput(
+                project_id=project_id, task_id=task_id, reindexed=0, status="pending"
+            )
         except (NodeNotFoundError, ValueError) as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def get_reindex_status(
+        task_id: uuid.UUID = Field(description="reindex_project_vectors 返回的任务 ID"),
+    ) -> ReindexStatusOutput:
+        """查询异步重嵌任务的进度与状态（admin 运维工具）。"""
+        try:
+            task = await get_task_record(task_id)
+            if task is None:
+                raise ValueError(f"任务不存在: {task_id}")
+            return ReindexStatusOutput(
+                task_id=task.id,
+                project_id=task.project_id,
+                status=task.status,
+                total=task.total,
+                processed=task.processed,
+                reindexed=task.reindexed,
+                error=task.error,
+                started_at=task.started_at,
+                finished_at=task.finished_at,
+                created_at=task.created_at,
+            )
+        except ValueError as e:
             raise to_tool_error(e)
 
 

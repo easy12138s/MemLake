@@ -22,6 +22,16 @@ def test_admin_has_all_tools():
     assert ADMIN_TOOLS == PM_TOOLS | DEV_TOOLS | ADMIN_ONLY_TOOLS
 
 
+def test_reindex_tools_admin_only():
+    """reindex_project_vectors / get_reindex_status 仅 admin 可调用（不落入 pm/dev）。"""
+    assert "reindex_project_vectors" in ADMIN_ONLY_TOOLS
+    assert "get_reindex_status" in ADMIN_ONLY_TOOLS
+    assert "reindex_project_vectors" not in PM_TOOLS
+    assert "reindex_project_vectors" not in DEV_TOOLS
+    assert "get_reindex_status" not in PM_TOOLS
+    assert "get_reindex_status" not in DEV_TOOLS
+
+
 def test_pm_tools_exact():
     """PM_TOOLS 精确匹配 PDD 3.5 的工具名（+ get_project_info）。"""
     expected = {

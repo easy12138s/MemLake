@@ -36,6 +36,7 @@ async def create_tables(session: AsyncSession) -> None:
     from mem_lake.approval import models as _approval_models  # noqa: F401
     from mem_lake.audit import models as _audit_models  # noqa: F401
     from mem_lake.auth import models as _auth_models  # noqa: F401
+    from mem_lake.gateway import models as _gateway_models  # noqa: F401
     from mem_lake.knowledge import models as _knowledge_models  # noqa: F401
 
     conn = await session.connection()
