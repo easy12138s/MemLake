@@ -292,7 +292,8 @@ def register_review_tools(mcp: FastMCP) -> None:
           人类确认通过后调用 review_approve，拒绝则调用 review_reject
 
         冲突检测使用三层架构：同项目同类型（L1）→ 关键属性比对（L2）→ 内容语义
-        相似度 ≥ 0.92（L3，用标题+正文做向量对比）。三层全部通过才视为冲突。
+        相似度 ≥ CONFLICT_SIMILARITY_THRESHOLD（L3，默认 0.85，用标题+正文做向量对比，
+        换 embedding 模型后需重新标定）。三层全部通过才视为冲突。
         """
         try:
             ctx = get_context()

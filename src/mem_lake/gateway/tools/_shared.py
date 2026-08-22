@@ -13,7 +13,7 @@ from typing import Any
 import yaml
 from fastmcp.exceptions import ToolError
 from mcp_types import ToolAnnotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from mem_lake.approval.service import (
     BatchNotFoundError,
@@ -25,6 +25,24 @@ from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
 
 logger = logging.getLogger("mem_lake.gateway.tools.shared")
+
+
+# ============================================================================
+# 严格输入基类
+# ============================================================================
+
+
+class StrictInputModel(BaseModel):
+    """工具输入模型基类：拒绝未知字段。
+
+    网关是 LLM Agent 的 API 边界，Agent 常见错误是把顶层参数误嵌套进子对象
+    （如把 relations 放进 artifacts）。Pydantic 默认静默忽略未知字段，
+    会导致整段数据无声丢失且调用方毫无感知——比报错更危险。
+    输入模型统一继承本基类，未知字段直接校验失败，让调用方立即纠正。
+    （输出模型仍用普通 BaseModel，服务端自控无此风险。）
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # ============================================================================

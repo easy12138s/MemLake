@@ -461,3 +461,87 @@ class TestBuildDevItemsFreeStanding:
         impl = next(i for i in items if i["item_type"] == "edge" and i["payload"]["edge_type"] == "implements")
         assert impl["payload"]["from_ref"] == str(req_id)
         assert impl["payload"]["to_ref"] == "Code1"
+
+
+class TestStrictInputModels:
+    """工具输入模型拒绝未知字段（防 Agent 嵌套错位导致静默丢数据）。
+
+    背景：LLM Agent 调用网关时易把顶层参数误嵌套进子对象（如 relations
+    放进 artifacts）。Pydantic 默认静默忽略未知字段 → 整段数据无声丢失。
+    输入模型须 extra=forbid，让此类错误立即校验失败。
+    """
+
+    def test_artifacts_rejects_unknown_relations_key(self):
+        """relations 误放进 artifacts（真实事故场景）：校验失败而非静默忽略。"""
+        from pydantic import ValidationError
+
+        from mem_lake.gateway.tools.write_tools import ArtifactsInput, SolutionInput
+
+        with pytest.raises(ValidationError) as exc_info:
+            ArtifactsInput(
+                solutions=[
+                    SolutionInput(
+                        ref="Sol1",
+                        title="s",
+                        content="c",
+                        properties={"approach": "a", "version": "v1"},
+                    )
+                ],
+                relations=[  # 未知字段：应拒绝
+                    {"from_ref": "Code1", "to_ref": "Sol1", "relation_type": "realized_by"}
+                ],
+            )
+        assert "relations" in str(exc_info.value)
+
+    def test_relation_input_rejects_unknown_field(self):
+        from pydantic import ValidationError
+
+        from mem_lake.gateway.tools.write_tools import ArtifactRelationInput
+
+        with pytest.raises(ValidationError):
+            ArtifactRelationInput(
+                from_ref="a",
+                to_ref="b",
+                relation_type="realized_by",
+                from_id="oops",  # 应为 from_ref
+            )
+
+    def test_artifact_input_rejects_unknown_field(self):
+        from pydantic import ValidationError
+
+        from mem_lake.gateway.tools.write_tools import CodeSnippetInput
+
+        with pytest.raises(ValidationError):
+            CodeSnippetInput(
+                ref="Code1",
+                title="t",
+                content="c",
+                properties={"name": "n", "type": "function", "responsibility": "r"},
+                file_path="src/a.py",  # 应在 properties 内，顶层为未知字段
+            )
+
+    def test_requirement_input_rejects_unknown_field(self):
+        from pydantic import ValidationError
+
+        from mem_lake.gateway.tools.write_tools import RequirementInput
+
+        with pytest.raises(ValidationError):
+            RequirementInput(
+                title="t",
+                content="c",
+                properties={"requirement_id": "R1", "priority": "P0", "module": "m"},
+                related={"supersedes": ["R0"]},  # 未知字段
+            )
+
+    def test_project_profile_input_rejects_unknown_field(self):
+        from pydantic import ValidationError
+
+        from mem_lake.gateway.tools.manage_tools import ProjectProfileInput
+
+        with pytest.raises(ValidationError):
+            ProjectProfileInput(
+                title="t",
+                content="c",
+                properties={"name": "n", "description": "d", "tech_stack": [], "architecture": "a"},
+                unknown_top_level_field="x",
+            )
