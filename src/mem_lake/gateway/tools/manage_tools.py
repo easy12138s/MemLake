@@ -45,6 +45,7 @@ from mem_lake.gateway.dependencies import (
 from mem_lake.config import get_settings
 from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
+    StrictInputModel,
     to_tool_error,
 )
 from mem_lake.knowledge.repository import (
@@ -165,7 +166,7 @@ def _build_onboarding_prompt(role: str) -> str:
 # ============================================================================
 
 
-class ProjectProfileInput(BaseModel):
+class ProjectProfileInput(StrictInputModel):
     """项目画像内容。"""
 
     title: str = Field(description="项目名称标题")

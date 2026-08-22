@@ -1,4 +1,4 @@
-"""写入类工具：产生审批批次，等待 admin 审批。
+﻿"""写入类工具：产生审批批次，等待 admin 审批。
 
 工具职责：构造审批项（node/edge items）并提交批次，不在工具层写入知识图谱。
 所有写操作经 admin 审批通过后由 approval/service 原子写入图谱。
@@ -35,6 +35,7 @@ from mem_lake.gateway.dependencies import (
 )
 from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
+    StrictInputModel,
     WriteToolOutput,
     build_edge_item,
     build_node_item,
@@ -67,7 +68,7 @@ def _check_content_length(value: str, label: str) -> None:
 # ============================================================================
 
 
-class RequirementInput(BaseModel):
+class RequirementInput(StrictInputModel):
     """需求节点内容。"""
 
     title: str = Field(description="需求标题")
@@ -81,7 +82,7 @@ class RequirementInput(BaseModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class RelatedInput(BaseModel):
+class RelatedInput(StrictInputModel):
     """需求间关联关系。"""
 
     supersedes: list[str] = Field(
@@ -94,7 +95,7 @@ class RelatedInput(BaseModel):
     )
 
 
-class RelationInput(BaseModel):
+class RelationInput(StrictInputModel):
     """需求间关系（用于 update_requirement_relations）。"""
 
     from_id: uuid.UUID = Field(description="源需求节点 ID")
@@ -110,7 +111,7 @@ class RelationInput(BaseModel):
 # ============================================================================
 
 
-class CodeSnippetInput(BaseModel):
+class CodeSnippetInput(StrictInputModel):
     """代码片段。"""
 
     ref: str = Field(
@@ -127,7 +128,7 @@ class CodeSnippetInput(BaseModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class SolutionInput(BaseModel):
+class SolutionInput(StrictInputModel):
     """实现方案。"""
 
     ref: str = Field(description="批次内引用名")
@@ -139,7 +140,7 @@ class SolutionInput(BaseModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class DesignIntentInput(BaseModel):
+class DesignIntentInput(StrictInputModel):
     """设计意图。"""
 
     ref: str = Field(description="批次内引用名")
@@ -151,7 +152,7 @@ class DesignIntentInput(BaseModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class PitfallInput(BaseModel):
+class PitfallInput(StrictInputModel):
     """踩坑记录。"""
 
     ref: str = Field(description="批次内引用名")
@@ -166,7 +167,7 @@ class PitfallInput(BaseModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class ArtifactRelationInput(BaseModel):
+class ArtifactRelationInput(StrictInputModel):
     """产物间关系（含临时引用）。"""
 
     from_ref: str = Field(
@@ -185,7 +186,7 @@ class ArtifactRelationInput(BaseModel):
     properties: dict[str, Any] = Field(default={}, description="边属性")
 
 
-class ArtifactsInput(BaseModel):
+class ArtifactsInput(StrictInputModel):
     """开发产物集合。"""
 
     code_snippets: list[CodeSnippetInput] = Field(
