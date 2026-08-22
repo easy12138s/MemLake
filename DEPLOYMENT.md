@@ -21,7 +21,7 @@ cp .env.example .env
 | `DATABASE_POOL_SIZE` | `10` | 连接池大小，按并发量调整 |
 | `MCP_RATE_LIMIT_QPS` | `100` | 每 Access Key 限流 |
 | `EMBEDDING_DEVICE` | `cpu` | 有 GPU 改 `cuda` |
-| `CONFLICT_SIMILARITY_THRESHOLD` | `0.85` | 冲突检测相似度阈值 |
+| `CONFLICT_SIMILARITY_THRESHOLD` | `0.85` | 冲突检测相似度阈值（换 embedding 模型后用 `scripts/calibrate_conflict_threshold.py` 重标定） |
 
 `DATABASE_URL` 在 Compose 环境下由 `docker-compose.yml` 覆盖，无需手动改。
 
