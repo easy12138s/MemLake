@@ -21,6 +21,7 @@ from mem_lake.approval.conflict import detect_conflicts
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
+from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.repository import add_edge, create_node, get_node, update_node
 from mem_lake.knowledge.schema import SchemaValidationError, validate_edge_type, validate_node
@@ -222,6 +223,7 @@ async def review_approve(
 
     # 冲突检测批量向量化：所有新建节点的查询文本一次性 embed（prompt_name="query"，
     # 与 VectorSearcher.search 语义一致），避免每节点各 embed 一次（2N → 2）。
+    # 查询文本用 build_embed_text，与 conflict.detect_conflicts 内部构造一致。
     create_items = [
         it
         for it in batch.items
@@ -230,7 +232,15 @@ async def review_approve(
     conflict_query_vectors: list[list[float]] = []
     if create_items:
         conflict_query_vectors = await embedding_client.embed(
-            [f"{it.payload['title']}\n{it.payload['content']}" for it in create_items],
+            [
+                build_embed_text(
+                    it.entity_type,
+                    it.payload["title"],
+                    it.payload["content"],
+                    it.payload.get("properties", {}),
+                )
+                for it in create_items
+            ],
             prompt_name="query",
         )
 
@@ -428,6 +438,7 @@ async def auto_process_batch(
 
     # 2. 遍历 node+create 项执行三层冲突检测
     # 批量化：所有查询文本一次性 embed（prompt_name="query"），再逐条用预计算向量比对。
+    # 查询文本用 build_embed_text，与 conflict.detect_conflicts 内部构造一致。
     create_items = [
         it
         for it in batch.items
@@ -436,7 +447,15 @@ async def auto_process_batch(
     conflict_query_vectors: list[list[float]] = []
     if create_items:
         conflict_query_vectors = await embedding_client.embed(
-            [f"{it.payload['title']}\n{it.payload['content']}" for it in create_items],
+            [
+                build_embed_text(
+                    it.entity_type,
+                    it.payload["title"],
+                    it.payload["content"],
+                    it.payload.get("properties", {}),
+                )
+                for it in create_items
+            ],
             prompt_name="query",
         )
 

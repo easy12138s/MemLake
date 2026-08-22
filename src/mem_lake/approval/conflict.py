@@ -7,7 +7,8 @@
 
 设计依据（基于知识冲突检测最佳实践研究）：
 1. 标题相似不等于内容冲突（"用户登录需求" vs "用户登录性能优化需求"标题相似但内容不同），
-   因此用 f"{title}\\n{content}" 做向量检索（与存储时一致），信息更完整
+   查询文本用 build_embed_text（title+content+关键属性段）——与节点落库向量的构造
+   完全一致，保证 query-doc 相似度在"内容相同"时达到高位
 2. 内容级 embedding 比标题级 embedding 更精准（标题噪声大、信号弱、偏主题相关）
 3. 关键属性比对是区分"同一实体"与"相关但不同实体"的硬判据
    （不同 requirement_id 的需求是不同实体，即使标题完全相同）
@@ -21,6 +22,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.config import get_settings
+from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.vector import VectorSearcher
@@ -101,7 +103,8 @@ async def detect_conflicts(
     candidates_examined = 0
 
     # L1 + L3：向量检索（FilterSpec 内含 project_id + node_type + status=approved 过滤）
-    # 用 f"{title}\n{content}" 做查询（与 repository.create_node 向量生成方式一致）。
+    # 查询文本用 build_embed_text（title+content+关键属性段），与 repository.create_node
+    # 落库向量的构造一致（含属性段，属性富集提升"同实体"识别）。
     # query_vector 非空时跳过内部 embed，直接使用调用方批量预计算的查询向量（批量化优化）。
     filters = FilterSpec(project_id=project_id, node_types=(node_type,))
     if query_vector is not None:
@@ -109,7 +112,7 @@ async def detect_conflicts(
             session, query_vector, top_k=top_k, filters=filters
         )
     else:
-        embed_input = f"{title}\n{content}"
+        embed_input = build_embed_text(node_type, title, content, properties)
         vector_results = await vector_searcher.search(
             session, embed_input, top_k=top_k, filters=filters
         )
