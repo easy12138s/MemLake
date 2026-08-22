@@ -66,7 +66,7 @@ async def detect_conflicts(
     L2 关键属性比对：对向量检索召回的候选节点，比对类型特有标识字段，
        关键属性不同的节点直接排除（不同实体不构成冲突）。
     L3 内容语义相似度：用 f"{title}\\n{content}" 做向量检索（与存储时一致），
-       相似度 ≥ 0.92 且 L2 通过才视为冲突。
+       相似度 ≥ CONFLICT_SIMILARITY_THRESHOLD（默认 0.85）且 L2 通过才视为冲突。
 
     参数：
         session: 异步数据库会话

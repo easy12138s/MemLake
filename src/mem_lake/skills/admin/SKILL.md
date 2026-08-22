@@ -288,7 +288,7 @@ manage_project_profile(
 | Pitfall | symptom | 不同症状 = 不同坑 |
 | ProjectProfile | name | 不同项目名 = 不同项目画像 |
 
-阈值依据：`CONFLICT_SIMILARITY_THRESHOLD`（默认 0.85，由配置驱动）。该值随嵌入模型变化需重新标定（换模型后用样本对实测调整），0.85 起作为 Qwen3-Embedding-0.6B 的初始值（区分"相关"与"重复"）。
+阈值依据：`CONFLICT_SIMILARITY_THRESHOLD`（默认 0.85，由配置驱动）。该值随嵌入模型变化需重新标定：换模型后用 `scripts/calibrate_conflict_threshold.py` 按真实数据实测（推荐 query-doc 运行时模式，加 `--embedding-url`）。2026-08-22 已按 Qwen3-Embedding-0.6B 实测标定（query-doc 模式，跨 MemLake/ReqRadar 两项目）：相关不同实体最高 0.772、同实体改写最低 0.914，0.85 落在空隙内且余量均衡，维持不变。
 
 ## 冲突描述模板
 
