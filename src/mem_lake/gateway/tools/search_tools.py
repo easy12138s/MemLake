@@ -312,14 +312,21 @@ def register_search_tools(mcp: FastMCP) -> None:
             ctx = get_context()
             lifespan_ctx = ctx.lifespan_context
 
-            # 获取被检测需求的标题用作查询文本
+            # 获取被检测需求的标题用作查询文本（build_embed_text 含属性段，
+            # 与落库向量构造一致）
             session = await get_readonly_session()
             try:
+                from mem_lake.knowledge.embed import build_embed_text
                 from mem_lake.knowledge.repository import get_node
                 target_node = await get_node(session, requirement_id)
             finally:
                 await session.close()
-            query_text = f"{target_node.title}\n{target_node.content}"
+            query_text = build_embed_text(
+                target_node.type,
+                target_node.title,
+                target_node.content,
+                target_node.properties,
+            )
 
             # 复用 hybrid_search 检索同项目 Requirement 节点（内部自建独立 session）
             filters = FilterSpec(

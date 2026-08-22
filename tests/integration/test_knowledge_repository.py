@@ -328,7 +328,9 @@ class TestUpdateNode:
         original_vector = list(node.content_vector)
 
         # 修改 mock 返回值以区分新旧向量
-        mock_embedding_client.embed_one.return_value = [0.2] * 1024
+        # （fixture 用 side_effect 定义，side_effect 优先于 return_value，
+        #  故须改 side_effect 才能生效）
+        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.2] * 1024
 
         updated = await update_node(
             db_session,
@@ -361,7 +363,7 @@ class TestUpdateNode:
             created_by="ak",
         )
         original_vector = list(node.content_vector)
-        mock_embedding_client.embed_one.return_value = [0.3] * 1024
+        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.3] * 1024
 
         updated = await update_node(
             db_session,
@@ -402,6 +404,47 @@ class TestUpdateNode:
                 properties={"requirement_id": "REQ-002", "module": "auth"},
                 actor="ak",
             )
+
+    async def test_update_properties_only_regenerates_vector(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """仅 properties 变更（title/content 不变）也触发向量重算。
+
+        build_embed_text 的输入含属性段（如 Pitfall.root_cause），属性变更
+        会改变嵌入文本，向量必须重算（审计 §2.2）。
+        """
+        project_id = uuid.uuid4()
+        node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Pitfall",
+            title="踩坑",
+            content="描述",
+            properties=knowledge_helpers["Pitfall"](),
+            created_by="ak",
+        )
+        original_vector = list(node.content_vector)
+        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.7] * 1024
+
+        new_props = knowledge_helpers["Pitfall"]()
+        new_props["root_cause"] = "完全不同的根因说明"
+        updated = await update_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            node_id=node.id,
+            properties=new_props,
+            actor="ak",
+        )
+
+        assert updated.version == 2
+        assert updated.content_vector != original_vector
+        assert updated.content_vector[0] == 0.7
+        # embed 输入应含属性段（与落库向量构造一致）
+        embed_input = mock_embedding_client.embed_one.call_args.args[-1]
+        assert "root_cause" in embed_input
 
     async def test_update_no_changes_returns_unchanged(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
@@ -945,7 +988,7 @@ class TestRegenerateVector:
         assert node.content_vector is None
 
         # 手动重生成
-        mock_embedding_client.embed_one.return_value = [0.5] * 1024
+        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.5] * 1024
         updated = await regenerate_vector(
             db_session,
             embedding_client=mock_embedding_client,

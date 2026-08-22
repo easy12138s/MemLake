@@ -103,8 +103,9 @@ async def _apply_rerank(
     try:
         if not await embedding_client.has_rerank():
             return fused
-        # 精排对象用 "标题\n正文"（信息更完整，与向量化一致）；空正文退化为标题。
-        texts = [f"{r.content or r.title}\n{r.title}".strip() for r in rerank_candidate]
+        # 精排对象用 "标题\n正文"（标题在前，与 build_embed_text 的构造顺序对齐；
+        # 空正文退化为标题本身）。
+        texts = [f"{r.title}\n{r.content or ''}".strip() for r in rerank_candidate]
         scores = await embedding_client.rerank(query, texts)
     except EmbeddingError:
         logger.warning("rerank 精排不可用，回退 RRF 原序", exc_info=True)

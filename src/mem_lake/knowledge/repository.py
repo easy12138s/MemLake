@@ -118,7 +118,7 @@ async def create_node(
             "node_type": node_type,
             "title": title,
             "version": 1,
-            "vector_generated": content_vector is not None,
+            "vector_generated": content_vector_value is not None,
         },
     )
 
@@ -185,7 +185,8 @@ async def update_node(
 
     规则：
     - 不允许修改 type 字段（节点类型不可变更），调用方需重新创建新节点
-    - title/content 任一更新且 regenerate_vector=True：重新生成向量
+    - title/content/properties 任一更新且 regenerate_vector=True：重新生成向量
+      （build_embed_text 的输入含属性段，属性变更同样影响向量）
     - properties 整体替换（不深度合并，调用方负责合并逻辑）
     - 版本号 +1
     - 审计日志记录变更前后关键字段
@@ -219,11 +220,13 @@ async def update_node(
 
     node.version += 1
 
-    # 标题或正文变更时重生成向量
-    if regenerate_vector and ("title" in changes or "content" in changes):
+    # 标题/正文/属性任一变更时重生成向量（embed 输入含属性段，属性变更影响向量）
+    if regenerate_vector and any(
+        k in changes for k in ("title", "content", "properties")
+    ):
         if embedding_client is None:
             raise ValueError(
-                "regenerate_vector=True 且 title/content 变更时必须提供 embedding_client"
+                "regenerate_vector=True 且 title/content/properties 变更时必须提供 embedding_client"
             )
         embed_input = build_embed_text(node.type, node.title, node.content, node.properties)
         node.content_vector = await embedding_client.embed_one(embed_input)

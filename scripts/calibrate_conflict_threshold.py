@@ -36,10 +36,12 @@
     --max-title-len 规范化标题时的取前 N 字符（默认 40）
 
 标定记录：
-    2026-08-22 Qwen3-Embedding-0.6B（query-doc 模式）：
-    MemLake 项目相关不同实体最高 0.772、近重复 0.920/0.927；ReqRadar 相关不同实体
-    最高 0.764、同实体对 0.837/0.914/0.975（其中 0.837 一对关键标识不同，按 L2 设计
-    排除、与阈值无关）。0.85 落在跨项目空隙内且余量均衡（+0.08/-0.07），维持不变。
+    2026-08-22 Qwen3-Embedding-0.6B（query-doc 模式，查询文本=build_embed_text 含属性段）：
+    MemLake 项目相关不同实体最高 0.807、同实体改写最低 0.912/0.941（85 节点含 Solution 层）。
+    0.85 落在空隙 [0.807, 0.912] 内（-0.043/+0.062），维持不变——略偏保守方向，
+    误报冲突进人工审查优于漏过重复入库。
+    （更早一轮口径为查询文本=title+content：相关不同实体最高 0.772、近重复 0.920/0.927；
+    统一为 build_embed_text 后相关对分数升高属预期——属性段存在部分重叠。）
 """
 
 import argparse
@@ -143,6 +145,56 @@ def embed_queries(
             raise RuntimeError(f"embedding 服务响应格式错误: {data}")
         vectors.extend(embeddings)
     return vectors
+
+
+# 与 mem_lake.knowledge.embed.EMBED_PROPERTY_FIELDS 保持一致（脚本独立运行，
+# 容器内无包上下文，故内联复制；改动需两处同步）
+_EMBED_PROPERTY_FIELDS: dict[str, list[str]] = {
+    "ProjectProfile": ["name", "description", "tech_stack", "architecture", "work_dir", "repo"],
+    "Requirement": ["requirement_id", "priority", "module", "acceptance_criteria"],
+    "CodeSnippet": ["name", "type", "responsibility", "file_path", "language"],
+    "Solution": ["approach", "version", "alternatives"],
+    "DesignIntent": ["rationale", "trade_offs", "references"],
+    "Decision": ["decision_id", "decision"],
+    "Pitfall": ["symptom", "root_cause", "solution", "severity"],
+}
+
+# 与 mem_lake.knowledge.embed._EMBED_VALUE_MAX_LEN 保持一致
+_EMBED_VALUE_MAX_LEN = 512
+
+
+def _render_value(value: Any) -> str:
+    """属性值渲染为字符串（与 knowledge/embed.py 同逻辑，两处需同步）。"""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        rendered = " ".join(str(v) for v in value)
+    elif isinstance(value, dict):
+        rendered = " ".join(f"{k}={v}" for k, v in value.items())
+    else:
+        rendered = str(value)
+    if len(rendered) > _EMBED_VALUE_MAX_LEN:
+        rendered = rendered[:_EMBED_VALUE_MAX_LEN] + "..."
+    return rendered
+
+
+def _build_query_text(node: dict[str, Any]) -> str:
+    """构造冲突检测查询文本（与 knowledge/embed.build_embed_text 同构）。
+
+    结构：title + content + 关键属性段（k: v），与节点落库向量构造一致，
+    保证标定口径与 detect_conflicts 运行时口径完全相同。
+    """
+    parts: list[str] = []
+    if node.get("title"):
+        parts.append(node["title"].strip())
+    if node.get("content"):
+        parts.append(node["content"].strip())
+    props = node.get("properties") or {}
+    for key in _EMBED_PROPERTY_FIELDS.get(node.get("type", ""), []):
+        rendered = _render_value(props.get(key))
+        if rendered:
+            parts.append(f"{key}: {rendered}")
+    return "\n".join(parts)
 
 
 def analyze_distribution(
@@ -358,8 +410,9 @@ def main() -> None:
 
     query_vectors = None
     if args.embedding_url:
-        # 与 detect_conflicts 一致：查询文本 = f"{title}\n{content}"，指令感知 query 侧编码
-        texts = [f"{n['title']}\n{n['content']}" for n in nodes]
+        # 与 detect_conflicts 一致：查询文本用 build_embed_text（title+content+属性段），
+        # 指令感知 query 侧编码
+        texts = [_build_query_text(n) for n in nodes]
         print(f"query 侧向量化中（{len(texts)} 条，prompt_name=query）...")
         qvecs = embed_queries(args.embedding_url, texts)
         # 与 nodes 对齐：无落库向量的节点 query 向量也置 None（不参与采样）
