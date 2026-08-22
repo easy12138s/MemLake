@@ -31,6 +31,7 @@ BATCH_TYPES: frozenset[str] = frozenset({
     "publish_requirement",
     "submit_dev_artifacts",
     "update_requirement_relations",
+    "update_node",
 })
 
 # 状态机常量

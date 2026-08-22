@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.approval.service import (
@@ -19,17 +20,17 @@ from mem_lake.approval.service import (
     IdempotencyConflictError,
     PayloadValidationError,
 )
-from fastmcp.exceptions import ToolError
 from mem_lake.gateway.tools._shared import (
     INSTALLATION_GUIDE,
+    READ_TOOL_ANNOTATIONS,
     ROLE_SKILLS_MD,
     ROLE_SKILLS_VERSION,
-    READ_TOOL_ANNOTATIONS,
     WRITE_TOOL_ANNOTATIONS,
     ApprovalResultOutput,
     WriteToolOutput,
     build_edge_item,
     build_node_item,
+    build_update_node_item,
     to_tool_error,
 )
 from mem_lake.knowledge.repository import NodeNotFoundError
@@ -242,6 +243,57 @@ class TestBuildNodeItem:
                 project_id=uuid.uuid4(),
                 created_by="",
             )
+
+
+class TestBuildUpdateNodeItem:
+    """build_update_node_item 测试（审批流更新节点内容）。"""
+
+    def test_valid_update_item_title_only(self):
+        """仅更新 title：action=update，payload 只含所传字段。"""
+        node_id = uuid.uuid4()
+        item = build_update_node_item(
+            node_id=node_id,
+            node_type="CodeSnippet",
+            title="新标题",
+        )
+        assert item["item_type"] == "node"
+        assert item["action"] == "update"
+        assert item["entity_type"] == "CodeSnippet"
+        payload = item["payload"]
+        assert payload["node_id"] == str(node_id)
+        assert payload["title"] == "新标题"
+        # 未传字段不应出现在 payload 中（保持与 update_node 的 None=不更新语义）
+        assert "content" not in payload
+        assert "properties" not in payload
+        assert "tags" not in payload
+
+    def test_partial_fields_preserved(self):
+        """同时传 content 与 tags，其余字段不出现。"""
+        item = build_update_node_item(
+            node_id=uuid.uuid4(),
+            node_type="Pitfall",
+            content="新正文",
+            tags=["bug"],
+        )
+        payload = item["payload"]
+        assert payload["content"] == "新正文"
+        assert payload["tags"] == ["bug"]
+        assert "title" not in payload
+
+    def test_properties_replacement(self):
+        """properties：payload 直接载入（整体替换语义）。"""
+        props = {"service": "auth", "lang": "python"}
+        item = build_update_node_item(
+            node_id=uuid.uuid4(),
+            node_type="CodeSnippet",
+            properties=props,
+        )
+        assert item["payload"]["properties"] == props
+
+    def test_all_fields_none_raises(self):
+        """所有字段均为 None：抛 PayloadValidationError。"""
+        with pytest.raises(PayloadValidationError, match="至少提供一个要变更的字段"):
+            build_update_node_item(node_id=uuid.uuid4(), node_type="Requirement")
 
 
 class TestBuildEdgeItem:

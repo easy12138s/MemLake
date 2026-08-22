@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
+from fastmcp.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,6 @@ from mem_lake.approval.service import (
     IdempotencyConflictError,
     PayloadValidationError,
 )
-from fastmcp.exceptions import ToolError
 from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
 
@@ -187,6 +186,50 @@ def build_node_item(
             "project_id": str(project_id),
             "created_by": created_by,
         },
+    }
+
+
+def build_update_node_item(
+    *,
+    node_id: uuid.UUID,
+    node_type: str,
+    title: str | None = None,
+    content: str | None = None,
+    properties: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """构造 node + update 审批项（走审批流修改已通过节点的内容）。
+
+    与 build_node_item（create）生成 action="update" 的 item。payload 契约对齐
+    approval.models.ApprovalItem：{"node_id", "title", "content", "properties",
+    "tags", "source"}，审批通过时由 approval/service._execute_node_update 调用
+    repository.update_node 落地（版本递增 + title 同步 AGE + 向量重算 + 审计）。
+
+    字段语义与 repository.update_node 一致：None 表示不更新，properties 整体替换
+    （不深度合并，调用方负责合并）。至少须提供一个变更字段；节点 type 不可变更，
+    不由本工具提供（不写入 payload）。
+    """
+    if all(v is None for v in (title, content, properties, tags, source)):
+        raise PayloadValidationError(
+            "update 节点至少提供一个要变更的字段: title/content/properties/tags/source"
+        )
+    payload: dict[str, Any] = {"node_id": str(node_id)}
+    if title is not None:
+        payload["title"] = title
+    if content is not None:
+        payload["content"] = content
+    if properties is not None:
+        payload["properties"] = properties
+    if tags is not None:
+        payload["tags"] = tags
+    if source is not None:
+        payload["source"] = source
+    return {
+        "item_type": "node",
+        "action": "update",
+        "entity_type": node_type,
+        "payload": payload,
     }
 
 
