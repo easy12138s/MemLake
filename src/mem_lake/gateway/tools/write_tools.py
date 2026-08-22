@@ -28,6 +28,7 @@ from mem_lake.approval.service import (
 )
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
+    get_current_role,
     get_readonly_session,
     transactional_session,
     validate_project_access,
@@ -37,6 +38,7 @@ from mem_lake.gateway.tools._shared import (
     WriteToolOutput,
     build_edge_item,
     build_node_item,
+    build_update_node_item,
     to_tool_error,
 )
 from mem_lake.knowledge.repository import (
@@ -356,6 +358,80 @@ def register_write_tools(mcp: FastMCP) -> None:
                     batch_type="submit_dev_artifacts",
                     submitted_by=key_id,
                     submitter_role="dev",
+                    items=items,
+                    operation_id=operation_id,
+                )
+            return WriteToolOutput.from_batch(batch)
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def update_node(
+        project_id: uuid.UUID = Field(description="节点所属项目 ID"),
+        node_id: uuid.UUID = Field(description="要更新的已审批节点 UUID"),
+        title: str | None = Field(default=None, description="新标题；留空则不更新"),
+        content: str | None = Field(default=None, description="新正文；留空则不更新"),
+        properties: dict[str, Any] | None = Field(
+            default=None,
+            description=(
+                "新属性字典，整体替换原属性（不会深度合并）；留空则不更新。"
+                "整体替换后会重新校验该节点类型的必填字段"
+            ),
+        ),
+        tags: list[str] | None = Field(default=None, description="新标签列表；留空则不更新"),
+        operation_id: str | None = Field(
+            default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
+        ),
+    ) -> WriteToolOutput:
+        """更新已审批通过节点的内容（标题/正文/属性/标签），产生审批批次等待 admin 审批。
+
+        PM/Dev 工具。用于修正已写入知识图谱的错误节点内容（写错且审批通过的场景）。
+        审批通过后原子落地：版本号 +1、标题变更同步 AGE 图投影、正文变更重新生成向量、
+        写审计日志。节点类型不可变更；Node 不存在/不属于本项目/已归档则拒绝。
+        支持 operation_id 幂等。
+        """
+        try:
+            validate_project_access(project_id)
+            if all(v is None for v in (title, content, properties, tags)):
+                raise PayloadValidationError(
+                    "至少提供一个要变更的字段: title/content/properties/tags"
+                )
+            _check_content_length(content, f"节点 {node_id} 的 content")
+            if properties is not None and not isinstance(properties, dict):
+                raise PayloadValidationError("properties 必须为 JSON 对象")
+
+            # 预校验目标节点存在、归属本项目且未归档，并取节点类型用于审批项实体标识
+            session = await get_readonly_session()
+            try:
+                try:
+                    node = await get_node(session, node_id)
+                except NodeNotFoundError:
+                    raise PayloadValidationError(f"node_id 不存在: {node_id}")
+                if node.project_id != project_id:
+                    raise PayloadValidationError(f"节点不属于本项目: {node_id}")
+                if node.status == "archived":
+                    raise PayloadValidationError(f"已归档节点不可更新: {node_id}")
+            finally:
+                await session.close()
+
+            key_id = get_current_key_id()
+            items = [
+                build_update_node_item(
+                    node_id=node_id,
+                    node_type=node.type,
+                    title=title,
+                    content=content,
+                    properties=properties,
+                    tags=tags,
+                )
+            ]
+            async with transactional_session() as session:
+                batch = await submit_batch(
+                    session,
+                    project_id=project_id,
+                    batch_type="update_node",
+                    submitted_by=key_id,
+                    submitter_role=get_current_role(),
                     items=items,
                     operation_id=operation_id,
                 )

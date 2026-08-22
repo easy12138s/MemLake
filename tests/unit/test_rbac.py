@@ -40,6 +40,7 @@ def test_pm_tools_exact():
         "analyze_impact_scope",
         "check_requirement_conflicts",
         "update_requirement_relations",
+        "update_node",
         "get_project_profile",
         "get_requirement_context",
         "get_project_info",
@@ -55,6 +56,7 @@ def test_dev_tools_exact():
         "get_requirement_context",
         "search_code_snippets",
         "submit_dev_artifacts",
+        "update_node",
         "search_similar_requirements",
         "analyze_impact_scope",
         "get_project_info",
@@ -85,6 +87,13 @@ def test_has_tool_access_grant():
 def test_has_tool_access_deny():
     """dev 调用 review_approve 返回 False。"""
     assert has_tool_access("dev", "review_approve") is False
+
+
+def test_update_node_access_for_pm_and_dev():
+    """update_node 对 pm / dev / admin 开放（admin 为全量并集）。"""
+    assert has_tool_access("pm", "update_node") is True
+    assert has_tool_access("dev", "update_node") is True
+    assert has_tool_access("admin", "update_node") is True
 
 
 def test_validate_role():
