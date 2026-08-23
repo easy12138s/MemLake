@@ -229,12 +229,12 @@ def register_review_tools(mcp: FastMCP) -> None:
                     and it.action == "create"
                     and it.target_id is not None
                 ]
-            # 审批已提交：将新建节点（content_vector 暂为 NULL）异步入队补向量，
-            # 复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
+            # 审批已提交（事务已 commit）：将新建节点（content_vector 暂为 NULL）
+            # 异步入队补向量，复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
+            # 入队失败不阻断审批结果——审批已生效，向量缺失由后续 reindex 兜底
+            #（AUDIT §2.11：避免"审批成功但工具报错"的 Agent 误判重试窗口）。
             if created_node_ids:
-                await start_embed_nodes_task(
-                    batch.project_id, created_node_ids, get_current_key_id()
-                )
+                await _safe_enqueue_embed(batch.project_id, created_node_ids)
             return ApprovalResultOutput(
                 batch_id=batch.id,
                 status=batch.status,
@@ -310,12 +310,10 @@ def register_review_tools(mcp: FastMCP) -> None:
                 )
             batch = result["batch"]
             # 审批已提交：将新建节点（content_vector 暂为 NULL）异步入队补向量，
-            # 复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
+            # 复用 reindex worker；入队失败不阻断（AUDIT §2.11，见 review_approve）。
             created_node_ids = result.get("created_node_ids") or []
             if created_node_ids:
-                await start_embed_nodes_task(
-                    batch.project_id, created_node_ids, get_current_key_id()
-                )
+                await _safe_enqueue_embed(batch.project_id, created_node_ids)
             return AutoProcessOutput(
                 batch_id=batch.id,
                 decision=result["decision"],
@@ -352,8 +350,8 @@ def _to_pending_batch_item(batch) -> PendingBatchItem:
         submitted_at = submitted_at.replace(tzinfo=timezone.utc)
     age_days = (now - submitted_at).days
 
-    warning_days = getattr(settings, "APPROVAL_WARNING_DAYS", 7)
-    timeout_days = getattr(settings, "APPROVAL_TIMEOUT_DAYS", 30)
+    warning_days = settings.APPROVAL_WARNING_DAYS
+    timeout_days = settings.APPROVAL_TIMEOUT_DAYS
 
     return PendingBatchItem(
         batch_id=batch.id,
@@ -395,3 +393,21 @@ def _to_batch_detail_output(batch) -> ReviewBatchDetailOutput:
             for item in batch.items
         ],
     )
+
+
+async def _safe_enqueue_embed(project_id: uuid.UUID, node_ids: list[uuid.UUID]) -> None:
+    """审批提交后安全入队向量补全任务。
+
+    审批的事务已 commit，此处入队仅是后台优化（新建节点 content_vector 暂为
+    NULL，搜索可安全跳过）。入队失败（如 DB 短暂不可用）只记录告警，不阻断
+    审批结果返回——审批已生效，向量缺失由后续 reindex 兜底（AUDIT §2.11）。
+    """
+    try:
+        await start_embed_nodes_task(project_id, node_ids, get_current_key_id())
+    except Exception:  # noqa: BLE001 - 入队失败仅告警，不阻断审批主流程
+        logger.exception(
+            "审批成功但向量补全入队失败，请后续手动 reindex 补全: "
+            "project=%s node_count=%d",
+            project_id,
+            len(node_ids),
+        )

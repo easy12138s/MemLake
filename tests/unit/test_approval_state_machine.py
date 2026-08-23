@@ -250,21 +250,42 @@ class TestValidateItemStructure:
 class TestValidateItemPayload:
     """_validate_item_payload：payload 内容合规性校验。"""
 
+    def _valid_create_payload(self, **overrides) -> dict:
+        """合法 node+create payload 基础构造（含必填顶层字段）。"""
+        payload = {
+            "title": "需求",
+            "content": "内容",
+            "project_id": str(uuid.uuid4()),
+            "created_by": "ak",
+            "properties": {
+                "requirement_id": "REQ-001",
+                "priority": "P0",
+                "module": "auth",
+            },
+        }
+        payload.update(overrides)
+        return payload
+
     def test_node_create_valid_payload(self):
-        """node+create 含合法 properties 通过校验。"""
+        """node+create 含合法必填字段与 properties 通过校验。"""
         item = {
             "item_type": "node",
             "action": "create",
             "entity_type": "Requirement",
-            "payload": {
-                "properties": {
-                    "requirement_id": "REQ-001",
-                    "priority": "P0",
-                    "module": "auth",
-                }
-            },
+            "payload": self._valid_create_payload(),
         }
         _validate_item_payload(item, 0)  # 不抛即通过
+
+    def test_node_create_missing_top_level(self):
+        """node+create 缺必填顶层字段（如 title）抛 PayloadValidationError。"""
+        item = {
+            "item_type": "node",
+            "action": "create",
+            "entity_type": "Requirement",
+            "payload": self._valid_create_payload(title=None),
+        }
+        with pytest.raises(PayloadValidationError, match="缺必填字段: title"):
+            _validate_item_payload(item, 0)
 
     def test_node_create_missing_properties(self):
         """node+create 缺 properties 抛 PayloadValidationError。"""
@@ -272,7 +293,7 @@ class TestValidateItemPayload:
             "item_type": "node",
             "action": "create",
             "entity_type": "Requirement",
-            "payload": {"title": "x"},
+            "payload": self._valid_create_payload(properties=None),
         }
         with pytest.raises(PayloadValidationError, match="缺 properties"):
             _validate_item_payload(item, 0)
@@ -283,7 +304,7 @@ class TestValidateItemPayload:
             "item_type": "node",
             "action": "create",
             "entity_type": "Requirement",
-            "payload": {"properties": "not a dict"},
+            "payload": self._valid_create_payload(properties="not a dict"),
         }
         with pytest.raises(PayloadValidationError, match="非 dict"):
             _validate_item_payload(item, 0)
@@ -294,7 +315,9 @@ class TestValidateItemPayload:
             "item_type": "node",
             "action": "create",
             "entity_type": "InvalidType",
-            "payload": {"properties": {"any": "thing"}},
+            "payload": self._valid_create_payload(
+                properties={"any": "thing"},
+            ),
         }
         with pytest.raises(PayloadValidationError, match="node\\+create 校验失败"):
             _validate_item_payload(item, 0)
@@ -305,9 +328,9 @@ class TestValidateItemPayload:
             "item_type": "node",
             "action": "create",
             "entity_type": "Requirement",
-            "payload": {
-                "properties": {"requirement_id": "REQ-001"},  # 缺 priority/module
-            },
+            "payload": self._valid_create_payload(
+                properties={"requirement_id": "REQ-001"},  # 缺 priority/module
+            ),
         }
         with pytest.raises(PayloadValidationError) as exc_info:
             _validate_item_payload(item, 0)

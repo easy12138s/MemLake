@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -106,7 +107,7 @@ async def submit_batch(
             f"非法批次类型: {batch_type}，合法类型: {sorted(BATCH_TYPES)}"
         )
 
-    # 2. 幂等校验
+    # 2. 幂等校验（先查询，命中直接返回已有批次）
     if operation_id is not None:
         existing = await _find_by_idempotency_key(
             session, submitted_by=submitted_by, batch_type=batch_type, operation_id=operation_id
@@ -115,6 +116,42 @@ async def submit_batch(
             # 幂等重放：返回已有批次（含 items）
             return await get_batch_detail(session, existing.id)
 
+    try:
+        return await _create_batch(
+            session,
+            project_id=project_id,
+            batch_type=batch_type,
+            submitted_by=submitted_by,
+            submitter_role=submitter_role,
+            items=items,
+            operation_id=operation_id,
+        )
+    except IntegrityError:
+        # 并发同 operation_id 提交：两个请求都通过幂等检查后各自插入，
+        # 第二个撞唯一约束 uq_approval_batch_idempotency。回滚本次未成功
+        # 的插入，回查已存在的批次做幂等重放（AUDIT §2.17 竞态）。
+        if operation_id is None:
+            raise
+        await session.rollback()
+        existing = await _find_by_idempotency_key(
+            session, submitted_by=submitted_by, batch_type=batch_type, operation_id=operation_id
+        )
+        if existing is not None:
+            return await get_batch_detail(session, existing.id)
+        raise
+
+
+async def _create_batch(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    batch_type: str,
+    submitted_by: str,
+    submitter_role: str,
+    items: list[dict],
+    operation_id: str | None,
+) -> ApprovalBatch:
+    """创建审批批次的核心逻辑（submit_batch 内部）。"""
     # 3. 校验 items 非空与 payload 合规性
     if not items:
         raise PayloadValidationError("items 不能为空")
@@ -192,6 +229,7 @@ async def review_approve(
     embedding_client: EmbeddingClient,
     vector_searcher: VectorSearcher,
     review_comment: str | None = None,
+    conflict_query_vectors: list[list[float]] | None = None,
 ) -> ApprovalBatch:
     """审批通过：原子写入 knowledge_node 表与 AGE 图，生成 conflict_hint。
 
@@ -209,6 +247,10 @@ async def review_approve(
 
     事务性：所有写操作在同一 AsyncSession 内，任一步骤失败整体回滚。
     不 commit。
+
+    conflict_query_vectors：调用方（auto_process_batch）已预计算的冲突查询向量
+    （与内部构造顺序一致），非 None 时跳过内部重新 embed，消除重复计算
+    （AUDIT §2.12）。
     """
     batch = await get_batch_detail(session, batch_id)
 
@@ -224,25 +266,28 @@ async def review_approve(
     # 冲突检测批量向量化：所有新建节点的查询文本一次性 embed（prompt_name="query"，
     # 与 VectorSearcher.search 语义一致），避免每节点各 embed 一次（2N → 2）。
     # 查询文本用 build_embed_text，与 conflict.detect_conflicts 内部构造一致。
+    # auto_process_batch 已预计算时复用，此处跳过内部重新 embed。
     create_items = [
         it
         for it in batch.items
         if it.item_type == "node" and it.action == "create"
     ]
-    conflict_query_vectors: list[list[float]] = []
-    if create_items:
-        conflict_query_vectors = await embedding_client.embed(
-            [
-                build_embed_text(
-                    it.entity_type,
-                    it.payload["title"],
-                    it.payload["content"],
-                    it.payload.get("properties", {}),
-                )
-                for it in create_items
-            ],
-            prompt_name="query",
-        )
+    if conflict_query_vectors is None:
+        if not create_items:
+            conflict_query_vectors = []
+        else:
+            conflict_query_vectors = await embedding_client.embed(
+                [
+                    build_embed_text(
+                        it.entity_type,
+                        it.payload["title"],
+                        it.payload["content"],
+                        it.payload.get("properties", {}),
+                    )
+                    for it in create_items
+                ],
+                prompt_name="query",
+            )
 
     qv_index = 0
     for item in batch.items:
@@ -500,6 +545,9 @@ async def auto_process_batch(
             embedding_client=embedding_client,
             vector_searcher=vector_searcher,
             review_comment="auto_approved: no conflict detected",
+            # 复用本函数 step2 已批量 embed 的冲突查询向量，消除 review_approve
+            # 内部重复 embed（AUDIT §2.12）
+            conflict_query_vectors=conflict_query_vectors,
         )
         # 新建节点 id 取自审批后 batch.items 中 node+create 项的 target_id
         created_node_ids = [
@@ -632,7 +680,12 @@ def _validate_item_payload(item: dict, idx: int) -> None:
         raise PayloadValidationError(f"item[{idx}] payload 必须为 dict")
 
     if item_type == "node" and action == "create":
-        # node + create：校验节点类型与必填字段
+        # node + create：校验节点类型、必填字段与必填顶层字段
+        for required in ("title", "content", "project_id", "created_by"):
+            if not payload.get(required):
+                raise PayloadValidationError(
+                    f"item[{idx}] node+create payload 缺必填字段: {required}"
+                )
         properties = payload.get("properties")
         if not isinstance(properties, dict):
             raise PayloadValidationError(
