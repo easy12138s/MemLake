@@ -89,15 +89,18 @@ docker compose stop mem-lake
 cd "$SCRIPT_DIR"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 步骤 2/4: 删除并重建数据库..."
-docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d postgres -c "DROP DATABASE IF EXISTS $DB_NAME;"
+# WITH (FORCE) 断开残留连接（如外部 SQL 客户端），避免 DROP 因连接占用失败
+docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d postgres -c "DROP DATABASE IF EXISTS $DB_NAME WITH (FORCE);"
 docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 步骤 3/4: 恢复数据..."
+# --exit-on-error：任一对象恢复失败立即中止（配合 set -e），避免半成品库
 docker exec -i "$PG_CONTAINER" pg_restore \
     -U "$DB_USER" \
     -d "$DB_NAME" \
     --no-owner \
     --no-privileges \
+    --exit-on-error \
     < "$BACKUP_FILE"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 步骤 4/4: 重启 mem-lake 应用..."
@@ -105,8 +108,17 @@ if [ "$RESTART_APP" = true ]; then
     cd "$COMPOSE_DIR"
     docker compose start mem-lake
     cd "$SCRIPT_DIR"
-    echo "  等待应用就绪..."
-    sleep 5
+    echo "  等待应用就绪（healthcheck 探测，最多 60s）..."
+    waited=0
+    until [ "$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose -f "$COMPOSE_DIR/docker-compose.yml" ps -q mem-lake 2>/dev/null)" 2>/dev/null)" = "healthy" ]; do
+        if [ "$waited" -ge 60 ]; then
+            echo "  [WARN] 等待超时（60s），请自行确认容器状态：docker compose ps"
+            break
+        fi
+        sleep 3
+        waited=$((waited + 3))
+    done
+    echo "  应用就绪（约 ${waited}s）"
 else
     echo "  --no-restart 已指定，跳过重启（需手动 docker compose start mem-lake）"
 fi

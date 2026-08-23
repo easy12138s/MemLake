@@ -2,10 +2,11 @@
 
 启动方式：
 - 开发：uvicorn mem_lake.main:app --host 0.0.0.0 --port 8000 --reload
-- 生产：uvicorn mem_lake.main:app --host 0.0.0.0 --port 8000 --workers 4
+- 部署（Dockerfile.app CMD）：python -m mem_lake.main，单进程单 worker
 
-对齐 PDD 6.1：FastMCP 4.0 http_app() 返回 Starlette ASGI 应用，
-监听 host:port（默认 0.0.0.0:8000），X-MCP-Key 头认证。
+多 worker 说明：限流（内存令牌桶）与后台任务（ACTIVE_TASKS 进程内集合）均为
+单实例设计；如需 uvicorn --workers N 多进程部署，须先改造这两处为共享存储
+（如 Redis），否则限流与任务防重入失效。
 """
 
 import logging

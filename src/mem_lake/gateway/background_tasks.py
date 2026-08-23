@@ -1,8 +1,9 @@
 """向量重嵌后台任务管理（异步任务化 reindex）。
 
 设计背景：
-- 部署为 uvicorn --workers 4，多 worker 进程；任务状态必须落库（reindex_task 表）
-  才能跨 worker、跨重启一致，且天然可审计。
+- 当前部署为单进程（Dockerfile.app CMD python -m mem_lake.main）；任务状态
+  落库（reindex_task 表）保证跨重启一致且天然可审计，也为未来多 worker 部署
+  预留（ACTIVE_TASKS 集合仅防 GC，防重入依赖 DB 状态而非进程内集合）。
 - reindex_project_vectors 工具改为「提交即返回 task_id」，真正重嵌由本模块的
   _reindex_worker 在后台协程执行，彻底解耦客户端 MCP 调用超时。
 - worker 内部采用批量 embed + offset 分页遍历全部节点 + 每批独立事务，
