@@ -39,7 +39,7 @@ class TestBuildPublishItems:
             properties={"requirement_id": "REQ-001", "priority": "P0"},
             tags=["auth"],
         )
-        items = _build_publish_items(project_id, requirement, None, "ak_test")
+        items = _build_publish_items(project_id, requirement, None, "ak_test", uuid.uuid4())
 
         assert len(items) == 1
         assert items[0]["item_type"] == "node"
@@ -58,7 +58,7 @@ class TestBuildPublishItems:
             properties={"requirement_id": "REQ-002", "priority": "P1"},
         )
         related = RelatedInput(supersedes=["REQ-001", "REQ-000"])
-        items = _build_publish_items(project_id, requirement, related, "ak")
+        items = _build_publish_items(project_id, requirement, related, "ak", uuid.uuid4())
 
         # 1 node + 2 edge
         assert len(items) == 3
@@ -78,7 +78,7 @@ class TestBuildPublishItems:
             properties={"requirement_id": "REQ-A", "priority": "P2"},
         )
         related = RelatedInput(relates_to=["REQ-B"])
-        items = _build_publish_items(project_id, requirement, related, "ak")
+        items = _build_publish_items(project_id, requirement, related, "ak", uuid.uuid4())
 
         assert len(items) == 2
         assert items[1]["payload"]["edge_type"] == "relates_to"
@@ -96,7 +96,7 @@ class TestBuildPublishItems:
             supersedes=["REQ-OLD1", "REQ-OLD2"],
             relates_to=["REQ-REL1", "REQ-REL2", "REQ-REL3"],
         )
-        items = _build_publish_items(project_id, requirement, related, "ak")
+        items = _build_publish_items(project_id, requirement, related, "ak", uuid.uuid4())
 
         # 1 node + 2 supersedes + 3 relates_to
         assert len(items) == 6
@@ -111,7 +111,7 @@ class TestBuildPublishItems:
             title="t", content="c", properties={"k": "v"}
         )
         related = RelatedInput()  # 默认空列表
-        items = _build_publish_items(project_id, requirement, related, "ak")
+        items = _build_publish_items(project_id, requirement, related, "ak", uuid.uuid4())
 
         assert len(items) == 1
         assert items[0]["item_type"] == "node"

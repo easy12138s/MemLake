@@ -69,7 +69,7 @@ class PayloadValidationError(Exception):
 async def submit_batch(
     session: AsyncSession,
     *,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     batch_type: str,
     submitted_by: str,
     submitter_role: str,
@@ -80,7 +80,7 @@ async def submit_batch(
 
     参数：
         session: 异步数据库会话
-        project_id: 归属项目
+        project_id: 归属项目（悬浮 system 需求批次可为 None）
         batch_type: 批次类型（必须在 BATCH_TYPES 白名单内）
         submitted_by: 提交者 Access Key ID
         submitter_role: 提交者角色（pm/dev）
@@ -750,7 +750,12 @@ def _validate_item_payload(item: dict, idx: int) -> None:
 
     if item_type == "node" and action == "create":
         # node + create：校验节点类型、必填字段与必填顶层字段
-        for required in ("title", "content", "project_id", "created_by"):
+        # system 维度：Requirement 必填 system_id（project 可空=悬浮）；其余类型必填 project_id。
+        if entity_type == "Requirement":
+            required_top = ("title", "content", "system_id", "created_by")
+        else:
+            required_top = ("title", "content", "project_id", "created_by")
+        for required in required_top:
             if not payload.get(required):
                 raise PayloadValidationError(
                     f"item[{idx}] node+create payload 缺必填字段: {required}"
@@ -793,11 +798,13 @@ async def _execute_node_create(
 ) -> Any:
     """执行 node + create：调用 create_node 写入 PG 表与 AGE 图。"""
     payload = item.payload
+    _pid = payload.get("project_id")
+    _sid = payload.get("system_id")
     return await create_node(
         session,
         graph_store=graph_store,
         embedding_client=embedding_client,
-        project_id=_to_uuid(payload["project_id"]),
+        project_id=_to_uuid(_pid) if _pid else None,
         node_type=item.entity_type,
         title=payload["title"],
         content=payload["content"],
@@ -805,6 +812,7 @@ async def _execute_node_create(
         tags=payload.get("tags", []),
         source=payload.get("source", {}),
         created_by=payload["created_by"],
+        system_id=_to_uuid(_sid) if _sid else None,
         generate_vector=False,  # 延迟生成：审批通过后由 review_tools 调 start_embed_nodes_task 入队后台 worker 补向量
     )
 

@@ -30,10 +30,13 @@ from mem_lake.approval.service import (
     PayloadValidationError,
     submit_batch_with_mode,
 )
+from mem_lake.gateway.access import is_requirement_visible
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
     get_current_lax_mode,
+    get_current_project_scope,
     get_current_role,
+    get_current_system_scope,
     get_readonly_session,
     transactional_session,
     validate_project_access,
@@ -239,7 +242,7 @@ async def _finalize_lax_output(
         and it.action == "create"
         and it.target_id is not None
     ]
-    if lax and decision == "auto_approved" and created:
+    if lax and decision == "auto_approved" and created and project_id is not None:
         await _safe_enqueue_embed(project_id, created)
     return WriteToolOutput.from_batch(batch, decision=decision)
 
@@ -249,8 +252,11 @@ def register_write_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def publish_requirement(
-        project_id: uuid.UUID = Field(description="归属项目 ID"),
+        system_id: uuid.UUID = Field(description="归属 system 域（需求跨项目建模）"),
         requirement: RequirementInput = Field(description="需求节点内容"),
+        project_id: uuid.UUID | None = Field(
+            default=None, description="归属项目（可选；None=悬浮 system 需求）"
+        ),
         related: RelatedInput | None = Field(
             default=None, description="关联关系（supersedes/relates_to）"
         ),
@@ -260,7 +266,8 @@ def register_write_tools(mcp: FastMCP) -> None:
     ) -> WriteToolOutput:
         """发布需求节点（含关联关系），产生审批批次等待 admin 审批。
 
-        PM 工具。需求节点暂存于审批批次，审批通过后才写入知识图谱并参与检索。
+        PM 工具。需求默认按 system 域隔离（system_id 必填）；project_id 可选，None 表示
+        "先于实现"的悬浮需求。审批通过后才写入知识图谱并参与检索。
         若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
         直接入库（返回 status="approved" + decision="auto_approved"），有冲突返回
         decision="needs_human_review" 并停在待审批。
@@ -268,7 +275,8 @@ def register_write_tools(mcp: FastMCP) -> None:
         related.supersedes/relates_to 中的 requirement_id 必须为已有 Requirement 节点的 UUID。
         """
         try:
-            validate_project_access(project_id)
+            if project_id is not None:
+                validate_project_access(project_id)
             _check_content_length(requirement.content, "Requirement.content")
             key_id = get_current_key_id()
             # 提交前校验关联引用的 requirement_id 存在且类型为 Requirement
@@ -281,7 +289,9 @@ def register_write_tools(mcp: FastMCP) -> None:
                 await _validate_requirement_refs(
                     project_id, ref_ids, "related 引用"
                 )
-            items = _build_publish_items(project_id, requirement, related, key_id)
+            items = _build_publish_items(
+                project_id, requirement, related, key_id, system_id
+            )
 
             async with transactional_session() as session:
                 graph_store = embedding_client = vector_searcher = None
@@ -573,17 +583,21 @@ def register_write_tools(mcp: FastMCP) -> None:
 
 
 async def _validate_requirement_refs(
-    project_id: uuid.UUID, ref_ids: list[str], label: str
+    project_id: uuid.UUID | None, ref_ids: list[str], label: str
 ) -> None:
-    """提交前校验引用的 requirement_id 存在、类型为 Requirement、归属本项目。
+    """提交前校验引用的 requirement_id 存在、类型为 Requirement、且对调用者可见。
 
     用于 publish_requirement 的 related 与 update_requirement_relations 的
     from_id/to_id。此前缺该校验，错误引用延迟到审批通过时 _execute_edge_create
     的 get_node 才失败（AUDIT §2.15）。提交时拦截，审批体验更好。
+    决策（同 system 即可引用）：引用的需求须对当前调用者可见（is_requirement_visible）。
     """
     if not ref_ids:
         return
     session = await get_readonly_session()
+    role = get_current_role()
+    project_scope = get_current_project_scope()
+    system_scope = get_current_system_scope()
     try:
         try:
             uuids = [uuid.UUID(r) for r in ref_ids]
@@ -606,9 +620,15 @@ async def _validate_requirement_refs(
                 raise PayloadValidationError(
                     f"{label} 引用非 Requirement 类型: {n.id} ({n.type})"
                 )
-            if str(n.project_id) != str(project_id):
+            if not await is_requirement_visible(
+                session,
+                req_node=n,
+                role=role,
+                project_scope=project_scope,
+                system_scope=system_scope,
+            ):
                 raise PayloadValidationError(
-                    f"{label} 引用不属于本项目: {n.id}"
+                    f"{label} 引用不在当前调用者可见范围: {n.id}"
                 )
     finally:
         await session.close()
@@ -659,8 +679,11 @@ async def _validate_dev_artifacts(
     # 2 & 3：requirement_id 存在性 + 类型 + 归属项目；relations 引用校验
     session = await get_readonly_session()
     try:
-        # 2. requirement_id 存在性 + 类型 + 归属项目（仅当显式提供需求时校验）
+        # 2. requirement_id 存在性 + 类型 + 对调用者可见（仅当显式提供需求时校验）
         if requirement_id is not None:
+            role = get_current_role()
+            project_scope = get_current_project_scope()
+            system_scope = get_current_system_scope()
             try:
                 req_node = await get_node(session, requirement_id)
             except NodeNotFoundError:
@@ -669,9 +692,15 @@ async def _validate_dev_artifacts(
                 raise PayloadValidationError(
                     f"requirement_id 类型非 Requirement: {req_node.type}"
                 )
-            if req_node.project_id != project_id:
+            if not await is_requirement_visible(
+                session,
+                req_node=req_node,
+                role=role,
+                project_scope=project_scope,
+                system_scope=system_scope,
+            ):
                 raise PayloadValidationError(
-                    f"requirement_id 不属于本项目: {requirement_id}"
+                    f"requirement_id 不在当前调用者可见范围: {requirement_id}"
                 )
 
         # 3. relations 引用校验
@@ -699,15 +728,16 @@ async def _validate_dev_artifacts(
 
 
 def _build_publish_items(
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     requirement: RequirementInput,
     related: RelatedInput | None,
     created_by: str,
+    system_id: uuid.UUID,
 ) -> list[dict[str, Any]]:
     """构造 publish_requirement 的 items 列表。
 
     结构：
-    - 1 个 Requirement node item（ref="requirement"）
+    - 1 个 Requirement node item（ref="requirement"，含 system_id；project_id 可空=悬浮）
     - related.supersedes 每项 → 1 个 edge item（from_ref="requirement", edge_type="supersedes"）
     - related.relates_to 每项 → 1 个 edge item（from_ref="requirement", edge_type="relates_to"）
     """
@@ -720,6 +750,7 @@ def _build_publish_items(
             properties=requirement.properties,
             tags=requirement.tags,
             project_id=project_id,
+            system_id=system_id,
             created_by=created_by,
         )
     ]

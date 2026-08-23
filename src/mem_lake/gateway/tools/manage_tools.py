@@ -23,6 +23,7 @@ from typing import Any, Literal
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
+from sqlalchemy import delete, select
 
 from mem_lake.auth.service import (
     create_access_key,
@@ -31,6 +32,7 @@ from mem_lake.auth.service import (
     rotate_access_key,
     update_access_key_mode,
     update_access_key_scope,
+    update_access_key_systems,
 )
 from mem_lake.config import get_settings
 from mem_lake.gateway.background_tasks import (
@@ -48,6 +50,7 @@ from mem_lake.gateway.tools._shared import (
     StrictInputModel,
     to_tool_error,
 )
+from mem_lake.knowledge.models import System, SystemProject
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     create_node,
@@ -376,7 +379,10 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     new_key_id, plaintext = await create_access_key(
                         session,
                         role=role,
-                        project_scope=project_scope,
+                        project_scope={
+                            "systems": [],
+                            "projects": [str(pid) for pid in (project_scope or [])],
+                        },
                         created_by=key_id_actor,
                         lax_mode=bool(lax_mode),
                     )
@@ -463,6 +469,130 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     )
                 else:
                     raise ValueError(f"未知 action: {action}")
+        except Exception as e:
+            raise to_tool_error(e)
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
+    async def manage_system(
+        action: Literal["create", "list", "set_projects", "bind_keys"] = Field(
+            description="操作类型"
+        ),
+        name: str | None = Field(
+            default=None, description="create 时指定的系统域名（唯一）"
+        ),
+        description: str | None = Field(
+            default=None, description="create 时指定的系统域描述"
+        ),
+        system_id: uuid.UUID | None = Field(
+            default=None,
+            description="set_projects / bind_keys 时指定的 system 域 ID",
+        ),
+        project_ids: list[uuid.UUID] | None = Field(
+            default=None,
+            description="set_projects 时指定该系统下归属的项目 ID 列表",
+        ),
+        key_ids: str | list[uuid.UUID] | None = Field(
+            default=None,
+            description=(
+                "bind_keys 时显式指定一个或多个目标 Key ID"
+                "（接受 UUID 列表，或逗号/空格分隔的字符串）"
+            ),
+        ),
+        role_filter: str | None = Field(
+            default=None, description="bind_keys 时按角色批量（如 'dev' → 所有 dev Key）"
+        ),
+        grant_all: bool = Field(
+            default=False, description="bind_keys 时作用于全部 Key"
+        ),
+    ) -> dict:
+        """管理 system 域（admin 专属）：建立/枚举系统域、维护系统↔项目归属、绑定 Key 的 system 授权。
+
+        PM 需求按 system 隔离；System 由 admin 统一建并签发。行为：
+        - create：建一个 System 域，返回 system_id
+        - list：枚举所有 System（含其下项目数）
+        - set_projects：定义该系统下挂哪些 project（决定 dev 对悬浮需求的可见性与影响评估聚合）
+        - bind_keys：把该系统授权给目标 Key（进入其 scope.systems；定位方式 key_ids > role_filter > grant_all）
+        """
+        try:
+            key_id_actor = get_current_key_id()
+            async with transactional_session() as session:
+                if action == "create":
+                    if not name:
+                        raise ValueError("create 操作必须指定 name")
+                    sys_obj = System(name=name, description=description or "")
+                    session.add(sys_obj)
+                    await session.flush()
+                    return {
+                        "action": "create",
+                        "system_id": str(sys_obj.id),
+                        "name": sys_obj.name,
+                    }
+                if action == "list":
+                    rows = (
+                        await session.execute(select(System).order_by(System.name))
+                    ).scalars().all()
+                    result = []
+                    for row in rows:
+                        cnt = (
+                            await session.execute(
+                                select(SystemProject.project_id).where(
+                                    SystemProject.system_id == row.id
+                                )
+                            )
+                        ).scalars().all()
+                        result.append(
+                            {
+                                "system_id": str(row.id),
+                                "name": row.name,
+                                "description": row.description,
+                                "project_count": len(cnt),
+                            }
+                        )
+                    return {"action": "list", "systems": result}
+
+                if not system_id:
+                    raise ValueError("set_projects / bind_keys 必须指定 system_id")
+                exists = (
+                    await session.execute(
+                        select(System).where(System.id == system_id)
+                    )
+                ).scalar_one_or_none()
+                if exists is None:
+                    raise ValueError(f"system 不存在: {system_id}")
+
+                if action == "set_projects":
+                    pids = [str(p) for p in (project_ids or [])]
+                    # 先清空该系统归属，再批量写入（幂等：删+插）
+                    await session.execute(
+                        delete(SystemProject).where(SystemProject.system_id == system_id)
+                    )
+                    for pid in pids:
+                        session.add(
+                            SystemProject(system_id=system_id, project_id=uuid.UUID(pid))
+                        )
+                    await session.flush()
+                    return {
+                        "action": "set_projects",
+                        "system_id": str(system_id),
+                        "project_count": len(pids),
+                    }
+
+                if action == "bind_keys":
+                    updated = await update_access_key_systems(
+                        session,
+                        system_ids=[system_id],
+                        key_ids=_normalize_uuid_list(key_ids),
+                        role_filter=role_filter,
+                        grant_all=grant_all,
+                        actor=key_id_actor,
+                    )
+                    return {
+                        "action": "bind_keys",
+                        "system_id": str(system_id),
+                        "affected_key_ids": [str(k.id) for k in updated],
+                    }
+
+                raise ValueError(f"未知 action: {action}")
         except Exception as e:
             raise to_tool_error(e)
 
@@ -687,10 +817,15 @@ def _to_access_key_output(access_key) -> AccessKeyOutput:
             return dt.replace(tzinfo=timezone.utc)
         return dt
 
+    scope = (
+        access_key.project_scope
+        if isinstance(access_key.project_scope, dict)
+        else {"systems": [], "projects": [str(x) for x in (access_key.project_scope or [])]}
+    )
     return AccessKeyOutput(
         key_id=access_key.id,
         role=access_key.role,
-        project_scope=access_key.project_scope or [],
+        project_scope=[str(p) for p in scope.get("projects", [])],
         status=access_key.status,
         lax_mode=bool(access_key.lax_mode),
         created_at=_as_utc_aware(access_key.created_at),

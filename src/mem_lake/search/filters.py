@@ -28,6 +28,8 @@ class FilterSpec:
     """
 
     project_id: uuid.UUID | None = None
+    project_ids: tuple[uuid.UUID, ...] | None = None
+    system_id: uuid.UUID | None = None
     node_types: tuple[str, ...] | None = None
     status: str = "approved"
     exclude_deleted: bool = True
@@ -65,6 +67,12 @@ def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
 
     if spec.project_id is not None:
         clauses.append(KnowledgeNode.project_id == spec.project_id)
+
+    if spec.project_ids:
+        clauses.append(KnowledgeNode.project_id.in_(spec.project_ids))
+
+    if spec.system_id is not None:
+        clauses.append(KnowledgeNode.system_id == spec.system_id)
 
     if spec.node_types:
         clauses.append(KnowledgeNode.type.in_(spec.node_types))

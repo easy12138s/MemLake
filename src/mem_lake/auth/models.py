@@ -38,11 +38,11 @@ class AccessKey(Base):
     role: Mapped[str] = mapped_column(
         String(16), comment="业务角色: admin/pm/dev"
     )
-    project_scope: Mapped[list] = mapped_column(
+    project_scope: Mapped[dict] = mapped_column(
         JSONB,
-        default=list,
-        server_default=text("'[]'::jsonb"),
-        comment="可访问的项目 ID 列表",
+        default=dict,
+        server_default=text("'{\"systems\":[],\"projects\":[]}'::jsonb"),
+        comment="访问范围（两级）：{systems:[...], projects:[...]}；PM 需求按 system 隔离，资产按 project 隔离",
     )
     status: Mapped[str] = mapped_column(
         String(16), default="active", server_default=text("'active'"),

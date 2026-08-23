@@ -58,6 +58,41 @@ async def create_tables(session: AsyncSession) -> None:
         )
     )
 
+    # ---- system 维度（PM 需求跨项目建模）----
+    # create_all 会创建 system / system_project 新表；knowledge_node 已有表需显式加列：
+    # 1) 加 system_id 列（Requirement 归属 system）
+    # 2) project_id 可空（悬浮需求）
+    # 3) 组合索引（system 高频过滤维度）
+    await session.execute(
+        text("ALTER TABLE knowledge_node ADD COLUMN IF NOT EXISTS system_id UUID")
+    )
+    await session.execute(
+        text("ALTER TABLE knowledge_node ALTER COLUMN project_id DROP NOT NULL")
+    )
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_node_system_type_status "
+            "ON knowledge_node (system_id, type, status)"
+        )
+    )
+
+    # access_key.project_scope 语义升级为两级字典 {systems,projects}：
+    # 存量库旧结构为扁平数组（历史数据直接舍弃，决策定稿），起库幂等把数组型统一重置为空字典。
+    # admin 不受限由 role 判定，故数组型统一转空字典即可（幂等：仅 jsonb_typeof=array 的行命中一次）。
+    await session.execute(
+        text(
+            "UPDATE access_key SET project_scope = '{\"systems\":[],\"projects\":[]}'::jsonb "
+            "WHERE jsonb_typeof(project_scope) = 'array'"
+        )
+    )
+
+    # 悬浮 system 需求批次：approval_batch.project_id 可空
+    await session.execute(
+        text(
+            "ALTER TABLE approval_batch ALTER COLUMN project_id DROP NOT NULL"
+        )
+    )
+
 
 async def check_extensions(session: AsyncSession) -> dict[str, bool]:
     """检查三个扩展是否已安装。返回 {扩展名: 是否已安装}。"""

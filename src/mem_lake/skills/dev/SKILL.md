@@ -28,6 +28,8 @@ version: 1.3.0
 
 关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
 
+> **实现前先看需求（system 维度）**：需求可按 `system_id` 隔离、且可能是"悬浮"（project 为空、先于实现）。要定位可见的 System 需求，用 `search_similar_requirements(project_id=...)` 或加 `system_id=...`（你被 admin 通过 `manage_system.bind_keys` 绑定的 system），拿到需求 UUID 后 `submit_dev_artifacts(requirement_id=UUID, ...)` 建 implements 边。dev 对 system 需求可见 = 该 system 含你任一 project（经 admin 配置的 system↔project 归属）。
+
 ## 可用工具
 
 ### submit_dev_artifacts — 批量提交开发产物

@@ -13,10 +13,11 @@
 不 commit，由调用方（gateway 工具层）控制事务边界。
 """
 
+import json
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import bindparam, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
@@ -54,6 +55,21 @@ async def get_access_key_by_id(
     return result.scalar_one_or_none()
 
 
+def _norm_scope(value) -> dict:
+    """把 access_key.project_scope 归一化为两级字典 {systems,projects}。
+
+    - dict：取 systems/projects
+    - 旧扁平数组（存量已清空，兜底）：视为 projects
+    """
+    if isinstance(value, dict):
+        return {
+            "systems": list(value.get("systems") or []),
+            "projects": list(value.get("projects") or []),
+        }
+    items = value or []
+    return {"systems": [], "projects": [str(x) for x in items]}
+
+
 async def authenticate_access_key(
     session: AsyncSession, plaintext: str
 ) -> dict | None:
@@ -82,10 +98,12 @@ async def authenticate_access_key(
     if not verify_access_key(plaintext, access_key.key_hash):
         return None
 
+    scope = _norm_scope(access_key.project_scope)
     return {
         "key_id": access_key.id,
         "role": access_key.role,
-        "project_scope": access_key.project_scope or [],
+        "project_scope": scope["projects"],
+        "scope": scope,
         "lax_mode": bool(access_key.lax_mode),
     }
 
@@ -94,7 +112,7 @@ async def create_access_key(
     session: AsyncSession,
     *,
     role: str,
-    project_scope: list[uuid.UUID],
+    project_scope: dict,
     created_by: str = "system",
     lax_mode: bool = False,
 ) -> tuple[uuid.UUID, str]:
@@ -109,6 +127,7 @@ async def create_access_key(
 
     返回 (key_id, plaintext)，明文仅返回一次，调用方负责安全传递给用户。
 
+    project_scope：两级访问范围 {systems:[...], projects:[...]}（system：PM 需求层；project：资产层）。
     lax_mode：宽松模式标记（false=严格需审批，true=免审批直接入库）。
 
     不 commit。
@@ -116,6 +135,7 @@ async def create_access_key(
     if not validate_role(role):
         raise ValueError(f"非法角色: {role}")
 
+    scope = _norm_scope(project_scope)
     key_id, plaintext = generate_access_key()
     key_hash = hash_access_key(plaintext)
 
@@ -123,7 +143,7 @@ async def create_access_key(
         id=key_id,
         key_hash=key_hash,
         role=role,
-        project_scope=[str(pid) for pid in project_scope],
+        project_scope=scope,
         status="active",
         lax_mode=lax_mode,
     )
@@ -138,7 +158,8 @@ async def create_access_key(
         target_id=key_id,
         detail={
             "role": role,
-            "project_scope_count": len(project_scope),
+            "system_count": len(scope["systems"]),
+            "project_count": len(scope["projects"]),
             "lax_mode": lax_mode,
         },
     )
@@ -222,15 +243,15 @@ async def update_access_key_scope(
     grant_all_projects: bool = False,
     actor: str = "system",
 ) -> list[AccessKey]:
-    """动态更新 Access Key 的项目范围（project_scope）。
+    """动态更新 Access Key 的资产层项目范围（scope.projects）。
 
     定位目标 Key（三选一，优先级 key_ids > role_filter > grant_all_projects）：
     - key_ids：显式指定一个或多个 Key
     - role_filter：按角色批量（如 "dev" → 所有 dev Key）
     - grant_all_projects：全部 Key（用于「一键全项目」授权）
 
-    未指定任何定位方式时抛 ValueError。project_scope 为新的项目 ID 列表
-    （空列表 = 不受限，语义同 admin 全项目）。仅改 project_scope，不动 role/hash/status。
+    未指定任何定位方式时抛 ValueError。只更新 projects 层，**保留各 Key 已绑定的
+    systems 层**（由 manage_system.bind_keys 维护）。不动 role/hash/status。
 
     返回受影响、且重新查回的 AccessKey 列表（key_hash 已 defer）。
 
@@ -242,11 +263,16 @@ async def update_access_key_scope(
     if not target_ids:
         return []
 
-    scope = [str(pid) for pid in project_scope]
+    projects_json = json.dumps([str(pid) for pid in project_scope])
     await session.execute(
-        update(AccessKey)
-        .where(AccessKey.id.in_(target_ids))
-        .values(project_scope=scope)
+        text(
+            "UPDATE access_key SET project_scope = "
+            "jsonb_set(COALESCE(project_scope,'{}')::jsonb, '{projects}', :pj::jsonb) "
+            "WHERE id IN :ids"
+        ).bindparams(
+            bindparam("pj", projects_json),
+            bindparam("ids", target_ids, expanding=True),
+        )
     )
 
     # 重新查回（defer key_hash）用于出参，确保返回最新 project_scope
@@ -268,7 +294,65 @@ async def update_access_key_scope(
             "key_ids": [str(i) for i in target_ids],
             "role_filter": role_filter,
             "grant_all_projects": grant_all_projects,
-            "project_scope": scope,
+            "projects": projects_json,
+        },
+    )
+    return updated
+
+
+async def update_access_key_systems(
+    session: AsyncSession,
+    *,
+    system_ids: list[uuid.UUID],
+    key_ids: list[uuid.UUID] | None = None,
+    role_filter: str | None = None,
+    grant_all: bool = False,
+    actor: str = "system",
+) -> list[AccessKey]:
+    """给目标 Key 绑定 system 层范围（scope.systems）。
+
+    定位方式与 update_access_key_scope 一致（key_ids > role_filter > grant_all）。
+    只更新 systems 层，保留各 Key 的 projects 层。用于 manage_system.bind_keys。
+
+    返回受影响 AccessKey 列表（key_hash 已 defer）。不 commit。
+    """
+    target_ids = await _resolve_scope_targets(
+        session, key_ids, role_filter, grant_all
+    )
+    if not target_ids:
+        return []
+
+    systems_json = json.dumps([str(sid) for sid in system_ids])
+    await session.execute(
+        text(
+            "UPDATE access_key SET project_scope = "
+            "jsonb_set(COALESCE(project_scope,'{}')::jsonb, '{systems}', :sj::jsonb) "
+            "WHERE id IN :ids"
+        ).bindparams(
+            bindparam("sj", systems_json),
+            bindparam("ids", target_ids, expanding=True),
+        )
+    )
+
+    refreshed = await session.execute(
+        select(AccessKey)
+        .options(defer(AccessKey.key_hash))
+        .where(AccessKey.id.in_(target_ids))
+        .order_by(AccessKey.created_at.desc())
+    )
+    updated = list(refreshed.scalars().all())
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="update_system_scope",
+        target_type="access_key",
+        detail={
+            "target_count": len(updated),
+            "key_ids": [str(i) for i in target_ids],
+            "role_filter": role_filter,
+            "grant_all": grant_all,
+            "systems": systems_json,
         },
     )
     return updated

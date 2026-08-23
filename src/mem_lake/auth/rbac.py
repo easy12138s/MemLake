@@ -41,6 +41,7 @@ ADMIN_ONLY_TOOLS: frozenset[str] = frozenset({
     "list_knowledge",
     "query_audit_log",
     "manage_access_key",
+    "manage_system",
     "manage_project_profile",
     "reindex_project_vectors",
     "get_reindex_status",

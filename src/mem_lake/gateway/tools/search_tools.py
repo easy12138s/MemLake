@@ -29,15 +29,16 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
+from mem_lake.config import get_settings
 from mem_lake.gateway.dependencies import (
     get_readonly_session,
     validate_project_access,
+    validate_system_access,
 )
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     to_tool_error,
 )
-from mem_lake.config import get_settings
 from mem_lake.knowledge.repository import list_nodes_by_project
 from mem_lake.knowledge.schema import SchemaValidationError
 from mem_lake.search.filters import FilterSpec
@@ -155,8 +156,13 @@ def register_search_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def search_similar_requirements(
-        project_id: uuid.UUID = Field(description="归属项目 ID"),
         query: str = Field(description="查询文本（需求描述/关键词）"),
+        system_id: uuid.UUID | None = Field(
+            default=None, description="归属 system 域（可选；有值则检索该系统全部需求含悬浮）"
+        ),
+        project_id: uuid.UUID | None = Field(
+            default=None, description="归属项目 ID（与 system_id 至少其一必填）"
+        ),
         top_n: int = Field(default=10, description="融合后返回数量上限"),
         tags: list[str] | None = Field(
             default=None, description="标签过滤（tags_op 控制 AND/OR）"
@@ -175,10 +181,12 @@ def register_search_tools(mcp: FastMCP) -> None:
             "（如「性能」≈「N+1」），放宽精确匹配；关闭时仅做精确 AND/OR 匹配",
         ),
     ) -> HybridSearchOutput:
-        """向量+全文融合检索相似需求（同项目内 Requirement 类型）。
+        """向量+全文融合检索相似需求（Requirement 类型；按 system 或 project 隔离）。
 
         PM/Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
+        system 维度：传 system_id 检索该系统全部需求（含悬浮，project 可空）；dev 可用
+        system_id 定位可见 system 的需求 UUID，再引用实现建边。
         注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
         无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）；
         fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
@@ -187,10 +195,16 @@ def register_search_tools(mcp: FastMCP) -> None:
         query 不能为空（空查询下全文引擎无排序依据）。
         """
         try:
-            validate_project_access(project_id)
+            if project_id is None and system_id is None:
+                raise ValueError("project_id 与 system_id 至少提供一个")
+            if project_id is not None:
+                validate_project_access(project_id)
+            if system_id is not None:
+                validate_system_access(system_id)
             _validate_query(query)
             return await _run_hybrid_search(
                 project_id=project_id,
+                system_id=system_id,
                 query=query,
                 node_types=("Requirement",),
                 top_n=top_n,
@@ -433,7 +447,8 @@ def register_search_tools(mcp: FastMCP) -> None:
 
 async def _run_hybrid_search(
     *,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    system_id: uuid.UUID | None = None,
     query: str,
     node_types: tuple[str, ...],
     top_n: int,
@@ -447,12 +462,15 @@ async def _run_hybrid_search(
     search_similar_requirements 与 search_code_snippets 共用此函数，
     仅 node_types 参数不同。min_score 按向量余弦分过滤融合结果。
     semantic_tags=true 时，先用 embedding 将 tags 扩展为项目内语义相近标签再过滤。
+
+    system 维度：传 project_id 检索该 project 资产；传 system_id 检索该系统全部需求
+    （含悬浮需求）。二者都不传时用 project_scope 内全部 project 检索。
     """
     ctx = get_context()
     lifespan_ctx = ctx.lifespan_context
 
     effective_tags = tags
-    if semantic_tags and tags:
+    if semantic_tags and tags and project_id is not None:
         # 标签语义扩展：拉取项目标签词表 + 向量扩展；embedding 异常时降级为精确匹配
         session = await get_readonly_session()
         try:
@@ -472,6 +490,7 @@ async def _run_hybrid_search(
 
     filters = FilterSpec(
         project_id=project_id,
+        system_id=system_id,
         node_types=node_types,
         tags=effective_tags,
         tags_op=tags_op,

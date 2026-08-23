@@ -33,7 +33,9 @@ class ApprovalBatch(Base):
         default=uuid.uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, comment="归属项目")
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, comment="归属项目（悬浮 system 需求批次可为空）"
+    )
     batch_type: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
@@ -41,7 +43,13 @@ class ApprovalBatch(Base):
     )
     submitted_by: Mapped[str] = mapped_column(String(128), nullable=False, comment="提交者 Access Key ID")
     submitter_role: Mapped[str] = mapped_column(String(16), nullable=False, comment="提交者角色: pm/dev")
-    summary: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default=text("''"), comment="自动生成的提交摘要")
+    summary: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        server_default=text("''"),
+        comment="自动生成的提交摘要",
+    )
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,

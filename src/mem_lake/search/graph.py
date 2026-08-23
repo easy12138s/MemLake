@@ -192,7 +192,8 @@ class GraphSearcher:
             "properties": {
                 "id": str(req_row.id),
                 "title": req_row.title,
-                "project_id": str(req_row.project_id),
+                "project_id": str(req_row.project_id) if req_row.project_id else None,
+                "system_id": str(req_row.system_id) if req_row.system_id else None,
             },
         }
 
