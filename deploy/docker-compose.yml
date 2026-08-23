@@ -7,16 +7,17 @@ services:
       context: .
       dockerfile: Dockerfile.pg
     environment:
-      POSTGRES_USER: memlake
-      POSTGRES_PASSWORD: memlake
-      POSTGRES_DB: memlake
+      POSTGRES_USER: ${POSTGRES_USER:-memlake}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-memlake}
+      POSTGRES_DB: ${POSTGRES_DB:-memlake}
     ports:
+      # 生产环境建议移除本端口映射（或防火墙限制），避免 DB 直连绕过应用层权限
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U memlake"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memlake}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,11 +26,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.embedding
+      # args 属于 build 段（此前误放 service 层，docker compose config 校验失败）
       args:
         DOWNLOAD_MODEL: ${DOWNLOAD_MODEL:-true}
         DOWNLOAD_RERANK_MODEL: ${DOWNLOAD_RERANK_MODEL:-true}
         TORCH_CUDA: ${TORCH_CUDA:-false}
     ports:
+      # 生产环境建议移除本端口映射（或防火墙限制），仅保留容器网络内访问
       - "8001:8001"
     environment:
       # 推理设备：默认 cpu；GPU（TORCH_CUDA=true）时改为 cuda
@@ -55,11 +58,22 @@ services:
       embedding:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg_async://memlake:memlake@postgres:5432/memlake
+      # 凭据变量化贯穿（AUDIT §2.7）：修改 .env 中 POSTGRES_* 即可换密码，
+      # compose 变量替换在 environment 层生效（此前硬编码导致 .env 修改无效）
+      DATABASE_URL: postgresql+psycopg_async://${POSTGRES_USER:-memlake}:${POSTGRES_PASSWORD:-memlake}@postgres:5432/${POSTGRES_DB:-memlake}
       EMBEDDING_HOST: embedding
       EMBEDDING_PORT: "8001"
     env_file:
       - ../.env
+    healthcheck:
+      # TCP 端口探测：uvicorn 监听 8000 即视为进程健康（HTTP /mcp 为
+      # StreamableHTTP 协议端点，GET 探测返回 406/400，不适合做健康检查；
+      # DB/embedding 依赖由各自 healthcheck + depends_on 保证）
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('localhost', 8000), timeout=3).close()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   pg_data:
