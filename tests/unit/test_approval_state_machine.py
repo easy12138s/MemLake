@@ -35,7 +35,6 @@ from mem_lake.approval.service import (
     _validate_item_structure,
 )
 
-
 # ============ 批次类型白名单 ============
 
 
@@ -256,6 +255,7 @@ class TestValidateItemPayload:
             "title": "需求",
             "content": "内容",
             "project_id": str(uuid.uuid4()),
+            "system_id": str(uuid.uuid4()),
             "created_by": "ak",
             "properties": {
                 "requirement_id": "REQ-001",

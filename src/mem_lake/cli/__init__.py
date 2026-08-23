@@ -20,7 +20,7 @@ async def main() -> None:
         key_id, plaintext = await create_access_key(
             session,
             role="admin",
-            project_scope=[],
+            project_scope={"systems": [], "projects": []},
             created_by="system",
         )
         await session.commit()

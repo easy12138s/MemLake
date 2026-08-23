@@ -29,7 +29,11 @@ from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.models import KnowledgeNode
-from mem_lake.knowledge.schema import validate_edge_type, validate_node
+from mem_lake.knowledge.schema import (
+    SchemaValidationError,
+    validate_edge_type,
+    validate_node,
+)
 
 
 class NodeNotFoundError(Exception):
@@ -41,7 +45,7 @@ async def create_node(
     *,
     graph_store: GraphStore,
     embedding_client: EmbeddingClient | None,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     node_type: str,
     title: str,
     content: str,
@@ -49,21 +53,38 @@ async def create_node(
     tags: list[str] | None = None,
     source: dict[str, Any] | None = None,
     created_by: str,
+    system_id: uuid.UUID | None = None,
     generate_vector: bool = True,
     content_vector: list[float] | None = None,
 ) -> KnowledgeNode:
     """创建知识节点（PG 表 + AGE 图节点 + 审计日志，事务性共写）。
 
+    system 维度（PM 需求跨项目建模）：
+    - Requirement：system_id 必填，project_id 可空（悬浮需求）
+    - 其余资产类型：project_id 必填（不可悬浮）
+    违规抛 SchemaValidationError。
+
     流程：
     1. schema.validate_node 校验类型与必填字段
-    2. 若 generate_vector 且 embedding_client 提供：调用 EmbeddingClient 生成 1024 维向量
-    3. INSERT knowledge_node（content_tsv 由触发器自动维护）
-    4. 调用 graph_store.add_node 同步图节点（带 id/project_id/title 属性）
-    5. write_audit_log 记录创建审计
+    2. 按类型强约束 system/project 归属
+    3. 若 generate_vector 且 embedding_client 提供：调用 EmbeddingClient 生成 1024 维向量
+    4. INSERT knowledge_node（content_tsv 由触发器自动维护）
+    5. 调用 graph_store.add_node 同步图节点（带 id/project_id/title 属性）
+    6. write_audit_log 记录创建审计
 
     不 commit，由调用方控制事务。
     """
     validate_node(node_type, properties)
+
+    # ---- system / project 归属强约束（system 维度）----
+    if node_type == "Requirement" and system_id is None:
+        raise SchemaValidationError(
+            "Requirement 必须归属 system（system_id 必填）"
+        )
+    if node_type != "Requirement" and project_id is None:
+        raise SchemaValidationError(
+            f"节点类型 {node_type} 必须归属 project（project_id 必填）"
+        )
 
     content_vector_value: list[float] | None = None
     if generate_vector:
@@ -81,6 +102,7 @@ async def create_node(
 
     node = KnowledgeNode(
         project_id=project_id,
+        system_id=system_id,
         type=node_type,
         title=title,
         content=content,
@@ -95,16 +117,20 @@ async def create_node(
     session.add(node)
     await session.flush()  # 触发 server_default 生成 id 与 created_at
 
-    # AGE 图节点：携带 id/project_id/title 供图查询过滤
+    # AGE 图节点：携带 id/project_id/title 供图查询过滤（system_id 可选）
+    graph_props: dict[str, Any] = {
+        "id": str(node.id),
+        "title": title,
+    }
+    if project_id is not None:
+        graph_props["project_id"] = str(project_id)
+    if system_id is not None:
+        graph_props["system_id"] = str(system_id)
     await graph_store.add_node(
         session,
         node_id=node.id,
         label=node_type,
-        properties={
-            "id": str(node.id),
-            "project_id": str(project_id),
-            "title": title,
-        },
+        properties=graph_props,
     )
 
     await write_audit_log(
@@ -119,6 +145,7 @@ async def create_node(
             "title": title,
             "version": 1,
             "vector_generated": content_vector_value is not None,
+            "system_id": str(system_id) if system_id else None,
         },
     )
 

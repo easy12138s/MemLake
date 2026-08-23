@@ -133,6 +133,23 @@ version: 1.2.0
 
 status 取值：`pending` / `running` / `done` / `failed`。`done` 表示全部向量已重建完成；`failed` 时 `error` 字段含失败原因。
 
+### manage_system — 建立并签发 system 域（admin 专属）
+
+PM 需求按 system 隔离；System 由 admin 统一建并签发。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| action | str | 是 | `create` / `list` / `set_projects` / `bind_keys` |
+| name | str | create 时必填 | 系统域名（唯一）|
+| system_id | UUID | set_projects/bind_keys 时必填 | 目标 System ID |
+| project_ids | list[UUID] | set_projects 时 | 该系统下归属的 project 列表（决定 dev 对悬浮需求的可见性）|
+| key_ids / role_filter / grant_all | - | bind_keys 时 | 定位目标 Key（优先级 key_ids > role_filter > grant_all）|
+
+- `create`：建 System，返回 system_id
+- `list`：枚举所有 System（含其下项目数）
+- `set_projects`：定义 system↔project 归属
+- `bind_keys`：把该系统授权给目标 Key（进入其 scope.systems）
+
 ### manage_access_key — 创建/吊销/查看/改范围/改审核模式/轮换 Access Key
 
 | 参数 | 类型 | 必填 | 说明 |

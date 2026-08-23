@@ -144,8 +144,9 @@ class TestBuildNodeItem:
     """build_node_item 测试。"""
 
     def test_valid_node_item(self):
-        """构造合法 node item。"""
+        """构造合法 node item（Requirement 需 system_id）。"""
         project_id = uuid.uuid4()
+        system_id = uuid.uuid4()
         item = build_node_item(
             ref="requirement",
             node_type="Requirement",
@@ -154,6 +155,7 @@ class TestBuildNodeItem:
             properties={"requirement_id": "REQ-001", "priority": "P0"},
             tags=["auth"],
             project_id=project_id,
+            system_id=system_id,
             created_by="ak_test",
         )
         assert item["item_type"] == "node"
@@ -164,6 +166,7 @@ class TestBuildNodeItem:
         assert item["payload"]["properties"]["requirement_id"] == "REQ-001"
         assert item["payload"]["tags"] == ["auth"]
         assert item["payload"]["project_id"] == str(project_id)
+        assert item["payload"]["system_id"] == str(system_id)
         assert item["payload"]["created_by"] == "ak_test"
 
     def test_default_tags_empty(self):
@@ -175,6 +178,7 @@ class TestBuildNodeItem:
             content="c",
             properties={"k": "v"},
             project_id=uuid.uuid4(),
+            system_id=uuid.uuid4(),
             created_by="ak",
         )
         assert item["payload"]["tags"] == []
@@ -188,6 +192,7 @@ class TestBuildNodeItem:
             content="c",
             properties={"k": "v"},
             project_id=uuid.uuid4(),
+            system_id=uuid.uuid4(),
             created_by="ak",
         )
         assert item["payload"]["source"] == {}
@@ -202,6 +207,7 @@ class TestBuildNodeItem:
                 content="c",
                 properties=None,  # type: ignore
                 project_id=uuid.uuid4(),
+                system_id=uuid.uuid4(),
                 created_by="ak",
             )
 
@@ -215,15 +221,30 @@ class TestBuildNodeItem:
                 content="c",
                 properties={},  # type: ignore
                 project_id=uuid.uuid4(),
+                system_id=uuid.uuid4(),
                 created_by="ak",
             )
 
-    def test_missing_project_id_raises(self):
-        """缺 project_id 抛 PayloadValidationError。"""
-        with pytest.raises(PayloadValidationError, match="缺少 project_id"):
+    def test_requirement_missing_system_id_raises(self):
+        """Requirement 缺 system_id 抛 PayloadValidationError。"""
+        with pytest.raises(PayloadValidationError, match="必须归属 system"):
             build_node_item(
                 ref="req",
                 node_type="Requirement",
+                title="t",
+                content="c",
+                properties={"k": "v"},
+                project_id=uuid.uuid4(),
+                system_id=None,  # type: ignore
+                created_by="ak",
+            )
+
+    def test_asset_missing_project_id_raises(self):
+        """非 Requirement 资产缺 project_id 抛 PayloadValidationError。"""
+        with pytest.raises(PayloadValidationError, match="必须归属 project"):
+            build_node_item(
+                ref="req",
+                node_type="CodeSnippet",
                 title="t",
                 content="c",
                 properties={"k": "v"},
@@ -241,6 +262,7 @@ class TestBuildNodeItem:
                 content="c",
                 properties={"k": "v"},
                 project_id=uuid.uuid4(),
+                system_id=uuid.uuid4(),
                 created_by="",
             )
 
@@ -442,8 +464,8 @@ class TestRoleSkillsMd:
         assert len(ROLE_SKILLS_VERSION) > 0
 
     def test_version_upgraded_to_1_2_0(self):
-        """skills 内容优化后版本号升级为 1.2.0。"""
-        assert ROLE_SKILLS_VERSION == "1.2.0"
+        """skills 内容优化（含宽松模式）后版本号升级为 1.3.0。"""
+        assert ROLE_SKILLS_VERSION == "1.3.0"
 
     def test_admin_skills_contains_auto_approval(self):
         """Admin Skills 文档含自动审批工具。"""

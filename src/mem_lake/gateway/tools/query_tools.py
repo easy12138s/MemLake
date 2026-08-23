@@ -34,6 +34,7 @@ from mem_lake.gateway.dependencies import (
     get_current_role,
     get_readonly_session,
     validate_project_access,
+    validate_system_access,
 )
 from mem_lake.gateway.tools._shared import (
     INSTALLATION_GUIDE,
@@ -338,13 +339,17 @@ def register_query_tools(mcp: FastMCP) -> None:
                         "title": req_node.title,
                         "content": req_node.content,
                         "type": req_node.type,
-                        "project_id": str(req_node.project_id),
+                        "project_id": str(req_node.project_id) if req_node.project_id else None,
+                        "system_id": str(req_node.system_id) if req_node.system_id else None,
                         "status": req_node.status,
                         "version": req_node.version,
                         "tags": req_node.tags or [],
                     }
-                    # 需求存在则校验项目权限
-                    validate_project_access(req_node.project_id)
+                    # 需求存在则校验权限：有项目按项目；悬浮需求按 system
+                    if req_node.project_id is not None:
+                        validate_project_access(req_node.project_id)
+                    elif req_node.system_id is not None:
+                        validate_system_access(req_node.system_id)
                 except NodeNotFoundError:
                     return RequirementContextOutput(
                         requirement_id=requirement_id,

@@ -102,6 +102,7 @@ class AccessKeyAuthMiddleware(Middleware):
             return await call_next(context)
 
         # 构造 AccessToken
+        scope = auth_result.get("scope") or {"systems": [], "projects": []}
         access_token = AccessToken(
             token=access_key_plain,
             client_id=str(auth_result["key_id"]),
@@ -109,7 +110,8 @@ class AccessKeyAuthMiddleware(Middleware):
             claims={
                 "role": auth_result["role"],
                 "key_id": str(auth_result["key_id"]),
-                "project_scope": auth_result["project_scope"],
+                "project_scope": list(scope.get("projects") or []),
+                "system_scope": list(scope.get("systems") or []),
                 "lax_mode": auth_result["lax_mode"],
             },
         )

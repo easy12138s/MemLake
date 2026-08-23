@@ -12,12 +12,57 @@ from datetime import datetime
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index, String, Text, text
+from sqlalchemy import Index, PrimaryKeyConstraint, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from mem_lake.db.base import Base
+
+
+class System(Base):
+    """系统域：PM 需求的跨项目隔离单位。
+
+    Requirement 归属 system（system_id 必填），project 可空（悬浮需求）；
+    资产（code/solution 等）仍按 project 隔离。system↔project 归属见 SystemProject。
+    """
+
+    __tablename__ = "system"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    name: Mapped[str] = mapped_column(
+        String(128), unique=True, comment="系统域名（唯一）"
+    )
+    description: Mapped[str] = mapped_column(
+        Text, default="", comment="系统域描述"
+    )
+
+
+class SystemProject(Base):
+    """system ↔ project 归属（反查 project 属于哪些 system）。
+
+    dev 可见判定（system 含 dev 任一 project）与影响评估聚合需按 project 反查 system，
+    单靠 knowledge_node.system_id 列无法在 project 建库前回答，故建此映射表。
+    """
+
+    __tablename__ = "system_project"
+
+    system_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), comment="system 域 ID"
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), comment="project ID"
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("system_id", "project_id"),
+        Index("idx_system_project_project", "project_id"),
+    )
 
 
 class KnowledgeNode(Base):
@@ -31,8 +76,14 @@ class KnowledgeNode(Base):
         default=uuid.uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), comment="所属项目"
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, comment="所属项目（悬浮需求可为空）"
+    )
+    system_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="所属 system 域（仅 Requirement 使用）",
     )
     type: Mapped[str] = mapped_column(
         String(32),
@@ -83,6 +134,7 @@ class KnowledgeNode(Base):
 
     __table_args__ = (
         Index("idx_node_project_type_status", "project_id", "type", "status"),
+        Index("idx_node_system_type_status", "system_id", "type", "status"),
         Index("idx_node_project_tags", "tags", postgresql_using="gin"),
         Index("idx_node_tsv", "content_tsv", postgresql_using="gin"),
         # HNSW 向量索引（pgvector-python 官方方案，随 create_all 创建）

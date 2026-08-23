@@ -165,6 +165,7 @@ def build_node_item(
     tags: list[str] | None = None,
     source: dict[str, Any] | None = None,
     project_id: uuid.UUID | None = None,
+    system_id: uuid.UUID | None = None,
     created_by: str | None = None,
 ) -> dict[str, Any]:
     """构造 node + create 审批项（含 item_type/action/entity_type/payload 完整结构）。
@@ -177,8 +178,13 @@ def build_node_item(
         properties: 节点属性（必填，含类型特有字段）
         tags: 标签数组（可选）
         source: 来源信息（可选，如 {"doc": "...", "url": "..."}）
-        project_id: 归属项目 ID（必填，写入 payload 供 _execute_node_create 读取）
+        project_id: 归属项目 ID（Requirement 可为空=悬浮；其余类型必填）
+        system_id: 归属 system 域（仅 Requirement 必填；跨项目需求建模）
         created_by: 创建者 Access Key ID（必填，写入 payload 供 _execute_node_create 读取）
+
+    归属约束（与 create_node 一致）：
+        - Requirement：system_id 必填，project_id 可空（悬浮）
+        - 其余类型：project_id 必填
 
     返回：审批项 dict（submit_batch 接收的完整 item 结构）
         {
@@ -186,39 +192,39 @@ def build_node_item(
             "action": "create",
             "entity_type": node_type,
             "payload": {
-                "ref": str,
-                "node_type": str,
-                "title": str,
-                "content": str,
-                "properties": dict,
-                "tags": list[str],
-                "source": dict,
-                "project_id": str,
-                "created_by": str,
+                "ref": str, "node_type": str, "title": str, "content": str,
+                "properties": dict, "tags": list[str], "source": dict,
+                "project_id": str|None, "system_id": str|None, "created_by": str,
             }
         }
     """
     if not properties:
         raise PayloadValidationError(f"节点 {ref} 缺少 properties 字段")
-    if project_id is None:
-        raise PayloadValidationError(f"节点 {ref} 缺少 project_id")
     if not created_by:
         raise PayloadValidationError(f"节点 {ref} 缺少 created_by")
+    if node_type == "Requirement" and system_id is None:
+        raise PayloadValidationError(
+            f"Requirement 节点 {ref} 必须归属 system（system_id 必填）"
+        )
+    if node_type != "Requirement" and project_id is None:
+        raise PayloadValidationError(f"节点 {ref} 必须归属 project（project_id 必填）")
+    payload: dict[str, Any] = {
+        "ref": ref,
+        "node_type": node_type,
+        "title": title,
+        "content": content,
+        "properties": properties,
+        "tags": tags or [],
+        "source": source or {},
+        "project_id": str(project_id) if project_id is not None else None,
+        "system_id": str(system_id) if system_id is not None else None,
+        "created_by": created_by,
+    }
     return {
         "item_type": "node",
         "action": "create",
         "entity_type": node_type,
-        "payload": {
-            "ref": ref,
-            "node_type": node_type,
-            "title": title,
-            "content": content,
-            "properties": properties,
-            "tags": tags or [],
-            "source": source or {},
-            "project_id": str(project_id),
-            "created_by": created_by,
-        },
+        "payload": payload,
     }
 
 

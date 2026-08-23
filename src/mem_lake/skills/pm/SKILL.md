@@ -32,14 +32,17 @@ version: 1.2.0
 
 ### publish_requirement — 发布需求节点
 
+system 维度：`system_id` 必填；`project_id` 可选（None=悬浮，表示"先于实现/跨项目落地"的需求）。
+
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | 是 | 项目 ID |
+| system_id | UUID | 是 | 归属 system 域（需求按 system 隔离）|
+| project_id | UUID | 否 | 归属项目；省略/None=悬浮需求（跨项目建模）|
 | title | str | 是 | 需求标题 |
 | content | str | 是 | 需求详细描述 |
 | properties | dict | 是 | 必填字段（见下方）|
 | tags | list[str] | 否 | 标签列表 |
-| related | dict | 否 | 版本关系与关联关系 |
+| related | dict | 否 | 版本关系与关联关系（引用的需求须同 system 或对调用者可见）|
 
 **properties 必填字段**：
 

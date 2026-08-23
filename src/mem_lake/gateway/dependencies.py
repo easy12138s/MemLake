@@ -73,13 +73,42 @@ def get_current_role() -> str:
 
 
 def get_current_project_scope() -> list[str]:
-    """获取当前调用者的项目范围（项目 ID 字符串列表）。
+    """获取当前调用者的资产层项目范围（project ID 字符串列表）。
 
     admin 角色返回空列表（不受限），pm/dev 角色返回其项目范围。
     """
     token = get_current_access_token()
     scope = token.claims.get("project_scope", [])
     return [str(pid) for pid in scope] if scope else []
+
+
+def get_current_system_scope() -> list[str]:
+    """获取当前调用者的 system 域范围（system ID 字符串列表）。
+
+    pm/dev 可见其绑定的 system 域（PM 需求层隔离单位）。
+    """
+    token = get_current_access_token()
+    scope = token.claims.get("system_scope", [])
+    return [str(sid) for sid in scope] if scope else []
+
+
+def validate_system_access(system_id: uuid.UUID) -> None:
+    """校验当前调用者是否有权访问指定 system 域。
+
+    admin 角色不受 system 范围限制；pm/dev 校验 system_id 是否在 system_scope 内。
+    """
+    token = get_current_access_token()
+    role = token.claims.get("role", "")
+
+    if role == "admin":
+        return
+
+    scope = token.claims.get("system_scope", []) or []
+    scope_str = [str(sid) for sid in scope]
+    if str(system_id) not in scope_str:
+        raise ToolError(
+            f"权限拒绝：system {system_id} 不在当前 Access Key 的 system 范围内"
+        )
 
 
 def get_current_lax_mode() -> bool:
