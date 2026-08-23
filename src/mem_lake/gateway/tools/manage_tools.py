@@ -454,6 +454,12 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     ak, plaintext = await rotate_access_key(
                         session, key_id=key_id, actor=key_id_actor
                     )
+                    _ak_scope = ak.project_scope or {}
+                    _proj_list = (
+                        [str(p) for p in _ak_scope.get("projects", [])]
+                        if isinstance(_ak_scope, dict)
+                        else [str(x) for x in _ak_scope]
+                    )
                     mcp_url = get_settings().MCP_PUBLIC_URL
                     return ManageAccessKeyOutput(
                         action="rotate",
@@ -461,7 +467,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                             key_id=ak.id,
                             plaintext=plaintext,
                             role=ak.role,
-                            project_scope=ak.project_scope or [],
+                            project_scope=_proj_list,
                             lax_mode=bool(ak.lax_mode),
                             mcp_config=_build_mcp_config(mcp_url, plaintext),
                             onboarding_prompt=_build_onboarding_prompt(ak.role),
