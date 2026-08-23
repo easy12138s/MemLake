@@ -412,7 +412,9 @@ INSTALLATION_GUIDE = """## Skills 文件放置指南
 # ============================================================================
 
 
-async def _safe_enqueue_embed(project_id: uuid.UUID, node_ids: list[uuid.UUID]) -> None:
+async def _safe_enqueue_embed(
+    project_id: uuid.UUID | None, node_ids: list[uuid.UUID]
+) -> None:
     """写入/审批提交后安全入队向量补全任务。
 
     事务已 commit，入队仅是后台优化（新建节点 content_vector 暂为 NULL，搜索可安全

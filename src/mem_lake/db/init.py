@@ -50,6 +50,11 @@ async def create_tables(session: AsyncSession) -> None:
             "ADD COLUMN IF NOT EXISTS target_node_ids UUID[]"
         )
     )
+    # 悬浮 system 需求节点嵌入任务：project_id 可空（project_id 由 knowledge_node 隶属，
+    # 悬浮需求 project_id=NULL 依附 system，其嵌入任务无需归属具体项目）。
+    await session.execute(
+        text("ALTER TABLE reindex_task ALTER COLUMN project_id DROP NOT NULL")
+    )
     # 显式补齐 access_key.lax_mode（宽松模式；存量库升级兼容）。
     await session.execute(
         text(

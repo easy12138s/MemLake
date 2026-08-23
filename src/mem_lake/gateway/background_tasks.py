@@ -53,7 +53,9 @@ DEFAULT_BATCH_SIZE = 50
 
 
 async def create_task_record(
-    project_id: uuid.UUID, actor: str, target_node_ids: list[uuid.UUID] | None = None
+    project_id: uuid.UUID | None,
+    actor: str,
+    target_node_ids: list[uuid.UUID] | None = None,
 ) -> uuid.UUID:
     """插入一条 pending 任务记录，返回 task_id。
 
@@ -242,7 +244,7 @@ async def _embed_specific_nodes(
 
 
 async def start_embed_nodes_task(
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     node_ids: list[uuid.UUID],
     actor: str,
     batch_size: int | None = None,
@@ -251,6 +253,8 @@ async def start_embed_nodes_task(
 
     用于审批通过后将新建节点（content_vector=NULL）的向量化延迟到后台执行，
     彻底解耦审批 MCP 调用与 embedding 耗时，避免大批次审批超时。
+    project_id 允许为空：悬浮 system 需求（project_id=None）节点嵌入只需按
+    node_ids 定位，无需项目过滤。
     """
     if not node_ids:
         raise ValueError("start_embed_nodes_task: node_ids 不能为空")
