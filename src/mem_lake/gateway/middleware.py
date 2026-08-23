@@ -18,6 +18,7 @@
 import logging
 import time
 from collections import defaultdict, deque
+from uuid import uuid4
 
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken
@@ -37,6 +38,11 @@ from mem_lake.gateway.auth import (
     extract_access_key_from_headers,
     validate_protocol_version,
 )
+from mem_lake.observability.logging import (
+    bind_request_context,
+    clear_request_context,
+)
+from mem_lake.observability.metrics import MCP_TOOL_CALLS, MCP_TOOL_DURATION
 
 logger = logging.getLogger("mem_lake.gateway.middleware")
 
@@ -274,6 +280,15 @@ class AuditLogMiddleware(Middleware):
         result_status = "success"
         error_message = None
 
+        # 绑定请求上下文（结构化日志贯通字段），finally 清理
+        project_id = arguments.get("project_id")
+        bind_request_context(
+            request_id=uuid4().hex[:12],
+            operation_id=operation_id,
+            actor=actor,
+            project_id=str(project_id) if project_id else None,
+        )
+
         try:
             result = await call_next(context)
             return result
@@ -283,6 +298,10 @@ class AuditLogMiddleware(Middleware):
             raise
         finally:
             duration_ms = (time.time() - t0) * 1000
+            # Prometheus 上报（复用 t0 计时，不新增测量）
+            MCP_TOOL_CALLS.labels(tool=tool_name, status=result_status).inc()
+            MCP_TOOL_DURATION.labels(tool=tool_name).observe(time.time() - t0)
+
             logger.info(
                 "TOOL_CALL actor=%s tool=%s status=%s duration=%.0fms op_id=%s",
                 actor,
@@ -314,3 +333,6 @@ class AuditLogMiddleware(Middleware):
             except Exception:
                 # 审计日志写入失败不影响工具调用结果
                 logger.exception("审计日志写入失败")
+            finally:
+                # 清理请求上下文绑定，防止跨请求泄漏到下一调用
+                clear_request_context()

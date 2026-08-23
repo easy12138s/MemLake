@@ -5,11 +5,13 @@
 返回向量经服务端 normalize_embeddings=True 归一化，pgvector 余弦距离检索可直接使用。
 """
 
+import time
 from functools import lru_cache
 
 import httpx
 
 from mem_lake.config import get_settings
+from mem_lake.observability.metrics import EMBEDDING_CALLS, EMBEDDING_DURATION
 
 
 class EmbeddingError(Exception):
@@ -48,6 +50,8 @@ class EmbeddingClient:
             body["prompt"] = prompt
         if prompt_name is not None:
             body["prompt_name"] = prompt_name
+        EMBEDDING_CALLS.labels(op="embed").inc()
+        t = time.time()
         try:
             resp = await self._client.post("/embed", json=body)
         except httpx.HTTPError as exc:
@@ -69,6 +73,7 @@ class EmbeddingClient:
         if not isinstance(embeddings, list):
             raise EmbeddingError(f"Embedding 响应格式错误: embeddings={embeddings}")
 
+        EMBEDDING_DURATION.labels(op="embed").observe(time.time() - t)
         return embeddings
 
     async def embed_one(
@@ -126,6 +131,8 @@ class EmbeddingClient:
         if not texts:
             return []
         body = {"query": query, "texts": texts}
+        EMBEDDING_CALLS.labels(op="rerank").inc()
+        t = time.time()
         try:
             resp = await self._client.post("/rerank", json=body)
         except httpx.HTTPError as exc:
@@ -150,6 +157,7 @@ class EmbeddingClient:
         restored = [0.0] * len(texts)
         for rank, idx in enumerate(order):
             restored[idx] = scores[rank]
+        EMBEDDING_DURATION.labels(op="rerank").observe(time.time() - t)
         return restored
 
     async def close(self) -> None:

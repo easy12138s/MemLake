@@ -23,6 +23,9 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0",
     "bcrypt>=4.0.0",
+    # 可观测性
+    "prometheus-client>=0.20.0",
+    "structlog>=24.0.0",
 ]
 
 [project.optional-dependencies]

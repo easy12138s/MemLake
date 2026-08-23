@@ -57,6 +57,10 @@ RUN if [ "$DOWNLOAD_RERANK_MODEL" = "true" ]; then \
 WORKDIR /app
 COPY embedding_server.py /app/
 
+# /metrics Prometheus 指标依赖（独立 RUN：不改动上方模型下载层，构建复用层缓存，
+# 避免安装依赖导致已下载模型层失效重下）
+RUN pip install --no-cache-dir "prometheus-client>=0.20.0"
+
 ENV MODEL_PATH=/models/Qwen3-Embedding-0.6B
 ENV RERANK_MODEL_PATH=/models/bge-reranker-base
 
