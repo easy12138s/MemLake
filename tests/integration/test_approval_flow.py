@@ -36,7 +36,6 @@ from mem_lake.approval.service import (
 from mem_lake.audit.service import query_audit_logs
 from mem_lake.knowledge.models import KnowledgeNode
 
-
 # ============ 辅助函数 ============
 
 
@@ -70,6 +69,7 @@ async def _create_approved_node_for_conflict(
         properties=knowledge_helpers[node_type](),
         tags=tags or ["auth", "P0"],
         source={"agent": "pm_agent", "tool": "publish_requirement"},
+        system_id=uuid.uuid4(),
         created_by="ak_pm_existing",
     )
 
@@ -250,6 +250,7 @@ class TestSubmitBatch:
                 "payload": {
                     "project_id": str(project_id),
                     "node_type": "Requirement",
+                    "system_id": str(uuid.uuid4()),
                     "title": "x",
                     "content": "y",
                     # 缺 properties
@@ -471,6 +472,7 @@ class TestReviewApprove:
             content="需求A 内容",
             properties=knowledge_helpers["Requirement"](),
             tags=["auth"],
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
         node2 = await create_node(
@@ -483,6 +485,7 @@ class TestReviewApprove:
             content="需求B 内容",
             properties=knowledge_helpers["Requirement"](),
             tags=["auth"],
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
 
@@ -1074,6 +1077,7 @@ class TestConflictDetection:
                 "payload": {
                     "project_id": str(project_id),
                     "node_type": "Requirement",
+                    "system_id": str(uuid.uuid4()),
                     "title": "用户登录鉴权需求",  # 完全相同标题
                     "content": "系统需要支持账号密码登录与 JWT 令牌签发",
                     "properties": knowledge_helpers["Requirement"](),
@@ -1148,9 +1152,13 @@ class TestConflictDetection:
                 "payload": {
                     "project_id": str(project_id),
                     "node_type": "Requirement",
+                    "system_id": str(uuid.uuid4()),
                     "title": "权限管理需求-新版",
                     "content": "完全不同的内容，关于角色权限分配",
-                    "properties": knowledge_helpers["Requirement"](),
+                    "properties": {
+                        **knowledge_helpers["Requirement"](),
+                        "requirement_id": "REQ-2026-TAG-002",
+                    },
                     "tags": ["auth", "rbac"],  # 与已有节点的 auth 标签有交集
                     "source": {"agent": "pm_agent", "tool": "publish_requirement"},
                     "created_by": "ak_pm_001",
@@ -1281,6 +1289,7 @@ class TestConflictDetection:
                 "payload": {
                     "project_id": str(project2),
                     "node_type": "Requirement",
+                    "system_id": str(uuid.uuid4()),
                     "title": "用户登录鉴权需求",
                     "content": "系统需要支持账号密码登录与 JWT 令牌签发",
                     "properties": knowledge_helpers["Requirement"](),
@@ -1708,6 +1717,7 @@ class TestExactKeyConflict:
             title="用户登录需求 v1",
             content="系统需要支持账号密码登录",
             properties=props,
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
 
@@ -1751,6 +1761,7 @@ class TestExactKeyConflict:
             title="用户登录需求 v1",
             content="系统需要支持账号密码登录",
             properties=props,
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
 
@@ -1789,6 +1800,7 @@ class TestExactKeyConflict:
             title="用户登录需求 v1",
             content="系统需要支持账号密码登录",
             properties=props,
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
 
@@ -1803,6 +1815,7 @@ class TestExactKeyConflict:
                 "payload": {
                     "project_id": str(project_id),
                     "node_type": "Requirement",
+                    "system_id": str(uuid.uuid4()),
                     "title": "登录重构需求",
                     "content": "登录鉴权拆分为独立微服务并引入 OAuth2",
                     "properties": new_props,

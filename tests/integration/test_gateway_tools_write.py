@@ -14,6 +14,7 @@
 import uuid
 
 import pytest
+from fastmcp.server.auth import AccessToken
 
 from mem_lake.approval.service import (
     BatchNotFoundError,
@@ -41,6 +42,29 @@ from mem_lake.gateway.tools.write_tools import (
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import create_node, get_node
 
+
+def _patch_dev_scope(monkeypatch, project_ids: list | None = None) -> None:
+    """以 dev 身份 mock dependencies.get_access_token，使 _validate_dev_artifacts
+    内部的 get_current_role/project_scope/system_scope 可在无真实 HTTP 请求的
+    直连测试中读到值。project_scope 需包含需求所在 project 才对其可见。
+    """
+
+    def _token(*_args, **_kwargs):
+        return AccessToken(
+            token="dummy",
+            client_id=str(uuid.uuid4()),
+            scopes=["dev"],
+            claims={
+                "role": "dev",
+                "key_id": "ak_dev",
+                "project_scope": project_ids or [],
+                "system_scope": [],
+                "lax_mode": False,
+            },
+        )
+
+    monkeypatch.setattr("mem_lake.gateway.dependencies.get_access_token", _token)
+
 # ============================================================================
 # 完整流程：items 构造 → submit_batch → review_approve 端到端
 # ============================================================================
@@ -62,7 +86,7 @@ class TestPublishRequirementEndToEnd:
         )
         project_id = uuid.uuid4()
 
-        items = _build_publish_items(project_id, requirement, None, "ak_pm")
+        items = _build_publish_items(project_id, requirement, None, "ak_pm", uuid.uuid4())
         batch = await submit_batch(
             db_session,
             project_id=project_id,
@@ -111,6 +135,7 @@ class TestPublishRequirementEndToEnd:
             title="旧需求",
             content="旧版本",
             properties=old_req_props,
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
 
@@ -123,7 +148,7 @@ class TestPublishRequirementEndToEnd:
             properties=new_req_props,
         )
         related = RelatedInput(supersedes=[str(old_node.id)])
-        items = _build_publish_items(project_id, requirement, related, "ak_pm")
+        items = _build_publish_items(project_id, requirement, related, "ak_pm", uuid.uuid4())
 
         batch = await submit_batch(
             db_session,
@@ -179,6 +204,7 @@ class TestTempRefResolution:
             title="原始需求",
             content="需要登录功能",
             properties=req_props,
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
 
@@ -282,6 +308,7 @@ class TestTempRefResolution:
             title="原始需求",
             content="需要登录功能",
             properties=req_props,
+            system_id=uuid.uuid4(),
             created_by="ak_pm",
         )
 
@@ -358,7 +385,7 @@ class TestIdempotencyEndToEnd:
         project_id = uuid.uuid4()
         operation_id = "op_test_001"
 
-        items1 = _build_publish_items(project_id, requirement, None, "ak_pm")
+        items1 = _build_publish_items(project_id, requirement, None, "ak_pm", uuid.uuid4())
         batch1 = await submit_batch(
             db_session,
             project_id=project_id,
@@ -369,7 +396,7 @@ class TestIdempotencyEndToEnd:
             operation_id=operation_id,
         )
 
-        items2 = _build_publish_items(project_id, requirement, None, "ak_pm")
+        items2 = _build_publish_items(project_id, requirement, None, "ak_pm", uuid.uuid4())
         batch2 = await submit_batch(
             db_session,
             project_id=project_id,
@@ -403,7 +430,7 @@ class TestReviewRejectEndToEnd:
             properties=req_props,
         )
         project_id = uuid.uuid4()
-        items = _build_publish_items(project_id, requirement, None, "ak_pm")
+        items = _build_publish_items(project_id, requirement, None, "ak_pm", uuid.uuid4())
         batch = await submit_batch(
             db_session,
             project_id=project_id,
@@ -437,7 +464,7 @@ class TestReviewRejectEndToEnd:
             properties=req_props,
         )
         project_id = uuid.uuid4()
-        items = _build_publish_items(project_id, requirement, None, "ak_pm")
+        items = _build_publish_items(project_id, requirement, None, "ak_pm", uuid.uuid4())
         batch = await submit_batch(
             db_session,
             project_id=project_id,
@@ -487,7 +514,7 @@ class TestReviewQueryEndToEnd:
             properties=req_props,
         )
         project_id = uuid.uuid4()
-        items = _build_publish_items(project_id, requirement, None, "ak_pm")
+        items = _build_publish_items(project_id, requirement, None, "ak_pm", uuid.uuid4())
         batch = await submit_batch(
             db_session,
             project_id=project_id,
@@ -510,7 +537,7 @@ class TestReviewQueryEndToEnd:
             properties=req_props,
         )
         project_id = uuid.uuid4()
-        items = _build_publish_items(project_id, requirement, None, "ak_pm")
+        items = _build_publish_items(project_id, requirement, None, "ak_pm", uuid.uuid4())
         batch = await submit_batch(
             db_session,
             project_id=project_id,
@@ -615,9 +642,10 @@ class TestValidateDevArtifacts:
                 relations=[],
             )
 
-    async def test_unknown_ref_name_rejected(self, db_session):
+    async def test_unknown_ref_name_rejected(self, db_session, monkeypatch):
         """relation 引用未在 artifacts 声明的 ref 名 → 拦截。"""
         project_id = uuid.uuid4()
+        _patch_dev_scope(monkeypatch, [project_id])
         req = await self._seed_node(project_id, "Requirement")
         relations = [
             ArtifactRelationInput(
@@ -635,9 +663,10 @@ class TestValidateDevArtifacts:
         finally:
             await self._cleanup(req)
 
-    async def test_self_reference_rejected(self, db_session):
+    async def test_self_reference_rejected(self, db_session, monkeypatch):
         """relation 的 from_ref == to_ref 视为自引用 → 拦截。"""
         project_id = uuid.uuid4()
+        _patch_dev_scope(monkeypatch, [project_id])
         req = await self._seed_node(project_id, "Requirement")
         relations = [
             ArtifactRelationInput(
@@ -655,9 +684,10 @@ class TestValidateDevArtifacts:
         finally:
             await self._cleanup(req)
 
-    async def test_dangling_uuid_rejected(self, db_session):
+    async def test_dangling_uuid_rejected(self, db_session, monkeypatch):
         """relation 引用不存在的 UUID → 拦截。"""
         project_id = uuid.uuid4()
+        _patch_dev_scope(monkeypatch, [project_id])
         req = await self._seed_node(project_id, "Requirement")
         dangling = uuid.uuid4()
         relations = [
@@ -676,8 +706,9 @@ class TestValidateDevArtifacts:
         finally:
             await self._cleanup(req)
 
-    async def test_requirement_id_not_found_rejected(self, db_session):
+    async def test_requirement_id_not_found_rejected(self, db_session, monkeypatch):
         """requirement_id 不存在 → 拦截。"""
+        _patch_dev_scope(monkeypatch, [])
         with pytest.raises(PayloadValidationError, match="requirement_id 不存在"):
             await _validate_dev_artifacts(
                 project_id=uuid.uuid4(),
@@ -686,9 +717,10 @@ class TestValidateDevArtifacts:
                 relations=[],
             )
 
-    async def test_requirement_id_wrong_type_rejected(self, db_session):
+    async def test_requirement_id_wrong_type_rejected(self, db_session, monkeypatch):
         """requirement_id 指向非 Requirement 节点 → 拦截。"""
         project_id = uuid.uuid4()
+        _patch_dev_scope(monkeypatch, [project_id])
         node = await self._seed_node(project_id, "CodeSnippet")
         try:
             with pytest.raises(PayloadValidationError, match="类型非 Requirement"):
@@ -701,9 +733,10 @@ class TestValidateDevArtifacts:
         finally:
             await self._cleanup(node)
 
-    async def test_valid_passes(self, db_session):
+    async def test_valid_passes(self, db_session, monkeypatch):
         """合法 requirement_id + 内部引用 → 通过校验不抛异常。"""
         project_id = uuid.uuid4()
+        _patch_dev_scope(monkeypatch, [project_id])
         req = await self._seed_node(project_id, "Requirement")
         try:
             await _validate_dev_artifacts(

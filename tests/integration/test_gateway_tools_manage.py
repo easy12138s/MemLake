@@ -37,6 +37,7 @@ def admin_app(monkeypatch):
             "key_id": uuid.uuid4(),
             "role": "admin",
             "project_scope": [],
+            "lax_mode": False,
         }
 
     monkeypatch.setattr(
@@ -60,6 +61,7 @@ def admin_app(monkeypatch):
                 "role": "admin",
                 "key_id": str(uuid.uuid4()),
                 "project_scope": [],
+                "lax_mode": False,
             },
         )
 
@@ -295,3 +297,91 @@ async def test_manage_access_key_update_scope_key_ids_as_string(admin_app):
         assert {k1, k2} == scoped_ids
         for k in updated_data["scoped"]:
             assert k["project_scope"] == [str(pid)]
+
+
+async def test_manage_access_key_set_mode_by_key_ids(admin_app):
+    """set_mode 显式指定 key_ids 可把该 Key 设为宽松（lax_mode=true）。"""
+    async with Client(admin_app) as client:
+        c1 = _parse(
+            await client.call_tool(
+                "manage_access_key",
+                {"action": "create", "role": "dev", "project_scope": []},
+            )
+        )
+        c2 = _parse(
+            await client.call_tool(
+                "manage_access_key",
+                {"action": "create", "role": "dev", "project_scope": []},
+            )
+        )
+        k1 = c1["created"]["key_id"]
+        assert c1["created"]["lax_mode"] is False  # create 默认严格
+
+        updated = await client.call_tool(
+            "manage_access_key",
+            {"action": "set_mode", "lax_mode": True, "key_ids": [k1]},
+        )
+        updated_data = _parse(updated)
+        assert updated_data["action"] == "set_mode"
+        mode_ids = {k["key_id"] for k in updated_data["mode_set"]}
+        assert k1 in mode_ids
+        target = next(k for k in updated_data["mode_set"] if k["key_id"] == k1)
+        assert target["lax_mode"] is True
+        # 未被指定的 k2 不受影响
+        assert c2["created"]["key_id"] not in mode_ids
+
+
+async def test_manage_access_key_set_mode_by_role(admin_app):
+    """set_mode 按 role_filter 可批量将该角色全部 Key 设为宽松。"""
+    async with Client(admin_app) as client:
+        c1 = _parse(
+            await client.call_tool(
+                "manage_access_key",
+                {"action": "create", "role": "dev", "project_scope": []},
+            )
+        )
+        k1 = c1["created"]["key_id"]
+
+        updated = await client.call_tool(
+            "manage_access_key",
+            {"action": "set_mode", "lax_mode": True, "role_filter": "dev"},
+        )
+        updated_data = _parse(updated)
+        mode_ids = {k["key_id"] for k in updated_data["mode_set"]}
+        assert k1 in mode_ids  # 本次创建的 dev Key 都被设为宽松
+
+
+async def test_manage_access_key_list_filter_by_lax_mode(admin_app):
+    """list 按 lax_mode=true 过滤可查到宽松 Key，严格 Key 不在其中。"""
+    async with Client(admin_app) as client:
+        created = _parse(
+            await client.call_tool(
+                "manage_access_key",
+                {"action": "create", "role": "dev", "project_scope": []},
+            )
+        )
+        target_key = created["created"]["key_id"]
+        await client.call_tool(
+            "manage_access_key",
+            {"action": "set_mode", "lax_mode": True, "key_ids": [target_key]},
+        )
+
+        lax_list = _parse(
+            await client.call_tool(
+                "manage_access_key", {"action": "list", "lax_mode": True}
+            )
+        )
+        lax_ids = {k["key_id"] for k in lax_list["listed"]}
+        assert target_key in lax_ids
+        for k in lax_list["listed"]:
+            assert k["lax_mode"] is True
+
+        strict_list = _parse(
+            await client.call_tool(
+                "manage_access_key", {"action": "list", "lax_mode": False}
+            )
+        )
+        strict_ids = {k["key_id"] for k in strict_list["listed"]}
+        assert target_key not in strict_ids
+        for k in strict_list["listed"]:
+            assert k["lax_mode"] is False
