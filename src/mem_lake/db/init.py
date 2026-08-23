@@ -80,29 +80,25 @@ async def check_graph_exists(session: AsyncSession, graph_name: str) -> bool:
 
 
 async def init_knowledge_schema(session: AsyncSession) -> None:
-    """在 knowledge_node 表存在后，幂等创建 tsvector 触发器与 RLS 策略。
+    """在 knowledge_node 表存在后，幂等创建 tsvector 触发器。
 
     必须在 create_tables 之后调用。
 
     创建内容：
-    1. tsvector 触发器 trg_knowledge_node_tsv：
-       BEFORE INSERT OR UPDATE 时用内置 tsvector_update_trigger 维护 content_tsv
-       基于 'chinese' 配置（zhparser 分词）从 title + content 拼接生成
-    2. RLS 策略 knowledge_project_isolation：
-       USING (project_id::text = current_setting('app.current_project_id', true))
-       ENABLE ROW LEVEL SECURITY（不 FORCE，owner 可绕过，生产用非 owner 用户）
+    - tsvector 触发器 trg_knowledge_node_tsv：
+      BEFORE INSERT OR UPDATE 时用内置 tsvector_update_trigger 维护 content_tsv
+      基于 'chinese' 配置（zhparser 分词）从 title + content 拼接生成
 
-    幂等：DROP TRIGGER IF EXISTS + CREATE TRIGGER；DROP POLICY IF EXISTS + CREATE POLICY。
+    幂等：DROP TRIGGER IF EXISTS + CREATE TRIGGER。
 
-    注：PostgreSQL 17 的 CREATE POLICY 语法不支持 IF NOT EXISTS 子句（与 CREATE TRIGGER 不同），
-    官方语法见 https://www.postgresql.org/docs/17/sql-createpolicy.html。
-    因此采用 DROP POLICY IF EXISTS + CREATE POLICY 的幂等模式。
+    注：项目隔离原本规划用 RLS 策略，但部署连接用户（memlake）是表 owner，
+    RLS 不 FORCE 时 owner 天然绕过，策略实际未生效（AUDIT §2.5）。项目隔离
+    由应用层 validate_project_access + FilterSpec（project_id 过滤）实现，
+    不再创建 RLS 策略。
     """
-    # 1. tsvector 触发器（PG 内置函数，自动维护 content_tsv）
-    #    使用 to_tsvector('chinese', title || ' ' || content) 自定义函数触发器，
-    #    因为内置 tsvector_update_trigger 不支持多列拼接表达式，只能逐列累加。
-    #    实际上内置触发器支持多列：tsvector_update_trigger(tsv, 'cfg', col1, col2)
-    #    会按权重 D 自动累加，符合我们的需求。
+    # tsvector 触发器（PG 内置函数，自动维护 content_tsv）。
+    # 内置 tsvector_update_trigger 支持多列：tsvector_update_trigger(tsv, 'cfg', col1, col2)
+    # 会按权重 D 自动累加，符合需求。
     await session.execute(text("DROP TRIGGER IF EXISTS trg_knowledge_node_tsv ON knowledge_node"))
     await session.execute(
         text(
@@ -110,21 +106,6 @@ async def init_knowledge_schema(session: AsyncSession) -> None:
             "BEFORE INSERT OR UPDATE ON knowledge_node "
             "FOR EACH ROW EXECUTE FUNCTION "
             "tsvector_update_trigger(content_tsv, 'public.chinese', title, content)"
-        )
-    )
-
-    # 2. RLS 策略：项目级隔离
-    #    current_setting(name, true) 第二参数 true 表示缺失时返回 NULL 而非报错
-    #    NULL = project_id 永远为 NULL（NULL 语义），未注入上下文时返回 0 行
-    #    幂等：DROP POLICY IF EXISTS + CREATE POLICY（CREATE POLICY 不支持 IF NOT EXISTS）
-    await session.execute(text("ALTER TABLE knowledge_node ENABLE ROW LEVEL SECURITY"))
-    await session.execute(
-        text("DROP POLICY IF EXISTS knowledge_project_isolation ON knowledge_node")
-    )
-    await session.execute(
-        text(
-            "CREATE POLICY knowledge_project_isolation ON knowledge_node "
-            "USING (project_id::text = current_setting('app.current_project_id', true))"
         )
     )
 

@@ -25,7 +25,6 @@ from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
 from mem_lake.auth.service import (
-    AccessKeyNotFoundError,
     create_access_key,
     list_access_keys,
     revoke_access_key,
@@ -423,7 +422,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     )
                 else:
                     raise ValueError(f"未知 action: {action}")
-        except (AccessKeyNotFoundError, ValueError, Exception) as e:
+        except Exception as e:
             raise to_tool_error(e)
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)

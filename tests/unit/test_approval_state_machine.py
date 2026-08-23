@@ -509,8 +509,10 @@ class TestMergeConflictHints:
         assert len(result["details"]) == 1
         assert result["details"][0]["node_id"] == "n1"
 
-    def test_one_node_with_conflict_manual_merge(self):
-        """单节点冲突 suggestion=manual_merge：聚合建议为 manual_merge。"""
+    def test_one_node_with_conflict_non_review_suggestion(self):
+        """单节点冲突 suggestion 非 review（如 historical manual_merge）：
+        聚合 suggestion 为 None（detect_conflicts 只产 review/None，manual_merge
+        不再特殊区分）。"""
         hints = [
             {
                 "node_id": "n1",
@@ -524,10 +526,10 @@ class TestMergeConflictHints:
         ]
         result = _merge_conflict_hints(hints)
         assert result["has_conflict"] is True
-        assert result["suggestion"] == "manual_merge"
+        assert result["suggestion"] is None
 
     def test_mixed_suggestions_review_wins(self):
-        """多节点冲突，review + manual_merge 同时存在，聚合建议优先 review。"""
+        """多节点冲突，review + 非 review 同时存在，聚合建议 review。"""
         hints = [
             {
                 "node_id": "n1",
@@ -544,8 +546,8 @@ class TestMergeConflictHints:
         assert result["nodes_with_conflict"] == 2
         assert result["suggestion"] == "review"  # review 优先
 
-    def test_all_manual_merge_suggestions(self):
-        """所有冲突节点均为 manual_merge：聚合建议为 manual_merge。"""
+    def test_all_non_review_suggestions(self):
+        """所有冲突节点均为非 review（manual_merge）：聚合建议为 None。"""
         hints = [
             {
                 "node_id": "n1",
@@ -559,7 +561,7 @@ class TestMergeConflictHints:
             },
         ]
         result = _merge_conflict_hints(hints)
-        assert result["suggestion"] == "manual_merge"
+        assert result["suggestion"] is None
 
     def test_details_only_contains_conflict_nodes(self):
         """details 仅含 has_conflict=True 的节点，无冲突节点被过滤。"""

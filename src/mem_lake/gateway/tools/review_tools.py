@@ -191,7 +191,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                 return _to_batch_detail_output(batch)
             finally:
                 await session.close()
-        except (BatchNotFoundError, Exception) as e:
+        except Exception as e:
             raise to_tool_error(e)
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)

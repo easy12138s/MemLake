@@ -1,13 +1,13 @@
-"""M3 集成测试：knowledge_node 表结构、索引、tsvector 触发器与 RLS 策略。
+"""M3 集成测试：knowledge_node 表结构、索引、tsvector 触发器。
 
 按实际调用场景验证：
 1. knowledge_node 表存在且字段类型正确
 2. 三个关键索引存在（HNSW 向量索引、GIN tsvector 索引、GIN tags 索引）
 3. tsvector 触发器自动维护 content_tsv（INSERT/UPDATE 后非空）
 4. tsvector 内容基于 chinese 配置（zhparser 中文分词）
-5. RLS 策略存在且 ENABLE ROW LEVEL SECURITY 已启用
-6. RLS 策略基于 current_setting('app.current_project_id') 过滤
-7. owner 用户可绕过 RLS（不 FORCE），符合设计预期
+
+项目隔离由应用层 validate_project_access + FilterSpec 实现（RLS 策略已移除，
+见 db/init.py init_knowledge_schema 注释）。
 
 事务回滚隔离，所有写入结束 rollback，不影响其他测试。
 """
@@ -15,8 +15,6 @@
 import uuid
 
 from sqlalchemy import text
-
-from mem_lake.auth.rls import set_project_context
 
 
 async def test_knowledge_node_table_exists(db_session):
@@ -165,156 +163,6 @@ async def test_tsvector_updated_on_content_change(db_session):
     # 新内容应出现在 tsv 中，旧内容应消失（或至少新词出现）
     # 由于 zhparser 分词细节不固定，仅校验 tsv 非空且不为旧值
     assert len(tsv_str) > 0
-
-
-async def test_rls_policy_exists(db_session):
-    """RLS 策略 knowledge_project_isolation 已创建。"""
-    result = await db_session.execute(
-        text(
-            "SELECT polname, polcmd FROM pg_policy "
-            "WHERE polrelid = 'knowledge_node'::regclass "
-            "AND polname = 'knowledge_project_isolation'"
-        )
-    )
-    row = result.first()
-    assert row is not None
-    assert row[0] == "knowledge_project_isolation"
-    # polcmd = '*' 表示 ALL 命令
-    assert row[1] in ("*", "r")
-
-
-async def test_rls_enabled_on_table(db_session):
-    """knowledge_node 表 ENABLE ROW LEVEL SECURITY 已启用（relrowsecurity = true）。"""
-    result = await db_session.execute(
-        text(
-            "SELECT relrowsecurity, relforcerowsecurity "
-            "FROM pg_class WHERE relname = 'knowledge_node'"
-        )
-    )
-    row = result.first()
-    assert row is not None
-    assert row[0] is True  # RLS enabled
-    # 设计决策：不 FORCE（owner 可绕过，生产用非 owner 用户）
-    assert row[1] is False  # not FORCED
-
-
-async def test_rls_filter_by_project_context(db_session):
-    """RLS 策略基于 current_setting('app.current_project_id') 过滤。
-
-    场景：插入两条不同 project_id 的节点，
-    - 设置 project_id 上下文为 pid1 后查询，仅返回 pid1 的节点
-    - 设置 project_id 上下文为 pid2 后查询，仅返回 pid2 的节点
-
-    注意：测试连接用户为表 owner（memlake），owner 默认绕过 RLS。
-    需临时切换为非 owner 角色验证 RLS 生效，或使用 SET ROLE 模拟。
-    """
-    # 由于 owner 绕过 RLS，需用 SET ROLE 模拟非 owner 用户
-    # 先确认是否有可用的非 owner 角色；若无则跳过此测试
-    pid1 = uuid.uuid4()
-    pid2 = uuid.uuid4()
-    node1_id = uuid.uuid4()
-    node2_id = uuid.uuid4()
-
-    # 插入两条不同 project_id 的节点
-    await db_session.execute(
-        text(
-            "INSERT INTO knowledge_node (id, project_id, type, title, content, "
-            "properties, tags, source, status, version, created_by) "
-            "VALUES (:id, :pid, 'Requirement', 'R1', 'c1', "
-            "'{}'::jsonb, '[]'::jsonb, '{}'::jsonb, 'approved', 1, 't')"
-        ),
-        {"id": node1_id, "pid": pid1},
-    )
-    await db_session.execute(
-        text(
-            "INSERT INTO knowledge_node (id, project_id, type, title, content, "
-            "properties, tags, source, status, version, created_by) "
-            "VALUES (:id, :pid, 'Requirement', 'R2', 'c2', "
-            "'{}'::jsonb, '[]'::jsonb, '{}'::jsonb, 'approved', 1, 't')"
-        ),
-        {"id": node2_id, "pid": pid2},
-    )
-
-    # 创建临时非 owner 角色测试 RLS
-    # 先检查是否已有 memlake_user 角色或类似
-    role_check = await db_session.execute(
-        text("SELECT 1 FROM pg_roles WHERE rolname = 'memlake_user'")
-    )
-    if role_check.first() is None:
-        # 创建非 owner 角色并授予 SELECT 权限
-        await db_session.execute(text("CREATE ROLE memlake_user NOBYPASSRLS"))
-        await db_session.execute(
-            text("GRANT SELECT ON knowledge_node TO memlake_user")
-        )
-
-    try:
-        # 切换为非 owner 角色
-        await db_session.execute(text("SET LOCAL ROLE memlake_user"))
-
-        # 注入 pid1 上下文，应只看到 pid1 的节点
-        await set_project_context(db_session, pid1)
-        result = await db_session.execute(
-            text("SELECT id FROM knowledge_node WHERE project_id = :pid"),
-            {"pid": pid1},
-        )
-        visible_ids = {row[0] for row in result}
-        assert node1_id in visible_ids
-        assert node2_id not in visible_ids
-
-        # 切换到 pid2 上下文
-        await set_project_context(db_session, pid2)
-        result = await db_session.execute(
-            text("SELECT id FROM knowledge_node WHERE project_id = :pid"),
-            {"pid": pid2},
-        )
-        visible_ids = {row[0] for row in result}
-        assert node2_id in visible_ids
-        assert node1_id not in visible_ids
-    finally:
-        # 恢复角色（SET LOCAL ROLE 在事务结束自动重置，但显式重置更安全）
-        await db_session.execute(text("RESET ROLE"))
-
-
-async def test_rls_no_context_returns_empty(db_session):
-    """未注入 project_id 上下文时，RLS 策略返回 0 行（NULL 语义）。
-
-    current_setting('app.current_project_id', true) 未设置时返回 NULL，
-    project_id::text = NULL 永远为 NULL（非 true），RLS 过滤后无可见行。
-    """
-    pid = uuid.uuid4()
-    node_id = uuid.uuid4()
-    await db_session.execute(
-        text(
-            "INSERT INTO knowledge_node (id, project_id, type, title, content, "
-            "properties, tags, source, status, version, created_by) "
-            "VALUES (:id, :pid, 'Requirement', 'R', 'c', "
-            "'{}'::jsonb, '[]'::jsonb, '{}'::jsonb, 'approved', 1, 't')"
-        ),
-        {"id": node_id, "pid": pid},
-    )
-
-    # 切换非 owner 角色
-    role_check = await db_session.execute(
-        text("SELECT 1 FROM pg_roles WHERE rolname = 'memlake_user'")
-    )
-    if role_check.first() is None:
-        await db_session.execute(text("CREATE ROLE memlake_user NOBYPASSRLS"))
-        await db_session.execute(
-            text("GRANT SELECT ON knowledge_node TO memlake_user")
-        )
-
-    try:
-        await db_session.execute(text("SET LOCAL ROLE memlake_user"))
-        # 显式 RESET 确保上下文为空
-        await db_session.execute(text("RESET app.current_project_id"))
-
-        result = await db_session.execute(
-            text("SELECT id FROM knowledge_node")
-        )
-        visible = list(result)
-        assert len(visible) == 0
-    finally:
-        await db_session.execute(text("RESET ROLE"))
 
 
 async def test_vector_column_dimension(db_session):
