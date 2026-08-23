@@ -197,6 +197,10 @@ class ManageProjectProfileOutput(BaseModel):
     action: str = Field(description="操作类型：create/update")
     status: str = Field(description="节点状态：approved（直接审批豁免）")
     version: int = Field(description="版本号")
+    warning: str | None = Field(
+        default=None,
+        description="操作提示（如 create 时项目已有画像节点，供调用方知情）",
+    )
 
 
 def _resolve_profile_id(project_id: uuid.UUID | None) -> uuid.UUID:
@@ -217,7 +221,9 @@ def _normalize_uuid_list(
     - 列表：[UUID | str, ...]
     - 字符串：逗号/空格/分号分隔（或 JSON 数组字符串），如 "id1,id2" / "[id1,id2]"
     部分客户端会将数组序列化成字符串，这里在工具层归一化，避免 pydantic 因
-    "收到字符串而非列表" 直接报错。非法片段会被跳过（保持容错）。
+    "收到字符串而非列表" 直接报错（AUDIT §2.16/P2#10）。
+    输入非空但全片段非法时抛 ValueError——此前静默跳过会导致 update_scope
+    变成无提示的空操作。
     """
     if value is None:
         return None
@@ -242,6 +248,8 @@ def _normalize_uuid_list(
             result.append(uuid.UUID(str(item).strip()))
         except (ValueError, AttributeError):
             continue
+    if items and not result:
+        raise ValueError("key_id 列表全部为非法 UUID（请输入合法 UUID 列表）")
     return result
 
 
@@ -465,16 +473,35 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         created_by=key_id,
                         generate_vector=True,
                     )
+                    # create 时若项目已存在画像节点，附提示供调用方知情
+                    # （AUDIT §2.16/§2.4：多处"取最新画像"策略下重复画像会静默漂移）
+                    existing = await _has_approved_profile(
+                        session, profile_id, node.id
+                    )
                     return ManageProjectProfileOutput(
                         project_id=profile_id,
                         node_id=node.id,
                         action="create",
                         status=node.status,
                         version=node.version,
+                        warning=(
+                            "该项目已存在其他 approved 画像节点，get_project_profile"
+                            " 将取最新一条" if existing else None
+                        ),
                     )
                 elif action == "update":
                     if not node_id:
                         raise ValueError("update 操作必须指定 node_id")
+                    # 校验目标节点确实是 ProjectProfile（AUDIT §2.16：此前
+                    # 可修改任意类型节点，语义漂移）
+                    from mem_lake.knowledge.repository import get_node
+
+                    target = await get_node(session, node_id)
+                    if target.type != "ProjectProfile":
+                        raise ValueError(
+                            f"node_id 非 ProjectProfile 类型: {target.type}，"
+                            "manage_project_profile 仅维护项目画像节点"
+                        )
                     props = _profile_properties(profile)
                     node = await update_node(
                         session,
@@ -489,7 +516,9 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         regenerate_vector=True,
                     )
                     return ManageProjectProfileOutput(
-                        project_id=profile_id,
+                        # 出参 project_id 取实际节点归属（AUDIT §2.16：此前
+                        # update 未传 project_id 时误用随机新生成的 profile_id）
+                        project_id=node.project_id,
                         node_id=node.id,
                         action="update",
                         status=node.status,
@@ -564,6 +593,30 @@ def register_manage_tools(mcp: FastMCP) -> None:
 # ============================================================================
 # 转换辅助函数
 # ============================================================================
+
+
+async def _has_approved_profile(
+    session, project_id, exclude_node_id
+) -> bool:
+    """判断项目下是否存在其他 approved 画像节点（供 create 提示）。
+
+    exclude_node_id 排除本次新建的画像（避免自检）。
+    """
+    from sqlalchemy import select
+
+    from mem_lake.knowledge.models import KnowledgeNode
+
+    stmt = (
+        select(KnowledgeNode.id)
+        .where(KnowledgeNode.project_id == project_id)
+        .where(KnowledgeNode.type == "ProjectProfile")
+        .where(KnowledgeNode.status == "approved")
+        .where(KnowledgeNode.is_deleted.is_(False))
+        .where(KnowledgeNode.id != exclude_node_id)
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
 
 
 def _profile_properties(profile: "ProjectProfileInput") -> dict:

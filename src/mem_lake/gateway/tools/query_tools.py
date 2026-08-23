@@ -132,15 +132,18 @@ class GetProjectInfoOutput(BaseModel):
 
 
 class RelatedNodeOutput(BaseModel):
-    """关联节点项。"""
+    """关联节点项。
 
+    edge_type/direction/depth 为占位（当前图遍历不透出边类型/方向/实际距离，
+    edge_type 恒为 "unknown"、direction 恒为 "unknown"、depth 恒为 1）。
+    """
     node_id: uuid.UUID = Field(description="节点 ID")
     title: str = Field(description="节点标题")
     content: str = Field(description="节点摘要（前 200 字符）")
     node_type: str = Field(description="节点类型")
-    edge_type: str = Field(description="关联边类型")
-    direction: str = Field(description="方向：outgoing/incoming")
-    depth: int = Field(description="与起点的距离（1=直接相邻）")
+    edge_type: str = Field(description="关联边类型（当前均为 unknown 占位）")
+    direction: str = Field(description="方向（当前均为 unknown 占位）")
+    depth: int = Field(description="与起点的距离（当前均为 1 占位）")
 
 
 class RequirementContextOutput(BaseModel):
@@ -364,16 +367,16 @@ def register_query_tools(mcp: FastMCP) -> None:
                     filters=filters,
                 )
 
-                # 3. 转换为 RelatedNodeOutput（GraphSearcher.traverse 不返回方向/边类型，
-                #    此处用 source="graph" 占位，深度统一为 1）
+                # 3. 转换为 RelatedNodeOutput（GraphSearcher.traverse 不返回方向/边类型/实际
+                #    距离；edge_type/direction 用 unknown 如实占位，深度统一 1）
                 related = [
                     RelatedNodeOutput(
                         node_id=r.node_id,
                         title=r.title,
                         content=r.content,
                         node_type=r.node_type,
-                        edge_type="related",
-                        direction="outgoing",
+                        edge_type="unknown",
+                        direction="unknown",
                         depth=1,
                     )
                     for r in results

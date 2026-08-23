@@ -61,6 +61,14 @@ def test_normalize_uuid_list_skips_invalid_and_empty():
     assert _normalize_uuid_list(None) is None
 
 
+def test_normalize_uuid_list_all_invalid_raises():
+    """全部片段非法时抛错（AUDIT §2.16：此前静默跳过导致空操作无提示）。"""
+    import pytest
+
+    with pytest.raises(ValueError, match="全部为非法"):
+        _normalize_uuid_list("not-a-uuid, still-not")
+
+
 def test_build_mcp_config_contains_url_and_key():
     """_build_mcp_config 产出合法 JSON，含 url 与 X-MCP-Key 头。"""
     url = "http://example:8000/mcp"
