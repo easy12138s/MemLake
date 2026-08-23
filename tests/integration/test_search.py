@@ -1,4 +1,4 @@
-"""M4 集成测试：三引擎检索（向量 + 全文 + 图遍历 + RRF 融合）。
+﻿"""M4 集成测试：三引擎检索（向量 + 全文 + 图遍历 + RRF 融合）。
 
 按实际调用场景验证：
 1. VectorSearcher：相似节点检索、top_k 限制、FilterSpec 过滤（项目/类型/软删除）
@@ -358,6 +358,17 @@ class TestGraphSearch:
             properties=knowledge_helpers["Solution"](),
             created_by="ak",
         )
+        d = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="DesignIntent",
+            title="意图 D",
+            content="意图 D 内容",
+            properties=knowledge_helpers["DesignIntent"](),
+            created_by="ak",
+        )
 
         from mem_lake.knowledge.repository import add_edge
 
@@ -379,14 +390,23 @@ class TestGraphSearch:
             properties={"created_by": "ak"},
             actor="ak",
         )
+        await add_edge(
+            db_session,
+            graph_store=graph_store,
+            from_id=c.id,
+            to_id=d.id,
+            edge_type="embodies",
+            properties={"created_by": "ak"},
+            actor="ak",
+        )
 
-        return project_id, a, b, c
+        return project_id, a, b, c, d
 
     async def test_graph_traverse_neighbors(
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
         """traverse(a, depth=2) 返回 b 和 c。"""
-        pid, a, b, c = await self._seed_graph_chain(
+        pid, a, b, c, d = await self._seed_graph_chain(
             db_session, graph_store, mock_embedding_client, knowledge_helpers
         )
 
@@ -405,7 +425,7 @@ class TestGraphSearch:
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
         """edge_type 过滤：只返回指定边类型的邻居。"""
-        pid, a, b, c = await self._seed_graph_chain(
+        pid, a, b, c, d = await self._seed_graph_chain(
             db_session, graph_store, mock_embedding_client, knowledge_helpers
         )
 
@@ -422,7 +442,7 @@ class TestGraphSearch:
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
         """subgraph 返回节点与边。"""
-        pid, a, b, c = await self._seed_graph_chain(
+        pid, a, b, c, d = await self._seed_graph_chain(
             db_session, graph_store, mock_embedding_client, knowledge_helpers
         )
 
@@ -435,7 +455,7 @@ class TestGraphSearch:
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
         """find_path 返回 a→b→c 的路径。"""
-        pid, a, b, c = await self._seed_graph_chain(
+        pid, a, b, c, d = await self._seed_graph_chain(
             db_session, graph_store, mock_embedding_client, knowledge_helpers
         )
 
@@ -448,8 +468,8 @@ class TestGraphSearch:
     async def test_graph_impact_analysis(
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
-        """影响范围分析：从需求遍历到代码与方案。"""
-        pid, a, b, c = await self._seed_graph_chain(
+        """影响范围分析：从需求遍历到代码、方案与设计意图（design_intents 独立返回）。"""
+        pid, a, b, c, d = await self._seed_graph_chain(
             db_session, graph_store, mock_embedding_client, knowledge_helpers
         )
 
@@ -460,8 +480,63 @@ class TestGraphSearch:
         assert result["requirement"] is not None
         assert len(result["codes"]) >= 1
         # b 是 a 的实现代码
-        code_ids = {(c.get("properties") or {}).get("id") for c in result["codes"]}
+        code_ids = {(n.get("properties") or {}).get("id") for n in result["codes"]}
         assert str(b.id) in code_ids
+        # c 是 b 的实现方案（Solution），进 solutions 而非 design_intents
+        sol_ids = {(n.get("properties") or {}).get("id") for n in result["solutions"]}
+        assert str(c.id) in sol_ids
+        # d 是 c 体现的设计意图（DesignIntent），独立列表返回（审计 §2.4：此前恒空）
+        intent_ids = {
+            (n.get("properties") or {}).get("id") for n in result["design_intents"]
+        }
+        assert str(d.id) in intent_ids
+        # DesignIntent 不得混入 solutions
+        assert str(d.id) not in sol_ids
+
+    async def test_graph_impact_analysis_filters_archived(
+        self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
+    ):
+        """归档节点不出现在影响分析结果中（审计 §2.4：图投影保留但按 PG 状态过滤）。"""
+        from mem_lake.knowledge.repository import archive_node
+
+        pid, a, b, c, d = await self._seed_graph_chain(
+            db_session, graph_store, mock_embedding_client, knowledge_helpers
+        )
+        # 归档方案 c（软删除：is_deleted=True + status=archived，图投影默认保留）
+        await archive_node(
+            db_session, graph_store=graph_store, node_id=c.id, actor="ak"
+        )
+
+        result = await graph_searcher.impact_analysis(
+            db_session, requirement_id=a.id
+        )
+
+        sol_ids = {(n.get("properties") or {}).get("id") for n in result["solutions"]}
+        intent_ids = {
+            (n.get("properties") or {}).get("id") for n in result["design_intents"]
+        }
+        assert str(c.id) not in sol_ids  # 归档方案被过滤
+        assert str(d.id) not in intent_ids  # c 的意图经 c-embodies->d，c 归档后 d 不可达
+
+    async def test_graph_impact_analysis_requirement_archived(
+        self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
+    ):
+        """需求本身归档：返回全空结果（requirement=None）。"""
+        from mem_lake.knowledge.repository import archive_node
+
+        pid, a, b, c, d = await self._seed_graph_chain(
+            db_session, graph_store, mock_embedding_client, knowledge_helpers
+        )
+        await archive_node(
+            db_session, graph_store=graph_store, node_id=a.id, actor="ak"
+        )
+
+        result = await graph_searcher.impact_analysis(
+            db_session, requirement_id=a.id
+        )
+        assert result["requirement"] is None
+        assert result["codes"] == []
+        assert result["solutions"] == []
 
 
 # ============ hybrid_search 测试 ============
