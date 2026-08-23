@@ -37,6 +37,7 @@ from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     to_tool_error,
 )
+from mem_lake.config import get_settings
 from mem_lake.knowledge.repository import list_nodes_by_project
 from mem_lake.knowledge.schema import SchemaValidationError
 from mem_lake.search.filters import FilterSpec
@@ -179,12 +180,15 @@ def register_search_tools(mcp: FastMCP) -> None:
         PM/Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
         注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
-        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）。
+        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）；
+        fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
+        query 不能为空（空查询下全文引擎无排序依据）。
         """
         try:
             validate_project_access(project_id)
+            _validate_query(query)
             return await _run_hybrid_search(
                 project_id=project_id,
                 query=query,
@@ -227,12 +231,15 @@ def register_search_tools(mcp: FastMCP) -> None:
         除代码片段外，踩坑(Pitfall)/方案(Solution)/设计意图(DesignIntent) 也会一并召回，
         便于「踩过的坑」「采用的方案」等经验类检索。返回项的 node_type 区分具体类型。
         注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
-        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）。
+        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）；
+        fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
+        query 不能为空（空查询下全文引擎无排序依据）。
         """
         try:
             validate_project_access(project_id)
+            _validate_query(query)
             return await _run_hybrid_search(
                 project_id=project_id,
                 query=query,
@@ -293,9 +300,10 @@ def register_search_tools(mcp: FastMCP) -> None:
         requirement_id: uuid.UUID = Field(
             description="被检测的需求节点 ID（自动排除自身）"
         ),
-        threshold: float = Field(
-            default=0.85,
-            description="相似度阈值（0~1），仅返回 score >= threshold 的结果",
+        threshold: float | None = Field(
+            default=None,
+            description="相似度阈值（0~1），仅返回 score >= threshold 的结果；"
+            "None 时用配置 CONFLICT_SIMILARITY_THRESHOLD（默认 0.85）",
         ),
         top_n: int = Field(
             default=20, description="检索召回数量上限（融合后）"
@@ -304,11 +312,17 @@ def register_search_tools(mcp: FastMCP) -> None:
         """向量检索检测需求冲突（同项目同类型高相似度节点）。
 
         PM 工具。基于向量相似度检测与指定需求冲突的潜在重复/矛盾需求。
-        自动排除自身节点，仅返回 score >= threshold 的结果。
+        自动排除自身节点，仅返回 score >= threshold 的结果。threshold 缺省读
+        配置 CONFLICT_SIMILARITY_THRESHOLD（与审批流冲突检测同一阈值来源，
+        避免双源脱钩；AUDIT §2.10）。本工具为纯向量相似度过滤，不含审批层
+        detect_conflicts 的 L2 关键属性比对——二者定位不同（前者给 PM 主动
+        排查，后者是审批质量门禁）。
         has_conflict=true 时 suggestion 推荐 review（人工核查）或 manual_merge（高相似度合并）。
         """
         try:
             validate_project_access(project_id)
+            if threshold is None:
+                threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
             ctx = get_context()
             lifespan_ctx = ctx.lifespan_context
 
@@ -533,3 +547,11 @@ def _get_graph_searcher(lifespan_ctx):
     """
     from mem_lake.search.graph import GraphSearcher
     return GraphSearcher(lifespan_ctx.graph_store)
+
+
+def _validate_query(query: str) -> None:
+    """校验检索 query 非空（空查询全文引擎无排序依据，返回任意顺序）。"""
+    if not query or not query.strip():
+        from mem_lake.approval.service import PayloadValidationError
+
+        raise PayloadValidationError("query 不能为空")
