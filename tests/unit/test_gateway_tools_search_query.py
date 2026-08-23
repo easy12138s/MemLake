@@ -22,7 +22,6 @@ from mem_lake.gateway.tools.query_tools import (
     QueryAuditLogOutput,
     RelatedNodeOutput,
     RequirementContextOutput,
-    _match_time_range,
     _to_audit_log_item_output,
 )
 from mem_lake.gateway.tools.search_tools import (
@@ -155,63 +154,24 @@ class TestToKnowledgeNodeOutput:
 # ============================================================================
 
 
-class TestMatchTimeRange:
-    """_match_time_range 时间范围过滤测试。"""
+class TestValidateAndThreshold:
+    """审计 §2.6/§2.10/P2#9：空 query 校验 + 冲突阈值统一读配置。"""
 
-    def test_no_filter_returns_true(self):
-        """无 start_time 和 end_time 时始终返回 True。"""
-        created = datetime(2026, 8, 2, 12, 0, 0)
-        assert _match_time_range(created, None, None) is True
+    def test_query_validate_rejects_empty(self):
+        """空 query 拒绝。"""
+        from mem_lake.approval.service import PayloadValidationError
+        from mem_lake.gateway.tools.search_tools import _validate_query
 
-    def test_start_time_filter(self):
-        """start_time 过滤。"""
-        created = datetime(2026, 8, 2, 12, 0, 0)
-        # 在 start 之后
-        assert _match_time_range(created, datetime(2026, 8, 2, 10, 0, 0), None) is True
-        # 在 start 之前
-        assert _match_time_range(created, datetime(2026, 8, 2, 14, 0, 0), None) is False
+        with pytest.raises(PayloadValidationError):
+            _validate_query("")
+        with pytest.raises(PayloadValidationError):
+            _validate_query("   ")
 
-    def test_end_time_filter(self):
-        """end_time 过滤。"""
-        created = datetime(2026, 8, 2, 12, 0, 0)
-        # 在 end 之前
-        assert _match_time_range(created, None, datetime(2026, 8, 2, 14, 0, 0)) is True
-        # 在 end 之后
-        assert _match_time_range(created, None, datetime(2026, 8, 2, 10, 0, 0)) is False
+    def test_query_validate_accepts_non_empty(self):
+        """非空 query 通过。"""
+        from mem_lake.gateway.tools.search_tools import _validate_query
 
-    def test_both_filters(self):
-        """start_time + end_time 双向过滤。"""
-        created = datetime(2026, 8, 2, 12, 0, 0)
-        # 在范围内
-        assert (
-            _match_time_range(
-                created,
-                datetime(2026, 8, 2, 10, 0, 0),
-                datetime(2026, 8, 2, 14, 0, 0),
-            )
-            is True
-        )
-        # 在范围外
-        assert (
-            _match_time_range(
-                created,
-                datetime(2026, 8, 2, 13, 0, 0),
-                datetime(2026, 8, 2, 14, 0, 0),
-            )
-            is False
-        )
-
-    def test_boundary_inclusive(self):
-        """边界值包含（created_at == start_time 或 == end_time）。"""
-        created = datetime(2026, 8, 2, 12, 0, 0)
-        # created == start_time
-        assert (
-            _match_time_range(created, datetime(2026, 8, 2, 12, 0, 0), None) is True
-        )
-        # created == end_time
-        assert (
-            _match_time_range(created, None, datetime(2026, 8, 2, 12, 0, 0)) is True
-        )
+        _validate_query("登录")
 
 
 # ============================================================================

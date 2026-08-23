@@ -6,6 +6,7 @@ append-only 语义：本模块仅提供 INSERT（write_audit_log）与 SELECT（
 """
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,6 +52,8 @@ async def query_audit_logs(
     target_type: str | None = None,
     target_id: uuid.UUID | None = None,
     project_id: uuid.UUID | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[AuditLog]:
@@ -58,6 +61,8 @@ async def query_audit_logs(
 
     动态构建 WHERE 条件（非 None 才过滤），按 created_at DESC 排序，limit/offset 分页。
     project_id 过滤实现按项目隔离审计（Admin 审计追溯）。
+    start_time/end_time 在 SQL 层过滤（created_at 范围），与分页组合正确
+    （应用层过滤会导致跨页漏数据，见 AUDIT §2.6）。
     """
     stmt = select(AuditLog)
     if actor is not None:
@@ -70,6 +75,10 @@ async def query_audit_logs(
         stmt = stmt.where(AuditLog.target_id == target_id)
     if project_id is not None:
         stmt = stmt.where(AuditLog.project_id == project_id)
+    if start_time is not None:
+        stmt = stmt.where(AuditLog.created_at >= start_time)
+    if end_time is not None:
+        stmt = stmt.where(AuditLog.created_at <= end_time)
 
     stmt = stmt.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(stmt)

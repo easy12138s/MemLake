@@ -436,17 +436,11 @@ def register_query_tools(mcp: FastMCP) -> None:
                     target_type=target_type,
                     target_id=target_id,
                     project_id=project_id,
+                    start_time=start_time,
+                    end_time=end_time,
                     limit=limit,
                     offset=offset,
                 )
-
-                # 时间范围过滤（PG 层不支持，在应用层过滤）
-                if start_time is not None or end_time is not None:
-                    logs = [
-                        log
-                        for log in logs
-                        if _match_time_range(log.created_at, start_time, end_time)
-                    ]
 
                 return QueryAuditLogOutput(
                     logs=[_to_audit_log_item_output(log) for log in logs],
@@ -463,19 +457,6 @@ def register_query_tools(mcp: FastMCP) -> None:
 # ============================================================================
 # 辅助函数
 # ============================================================================
-
-
-def _match_time_range(
-    created_at: datetime,
-    start_time: datetime | None,
-    end_time: datetime | None,
-) -> bool:
-    """判断 created_at 是否在 [start_time, end_time] 范围内。"""
-    if start_time is not None and created_at < start_time:
-        return False
-    if end_time is not None and created_at > end_time:
-        return False
-    return True
 
 
 def _to_audit_log_item_output(log) -> AuditLogItemOutput:
