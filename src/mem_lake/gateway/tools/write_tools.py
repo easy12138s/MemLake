@@ -1,4 +1,4 @@
-﻿"""写入类工具：产生审批批次，等待 admin 审批。
+"""写入类工具：产生审批批次，等待 admin 审批。
 
 工具职责：构造审批项（node/edge items）并提交批次，不在工具层写入知识图谱。
 所有写操作经 admin 审批通过后由 approval/service 原子写入图谱。
@@ -45,6 +45,7 @@ from mem_lake.gateway.tools._shared import (
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     get_node,
+    get_nodes_by_ids,
     list_project_profiles,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -228,6 +229,16 @@ def register_write_tools(mcp: FastMCP) -> None:
             validate_project_access(project_id)
             _check_content_length(requirement.content, "Requirement.content")
             key_id = get_current_key_id()
+            # 提交前校验关联引用的 requirement_id 存在且类型为 Requirement
+            # （AUDIT §2.15：此前缺存在性校验，错误引用延迟到审批通过才失败）
+            if related:
+                ref_ids = [
+                    *(related.supersedes or []),
+                    *(related.relates_to or []),
+                ]
+                await _validate_requirement_refs(
+                    project_id, ref_ids, "related 引用"
+                )
             items = _build_publish_items(project_id, requirement, related, key_id)
 
             async with transactional_session() as session:
@@ -262,6 +273,16 @@ def register_write_tools(mcp: FastMCP) -> None:
             validate_project_access(project_id)
             if not relations:
                 raise PayloadValidationError("relations 不能为空")
+
+            # 提交前校验两端节点存在且类型为 Requirement（AUDIT §2.15：
+            # 此前 docstring 声称"必须为 Requirement"但未实现校验）
+            ref_ids = [
+                *(str(r.from_id) for r in relations),
+                *(str(r.to_id) for r in relations),
+            ]
+            await _validate_requirement_refs(
+                project_id, ref_ids, "需求关系引用"
+            )
 
             items = [
                 build_edge_item(
@@ -445,6 +466,48 @@ def register_write_tools(mcp: FastMCP) -> None:
 # ============================================================================
 # items 构造辅助
 # ============================================================================
+
+
+async def _validate_requirement_refs(
+    project_id: uuid.UUID, ref_ids: list[str], label: str
+) -> None:
+    """提交前校验引用的 requirement_id 存在、类型为 Requirement、归属本项目。
+
+    用于 publish_requirement 的 related 与 update_requirement_relations 的
+    from_id/to_id。此前缺该校验，错误引用延迟到审批通过时 _execute_edge_create
+    的 get_node 才失败（AUDIT §2.15）。提交时拦截，审批体验更好。
+    """
+    if not ref_ids:
+        return
+    session = await get_readonly_session()
+    try:
+        try:
+            uuids = [uuid.UUID(r) for r in ref_ids]
+        except (ValueError, TypeError, AttributeError) as e:
+            raise PayloadValidationError(
+                f"{label} 含非法 UUID: {e}"
+            ) from e
+
+        nodes = await get_nodes_by_ids(
+            session, node_ids=list(set(uuids)), status=None
+        )
+        node_map = {n.id: n for n in nodes}
+        missing = [str(u) for u in set(uuids) if u not in node_map]
+        if missing:
+            raise PayloadValidationError(
+                f"{label} 引用不存在: {missing}"
+            )
+        for n in nodes:
+            if n.type != "Requirement":
+                raise PayloadValidationError(
+                    f"{label} 引用非 Requirement 类型: {n.id} ({n.type})"
+                )
+            if str(n.project_id) != str(project_id):
+                raise PayloadValidationError(
+                    f"{label} 引用不属于本项目: {n.id}"
+                )
+    finally:
+        await session.close()
 
 
 async def _get_project_profile_id(project_id: uuid.UUID) -> uuid.UUID | None:
