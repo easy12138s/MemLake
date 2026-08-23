@@ -50,7 +50,8 @@ async def detect_conflicts(
     session: AsyncSession,
     *,
     vector_searcher: VectorSearcher,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    system_id: uuid.UUID | None = None,
     node_type: str,
     title: str,
     content: str,
@@ -73,7 +74,8 @@ async def detect_conflicts(
     参数：
         session: 异步数据库会话
         vector_searcher: VectorSearcher 实例
-        project_id: 项目 ID（L1 过滤）
+        project_id: 项目 ID（L1 过滤；悬浮需求为 None）
+        system_id: 归属 system 域（L1 过滤；悬浮需求按此收口候选域），默认 None
         node_type: 节点类型（L1 过滤）
         title: 待检测节点标题
         content: 待检测节点正文
@@ -102,11 +104,14 @@ async def detect_conflicts(
     conflicting_nodes: list[dict] = []
     candidates_examined = 0
 
-    # L1 + L3：向量检索（FilterSpec 内含 project_id + node_type + status=approved 过滤）
+    # L1 + L3：向量检索（FilterSpec 内含 project_id/system_id + node_type + status=approved 过滤）
     # 查询文本用 build_embed_text（title+content+关键属性段），与 repository.create_node
     # 落库向量的构造一致（含属性段，属性富集提升"同实体"识别）。
     # query_vector 非空时跳过内部 embed，直接使用调用方批量预计算的查询向量（批量化优化）。
-    filters = FilterSpec(project_id=project_id, node_types=(node_type,))
+    # 悬浮需求（project_id=None）按 system_id 收口冲突候选域。
+    filters = FilterSpec(
+        project_id=project_id, system_id=system_id, node_types=(node_type,)
+    )
     if query_vector is not None:
         vector_results = await vector_searcher.search_by_vector(
             session, query_vector, top_k=top_k, filters=filters

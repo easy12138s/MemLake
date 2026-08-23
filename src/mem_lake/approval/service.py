@@ -304,10 +304,12 @@ async def review_approve(
 
             # 冲突检测（节点已写入，排除自身；可捕获同批次内先写入的重复节点）。
             # 使用预计算查询向量（conflict_query_vectors[qv_index]），跳过内部 embed。
+            # 悬浮节点（project_id=None）按 system_id 收口冲突候选域。
             conflict_hint = await detect_conflicts(
                 session,
                 vector_searcher=vector_searcher,
                 project_id=node.project_id,
+                system_id=node.system_id,
                 node_type=node.type,
                 title=node.title,
                 content=node.content,
@@ -522,10 +524,18 @@ async def auto_process_batch(
         checked_nodes += 1
         payload = item.payload or {}
 
+        # 悬浮需求（project_id=None，依附 system）按 system_id 收口冲突候选域；
+        # 归属需求仍按 project_id 检测。detect_conflicts 二者选一。
+        _pid_raw = payload.get("project_id")
+        _sid_raw = payload.get("system_id")
+        _conflict_pid = _to_uuid(_pid_raw) if _pid_raw else None
+        _conflict_sid = _to_uuid(_sid_raw) if _sid_raw else None
+
         conflict_result = await detect_conflicts(
             session,
             vector_searcher=vector_searcher,
-            project_id=_to_uuid(payload["project_id"]),
+            project_id=_conflict_pid,
+            system_id=_conflict_sid,
             node_type=item.entity_type,
             title=payload["title"],
             content=payload["content"],
@@ -965,8 +975,10 @@ def _merge_conflict_hints(hints: list[dict]) -> dict:
     }
 
 
-def _to_uuid(value: str | uuid.UUID) -> uuid.UUID:
-    """将字符串或 UUID 转换为 UUID。"""
+def _to_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
+    """将字符串或 UUID 转换为 UUID。None/空串返回 None（悬浮需求无 project_id 场景）。"""
+    if value is None or value == "":
+        return None
     if isinstance(value, uuid.UUID):
         return value
     return uuid.UUID(str(value))
