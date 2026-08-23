@@ -20,7 +20,9 @@ ACCESS_KEY_HEADER = "X-MCP-Key"
 # 协议版本头名（PDD 3.1 / 6.2）
 PROTOCOL_VERSION_HEADER = "MCP-Protocol-Version"
 
-# 支持的协议版本
+# 支持的协议版本（单值硬校验：互操作性收紧策略——客户端 initialize 的
+# protocolVersion 必须精确匹配本服务实现与测试过的版本，避免未验证的
+# 协议行为差异引入隐性兼容问题；MCP 发布新版本时需升级并回归后更新此值）
 SUPPORTED_PROTOCOL_VERSION = "2026-07-28"
 
 # 协议版本不一致错误码（PDD 3.1，落在 -32000~-32099 保留段）

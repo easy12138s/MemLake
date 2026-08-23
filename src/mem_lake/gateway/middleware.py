@@ -54,6 +54,12 @@ class AccessKeyAuthMiddleware(Middleware):
     读取 AccessToken（优先级高于 SDK context var），因此本中间件直接设置
     scope["user"] 即可让 get_access_token() 正常工作。
 
+    设计权衡（AUDIT §2.8）：每个请求执行一次 DB 查询 + bcrypt 校验（约
+    200-300ms CPU），不设缓存——这是有意取舍：吊销/轮换 Access Key 后立即
+    生效，不引入缓存失效窗口。当前单实例部署的吞吐上限受此约束（远低于
+    MCP_RATE_LIMIT_QPS 标称值）；若未来需要高吞吐，可评估带短 TTL 的
+    认证结果缓存（key_id + hash 前缀维度，吊销延迟可控）。
+
     不使用 FastMCP 的 auth= 参数 + TokenVerifier 链路，因为 BearerAuthBackend
     硬编码读取 Authorization: Bearer 头，不支持 X-MCP-Key。
 

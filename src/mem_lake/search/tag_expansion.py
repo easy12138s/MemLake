@@ -11,7 +11,12 @@
 """
 
 import logging
+import uuid
 from typing import Callable
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mem_lake.embedding.client import EmbeddingClient
 
 logger = logging.getLogger("mem_lake.search.tag_expansion")
 
@@ -61,8 +66,8 @@ def expand_query_tags(
 
 
 async def fetch_project_tag_vocab(
-    session,
-    project_id: "uuid.UUID",  # noqa: F821
+    session: AsyncSession,
+    project_id: uuid.UUID,
     node_type: str | None = None,
 ) -> list[str]:
     """从 knowledge_node 拉取项目内去重标签词表（用于语义扩展）。"""
@@ -72,10 +77,10 @@ async def fetch_project_tag_vocab(
 
 
 async def expand_tags_for_project(
-    embedding_client,
-    session,
+    embedding_client: EmbeddingClient,
+    session: AsyncSession,
     *,
-    project_id: "uuid.UUID",  # noqa: F821
+    project_id: uuid.UUID,
     tags: list[str],
     node_type: str | None = None,
     threshold: float = DEFAULT_THRESHOLD,

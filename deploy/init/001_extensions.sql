@@ -15,5 +15,6 @@ LOAD 'age';
 SET search_path = ag_catalog, "$user", public;
 SELECT create_graph('mem_lake_graph');
 
--- 行级安全（RLS）基础设置
--- 各表的 RLS 策略在应用层通过迁移脚本创建
+-- 项目隔离说明：由应用层 validate_project_access + FilterSpec（project_id
+-- 过滤）实现，不使用 RLS 策略（部署连接用户为表 owner，RLS 不 FORCE 时
+-- owner 绕过、策略不生效；见 db/init.py 注释）

@@ -736,7 +736,7 @@ async def _execute_node_create(
         tags=payload.get("tags", []),
         source=payload.get("source", {}),
         created_by=payload["created_by"],
-        generate_vector=False,  # 延迟生成：在 review_approve 内统一批量 embed
+        generate_vector=False,  # 延迟生成：审批通过后由 review_tools 调 start_embed_nodes_task 入队后台 worker 补向量
     )
 
 

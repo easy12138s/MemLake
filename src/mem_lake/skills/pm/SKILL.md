@@ -146,7 +146,7 @@ update_requirement_relations(
 
 ## 常见陷阱
 
-1. **requirement_id 必须全局唯一**：同一项目内不能有重复的 requirement_id。如果发布时与已有需求冲突，admin 审批阶段会检测到（相似度 ≥ 0.92 + 相同 requirement_id）。
+1. **requirement_id 必须全局唯一**：同一项目内不能有重复的 requirement_id。如果发布时与已有需求冲突，admin 审批阶段会检测到（内容相似度 ≥ 0.85 或相同 requirement_id 硬键命中）。
 
 2. **supersedes/relates_to 中的 ID 必须已存在**：引用的 requirement_id 必须是知识图谱中已审批通过的节点。引用不存在的 ID 会导致审批失败。
 

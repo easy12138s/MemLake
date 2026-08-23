@@ -1,6 +1,5 @@
 """admin 引导 CLI：创建第一个 admin Access Key。
 
-设计文档见 docs/superpowers/specs/2026-08-06-admin-bootstrap-cli-design.md。
 仅复用 auth/service.create_access_key + db/session.AsyncSessionLocal，
 不直写 SQL。明文仅 stdout 输出一次。
 

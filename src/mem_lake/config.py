@@ -54,8 +54,10 @@ class Settings(BaseSettings):
     BCRYPT_ROUNDS: int = 12
     APPROVAL_WARNING_DAYS: int = 7
     APPROVAL_TIMEOUT_DAYS: int = 30
-    # 冲突检测相似度阈值。当前 0.85 为初始预设（随 embedding 模型变化需重标）。
-    # 部署并沉淀数据后，请用 scripts/calibrate_conflict_threshold.py 对本项目真实数据重新标定。
+    # 冲突检测相似度阈值。2026-08-22 已按 Qwen3-Embedding-0.6B 实测标定确认
+    # （query-doc 模式：相关不同实体最高 0.807、同实体改写最低 0.912，
+    # 0.85 落在空隙内；标定记录见 scripts/calibrate_conflict_threshold.py docstring）。
+    # 换 embedding 模型后必须用该脚本重标。
     CONFLICT_SIMILARITY_THRESHOLD: float = 0.85
 
 
