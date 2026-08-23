@@ -31,8 +31,11 @@ class ReindexTask(Base):
         default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), index=True, comment="归属项目"
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        index=True,
+        nullable=True,
+        comment="归属项目（悬浮 system 需求节点嵌入任务可为空）",
     )
     status: Mapped[str] = mapped_column(
         String(16),

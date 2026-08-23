@@ -65,7 +65,9 @@ class PendingBatchItem(BaseModel):
     """待审批批次列表项。"""
 
     batch_id: uuid.UUID = Field(description="批次 ID")
-    project_id: uuid.UUID = Field(description="归属项目 ID")
+    project_id: uuid.UUID | None = Field(
+        default=None, description="归属项目 ID（悬浮 system 需求批次为 None）"
+    )
     batch_type: str = Field(description="批次类型")
     submitted_by: str = Field(description="提交者 Access Key ID")
     submitted_at: datetime = Field(description="提交时间")
@@ -98,7 +100,9 @@ class ReviewBatchDetailOutput(BaseModel):
     """review_batch_detail 工具出参。"""
 
     batch_id: uuid.UUID = Field(description="批次 ID")
-    project_id: uuid.UUID = Field(description="归属项目 ID")
+    project_id: uuid.UUID | None = Field(
+        default=None, description="归属项目 ID（悬浮 system 需求批次为 None）"
+    )
     batch_type: str = Field(description="批次类型")
     submitted_by: str = Field(description="提交者 Access Key ID")
     submitter_role: str = Field(description="提交者角色")
