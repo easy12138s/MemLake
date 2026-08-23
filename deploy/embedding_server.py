@@ -5,13 +5,35 @@
 """
 
 import os
+import time
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Histogram,
+    generate_latest,
+)
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 app = FastAPI(title="Mem Lake Embedding Service")
+
+# 进程内指标（与服务进程独立命名，字符串名即可，不 import app 的 metrics 模块）
+EMBED_EMBED_CALLS = Counter(
+    "memlake_embedding_embed_calls_total", "embedding 服务 /embed 调用次数"
+)
+EMBED_RERANK_CALLS = Counter(
+    "memlake_embedding_rerank_calls_total", "embedding 服务 /rerank 调用次数"
+)
+EMBED_DURATION = Histogram(
+    "memlake_embedding_endpoint_duration_seconds",
+    "embedding 服务端点耗时（秒）",
+    ["op"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+)
 
 model_path = os.environ.get("MODEL_PATH", "/models/Qwen3-Embedding-0.6B")
 device = os.environ.get("DEVICE", "cpu")
@@ -58,6 +80,15 @@ class RerankResponse(BaseModel):
     order: list[int]
 
 
+@app.get("/metrics")
+def metrics():
+    """Prometheus 拉取端点（面向内网，默认不加鉴权）。"""
+    return PlainTextResponse(
+        generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
+
 @app.get("/health")
 def health():
     return {
@@ -79,6 +110,15 @@ MAX_TEXT_CHARS = 32000  # 单条文本上限（超长截断，防超长输入拖
 
 @app.post("/embed", response_model=EmbedResponse)
 def embed(req: EmbedRequest):
+    EMBED_EMBED_CALLS.inc()
+    t = time.time()
+    try:
+        return _embed_impl(req)
+    finally:
+        EMBED_DURATION.labels(op="embed").observe(time.time() - t)
+
+
+def _embed_impl(req: EmbedRequest) -> EmbedResponse:
     if not req.texts:
         # 空列表短路：encode([]) 返回 (0,) 无第二维，embs.shape[1] 会 IndexError
         return EmbedResponse(
@@ -100,6 +140,15 @@ def embed(req: EmbedRequest):
 
 @app.post("/rerank", response_model=RerankResponse)
 def rerank(req: RerankRequest):
+    EMBED_RERANK_CALLS.inc()
+    t = time.time()
+    try:
+        return _rerank_impl(req)
+    finally:
+        EMBED_DURATION.labels(op="rerank").observe(time.time() - t)
+
+
+def _rerank_impl(req: RerankRequest) -> RerankResponse:
     if _reranker is None:
         raise HTTPException(status_code=503, detail="rerank 模型未加载")
     if not req.texts:

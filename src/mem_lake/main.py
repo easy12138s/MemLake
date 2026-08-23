@@ -10,22 +10,36 @@
 """
 
 import logging
+import uvicorn
+
+from starlette.responses import Response
 
 from mem_lake.config import get_settings
 from mem_lake.gateway import create_mcp_server
+from mem_lake.observability.logging import configure_logging
+from mem_lake.observability.metrics import get_metrics_body, get_metrics_media_type
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# 配置日志（结构化：json/console 由 OBS_LOG_FORMAT 控制）
+configure_logging(level=logging.INFO)
 logger = logging.getLogger("mem_lake.main")
 
 # 全局 FastMCP 实例（模块级单例，uvicorn 多 worker 时每 worker 一个）
 mcp = create_mcp_server()
 
-# ASGI 应用（uvicorn 加载入口）
+# ASGI 应用（uvicorn 加载入口；__main__ 亦复用此实例，保证两种启动方式都含 /metrics）
 app = mcp.http_app()
+
+# /metrics（Prometheus 拉取）：开关为 False 时不下发指标
+if get_settings().OBS_METRICS_ENABLED:
+
+    def _metrics_handler(request):  # noqa: ANN001, ANN202
+        return Response(
+            content=get_metrics_body(),
+            media_type=get_metrics_media_type(),
+        )
+
+    app.add_route("/metrics", _metrics_handler, methods=["GET"])
+    logger.info("Prometheus /metrics 已挂载（OBS_METRICS_ENABLED=true）")
 
 logger.info(
     "Mem Lake MCP 网关已初始化，监听 %s:%d",
@@ -35,10 +49,11 @@ logger.info(
 
 
 if __name__ == "__main__":
-    # 直接 python -m mem_lake.main 启动（开发用）
+    # 直接 python -m mem_lake.main 启动（开发用 / 容器 CMD）
+    # 服务模块级 app（已含 /metrics 与 lifespan），与 `uvicorn mem_lake.main:app` 一致
     settings = get_settings()
-    mcp.run(
-        transport="http",
+    uvicorn.run(
+        app,
         host=settings.MCP_SERVER_HOST,
         port=settings.MCP_SERVER_PORT,
     )

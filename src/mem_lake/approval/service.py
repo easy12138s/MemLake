@@ -26,6 +26,7 @@ from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.repository import add_edge, create_node, get_node, update_node
 from mem_lake.knowledge.schema import SchemaValidationError, validate_edge_type, validate_node
+from mem_lake.observability.metrics import APPROVAL_BATCHES
 from mem_lake.search.vector import VectorSearcher
 
 # 批次类型白名单（PDD 3.4）
@@ -376,6 +377,8 @@ async def review_approve(
         },
     )
 
+    APPROVAL_BATCHES.labels(status="approved").inc()
+
     return batch
 
 
@@ -425,6 +428,8 @@ async def review_reject(
             "review_comment": review_comment,
         },
     )
+
+    APPROVAL_BATCHES.labels(status="rejected").inc()
 
     return batch
 
@@ -569,6 +574,7 @@ async def auto_process_batch(
         }
 
     # 4. 有冲突 → 升级人工审查（不写入图谱）
+    APPROVAL_BATCHES.labels(status="pending").inc()
     return {
         "decision": "needs_human_review",
         "conflict_hint": {

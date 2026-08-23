@@ -12,6 +12,7 @@ and individual rank learning methods》。k=60 是论文在 TREC 数据集上扫
 
 import asyncio
 import logging
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -20,6 +21,7 @@ from mem_lake.config import get_settings
 from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.embedding.client import EmbeddingClient, EmbeddingError
 from mem_lake.knowledge.graph_store import GraphStore
+from mem_lake.observability.metrics import RERANK_FALLBACK, SEARCH_ENGINE_DURATION
 from mem_lake.search.filters import FilterSpec
 
 logger = logging.getLogger("mem_lake.search.fusion")
@@ -108,6 +110,7 @@ async def _apply_rerank(
         texts = [f"{r.title}\n{r.content or ''}".strip() for r in rerank_candidate]
         scores = await embedding_client.rerank(query, texts)
     except EmbeddingError:
+        RERANK_FALLBACK.inc()
         logger.warning("rerank 精排不可用，回退 RRF 原序", exc_info=True)
         return fused
 
@@ -206,20 +209,29 @@ async def hybrid_search(
     graph_searcher = GraphSearcher(graph_store)
 
     async def _vector_task() -> list[SearchResult]:
+        t = time.time()
         async with AsyncSessionLocal() as s:
-            return await vector_searcher.search(s, query, top_k, filters)
+            result = await vector_searcher.search(s, query, top_k, filters)
+        SEARCH_ENGINE_DURATION.labels(engine="vector").observe(time.time() - t)
+        return result
 
     async def _fulltext_task() -> list[SearchResult]:
+        t = time.time()
         async with AsyncSessionLocal() as s:
-            return await fulltext_searcher.search(s, query, top_k, filters)
+            result = await fulltext_searcher.search(s, query, top_k, filters)
+        SEARCH_ENGINE_DURATION.labels(engine="fulltext").observe(time.time() - t)
+        return result
 
     async def _graph_task() -> list[SearchResult]:
         if graph_node_id is None:
             return []
+        t = time.time()
         async with AsyncSessionLocal() as s:
-            return await graph_searcher.traverse(
+            result = await graph_searcher.traverse(
                 s, graph_node_id, depth=graph_depth, filters=filters
             )
+        SEARCH_ENGINE_DURATION.labels(engine="graph").observe(time.time() - t)
+        return result
 
     # 并行执行三引擎检索，asyncio.gather 总延迟 ≈ max(三引擎延迟)
     vector_results, fulltext_results, graph_results = await asyncio.gather(

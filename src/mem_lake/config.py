@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # 换 embedding 模型后必须用该脚本重标。
     CONFLICT_SIMILARITY_THRESHOLD: float = 0.85
 
+    # ========== 可观测性 ==========
+    # 是否挂载网关 /metrics（Prometheus 拉取）。面向内网，默认不加鉴权。
+    OBS_METRICS_ENABLED: bool = True
+    # 结构化日志格式：console（可读文本，默认）/ json（单行 JSON，生产）
+    OBS_LOG_FORMAT: str = "console"
+
 
 @lru_cache
 def get_settings() -> Settings:
