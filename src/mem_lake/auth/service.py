@@ -189,8 +189,6 @@ async def list_access_keys(
 
     不 commit。
     """
-    from sqlalchemy.orm import defer
-
     stmt = select(AccessKey).options(defer(AccessKey.key_hash))
     if role is not None:
         stmt = stmt.where(AccessKey.role == role)

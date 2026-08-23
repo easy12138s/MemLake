@@ -62,54 +62,11 @@ class VectorSearcher:
               ORDER BY NULLS LAST 排在最后，LIMIT 截断后不出现）
             - 无匹配返回空列表
         """
-        # 1. 生成查询向量（1024 维）
         # 指令感知：检索查询使用模型内置 "query" 指令，将查询摆入与文档对齐的子空间，
         # 提升召回/精度（官方称通常 +1~5%）。文档落库向量保持默认（无指令），
         # 二者配套使用，不可对文档侧加 query 指令，否则空间错配。
         query_vector = await self._embedding_client.embed_one(query, prompt_name="query")
-
-        # 2. 构造 SQLAlchemy 查询
-        # max_inner_product 是 pgvector-python 提供的混合方法，对应 SQL `<#>`（内积），
-        # 归一化向量下 <#> = -余弦。dist 为该表达式的值（0~-1→cos∈[0,1]，越大越相似）。
-        # ORDER BY <#> ASC 等价于余弦降序（最近在前），保持与 cosine_distance 一致的排序语义。
-        distance = KnowledgeNode.content_vector.max_inner_product(query_vector)
-        stmt = (
-            select(KnowledgeNode, distance.label("distance"))
-            # 跳过未向量化节点（content_vector 为 NULL 时 max_inner_product 为 NULL）
-            .where(KnowledgeNode.content_vector.isnot(None))
-            .order_by(distance.asc())
-            .limit(top_k)
-        )
-
-        # 3. 编译 FilterSpec 为 WHERE 子句
-        where_clauses = compile_sqlalchemy(filters)
-        if where_clauses:
-            stmt = stmt.where(*where_clauses)
-
-        # 4. 执行查询
-        result = await session.execute(stmt)
-
-        # 5. 构造 SearchResult 列表
-        search_results: list[SearchResult] = []
-        for row in result:
-            node: KnowledgeNode = row[0]
-            dist: float = row[1]
-            # 归一化向量下 score = -max_inner_product = 余弦 ∈[-1,1]，负值截断为 0（兼容 0~1 语义）
-            similarity = max(0.0, -dist)
-            search_results.append(
-                SearchResult(
-                    node_id=node.id,
-                    title=node.title,
-                    content=_truncate(node.content),
-                    node_type=node.type,
-                    score=similarity,
-                    source="vector",
-                    properties=node.properties or {},
-                    tags=node.tags or [],
-                )
-            )
-
-        return search_results
+        return await self._run_query(session, query_vector, top_k, filters)
 
     async def search_by_vector(
         self,
@@ -130,29 +87,42 @@ class VectorSearcher:
             query_vector: 1024 维查询向量
             top_k / filters: 同 search
         """
-        # 2. 构造 SQLAlchemy 查询（复用 search 的检索逻辑，仅查询向量来自参数）
+        return await self._run_query(session, query_vector, top_k, filters)
+
+    async def _run_query(
+        self,
+        session: AsyncSession,
+        query_vector: list[float],
+        top_k: int,
+        filters: FilterSpec | None,
+    ) -> list[SearchResult]:
+        """共享检索执行：构造语句 → 执行 → 构造 SearchResult（search 与 search_by_vector 复用）。
+
+        max_inner_product 是 pgvector-python 提供的混合方法，对应 SQL `<#>`（内积），
+        归一化向量下 <#> = -余弦。dist 为该表达式的值（0~-1→cos∈[0,1]，越大越相似）。
+        ORDER BY <#> ASC 等价于余弦降序（最近在前）。
+        """
         distance = KnowledgeNode.content_vector.max_inner_product(query_vector)
         stmt = (
             select(KnowledgeNode, distance.label("distance"))
+            # 跳过未向量化节点（content_vector 为 NULL 时 max_inner_product 为 NULL）
             .where(KnowledgeNode.content_vector.isnot(None))
             .order_by(distance.asc())
             .limit(top_k)
         )
 
-        # 3. 编译 FilterSpec 为 WHERE 子句
+        # 编译 FilterSpec 为 WHERE 子句
         where_clauses = compile_sqlalchemy(filters)
         if where_clauses:
             stmt = stmt.where(*where_clauses)
 
-        # 4. 执行查询
         result = await session.execute(stmt)
 
-        # 5. 构造 SearchResult 列表
+        # 归一化向量下 score = -max_inner_product = 余弦 ∈[-1,1]，负值截断为 0（兼容 0~1 语义）
         search_results: list[SearchResult] = []
         for row in result:
             node: KnowledgeNode = row[0]
             dist: float = row[1]
-            # 归一化向量下 score = -inner_product = 余弦，负值截断为 0
             similarity = max(0.0, -dist)
             search_results.append(
                 SearchResult(

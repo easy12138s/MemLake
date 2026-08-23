@@ -93,8 +93,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
         )
     finally:
         logger.info("清理 lifespan 资源")
-        # EmbeddingClient 使用 httpx.AsyncClient，由 GC 自动清理
-        # GraphStore 无需显式清理（使用共享连接池）
+        # 显式关闭 httpx.AsyncClient（依赖 GC 在 asyncio 下有连接残留 /
+        # ResourceWarning，见 client.close），GraphStore 无状态无需清理
+        await embedding_client.close()
 
 
 def create_mcp_server() -> FastMCP:

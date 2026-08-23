@@ -53,8 +53,10 @@ class FilterSpec:
 def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
     """编译 FilterSpec 为 SQLAlchemy WHERE 子句列表。
 
-    供 VectorSearcher/FullTextSearcher 的 select().where(*clauses) 使用。
+    供 VectorSearcher/FullTextSearcher/GraphSearcher 的 select().where(*clauses) 使用。
     spec=None 时返回空列表（不过滤），由调用方决定是否强制要求 project_id。
+    图遍历（GraphSearcher）也在 PG 表关联阶段用本函数过滤项目隔离（AGE 图节点
+    不存 status/is_deleted/tags/created_at，完整过滤在 PG 阶段）。
     """
     if spec is None:
         return []
@@ -93,20 +95,3 @@ def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
         clauses.append(KnowledgeNode.created_at <= spec.created_before)
 
     return clauses
-
-
-def compile_cypher(spec: FilterSpec | None, node_var: str = "n") -> str:
-    """编译 FilterSpec 为 Cypher WHERE 子句字符串。
-
-    供 GraphSearcher 在 AGE 图遍历时使用。AGE 图节点只存 id/project_id/title，
-    不存 status/is_deleted/tags/created_at 字段，因此这些条件在图层无法过滤，
-    由 GraphSearcher 在 PG 表关联阶段通过 compile_sqlalchemy 过滤。
-
-    返回空字符串表示无需图层过滤。调用方拼入 MATCH ... WHERE <子句> ...，
-    或在无子句时省略 WHERE。
-    """
-    if spec is None or spec.project_id is None:
-        return ""
-
-    # 图层只过滤 project_id（图节点属性含 project_id 用于隔离）
-    return f"{node_var}.project_id = $project_id"

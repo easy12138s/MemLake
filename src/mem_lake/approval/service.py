@@ -864,8 +864,11 @@ def _merge_conflict_hints(hints: list[dict]) -> dict:
         "has_conflict": bool,
         "nodes_with_conflict": int,
         "details": [...],  # 含冲突的节点列表
-        "suggestion": "review"/"manual_merge"/None
+        "suggestion": "review"/None
     }
+
+    detect_conflicts 的 suggestion 只为 "review" 或 None（conflict.py 由
+    has_conflict 决定），故合并仅区分 review / None，无 manual_merge 分支。
     """
     if not hints:
         return {"has_conflict": False, "nodes_with_conflict": 0, "details": [], "suggestion": None}
@@ -873,14 +876,9 @@ def _merge_conflict_hints(hints: list[dict]) -> dict:
     details_with_conflict = [h for h in hints if h["conflict"].get("has_conflict")]
     has_conflict = bool(details_with_conflict)
 
-    # 聚合建议：任一节点 suggestion 为 review 则整体 review
+    # 聚合建议：任一节点冲突则整体 review（detect_conflicts 只产 review/None）
     suggestions = {h["conflict"].get("suggestion") for h in details_with_conflict}
-    if "review" in suggestions:
-        suggestion = "review"
-    elif "manual_merge" in suggestions:
-        suggestion = "manual_merge"
-    else:
-        suggestion = None
+    suggestion = "review" if "review" in suggestions else None
 
     return {
         "has_conflict": has_conflict,

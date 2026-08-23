@@ -368,7 +368,8 @@ def register_search_tools(mcp: FastMCP) -> None:
             suggestion = None
             if has_conflict:
                 # 最高相似度 >= 0.95 推荐 manual_merge，否则 review
-                max_score = max(c.score for c in conflicts if c.score is not None)
+                # （conflicts 已在上面过滤 score is not None）
+                max_score = max(c.score for c in conflicts)
                 suggestion = "manual_merge" if max_score >= 0.95 else "review"
 
             return ConflictCheckOutput(
