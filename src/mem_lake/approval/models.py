@@ -37,7 +37,7 @@ class ApprovalBatch(Base):
     batch_type: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
-        comment="批次类型: publish_requirement/submit_dev_artifacts/update_requirement_relations",
+        comment="批次类型: publish_requirement/submit_dev_artifacts/update_requirement_relations/update_node",
     )
     submitted_by: Mapped[str] = mapped_column(String(128), nullable=False, comment="提交者 Access Key ID")
     submitter_role: Mapped[str] = mapped_column(String(16), nullable=False, comment="提交者角色: pm/dev")

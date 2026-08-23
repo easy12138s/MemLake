@@ -223,6 +223,13 @@ class AGEGraphStore(GraphStore):
     ) -> list[dict]:
         """邻居遍历。edge_type=None 时不限类型，depth 控制遍历深度。
 
+        语义说明：本实现的遍历为**无向**（-[r]- / -[*1..N]- 模式），即有向边
+        （如 depends_on: a 依赖 b）的双向端点都会被互相遍历到。对"影响范围
+        分析"而言这是保守且合理的语义（被依赖方变更同样影响依赖方）；调用方
+        若需要严格方向语义，需在结果层另行过滤（AGE v1.7.0 的 SQLAlchemy
+        text() 兼容性限制，见下方边类型过滤说明）。稠密图上无向变长遍历
+        是组合增长，depth 取值应保守（影响分析默认 5 以内、当前数据规模无碍）。
+
         边类型过滤实现说明（基于 AGE 官方文档 + SQLAlchemy 兼容性 + AGE v1.7.0 实测）：
         - AGE 官方语法 [:TYPE*1..N] 可过滤变长边类型（AGE MATCH 文档示例
           MATCH p = (actor)-[:ACTED_IN*2]-(co_actor)），但 SQLAlchemy text()

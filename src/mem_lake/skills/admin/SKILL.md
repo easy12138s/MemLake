@@ -274,7 +274,7 @@ manage_project_profile(
 | L0 硬判定 | 类型关键标识字段精确匹配（直接查库，不依赖向量） | 同项目同类型下关键标识字段**完全相同**（如相同 requirement_id）→ 直接判冲突（duplicate），升级人工 |
 | L1 硬门控 | 项目 + 节点类型 | 不同项目或不同类型 → 直接通过 |
 | L2 关键属性 | 类型特有标识字段 | 向量召回候选中关键属性不同（如不同 requirement_id）→ 排除 |
-| L3 内容语义 | f"{title}\n{content}" 向量相似度 | 相似度 < 0.92 → 直接通过 |
+| L3 内容语义 | build_embed_text（标题+正文+关键属性段）向量相似度 | 相似度 < 0.85（CONFLICT_SIMILARITY_THRESHOLD，已实测标定） → 直接通过 |
 
 各节点类型的关键标识字段：
 
