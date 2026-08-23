@@ -25,6 +25,7 @@ env/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.tmp/
 
 # 模型文件
 models/
