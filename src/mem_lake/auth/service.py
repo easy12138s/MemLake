@@ -267,7 +267,7 @@ async def update_access_key_scope(
     await session.execute(
         text(
             "UPDATE access_key SET project_scope = "
-            "jsonb_set(COALESCE(project_scope,'{}')::jsonb, '{projects}', :pj::jsonb) "
+            "jsonb_set(COALESCE(project_scope,'{}')::jsonb, '{projects}', CAST(:pj AS jsonb)) "
             "WHERE id IN :ids"
         ).bindparams(
             bindparam("pj", projects_json),
@@ -326,7 +326,16 @@ async def update_access_key_systems(
     await session.execute(
         text(
             "UPDATE access_key SET project_scope = "
-            "jsonb_set(COALESCE(project_scope,'{}')::jsonb, '{systems}', :sj::jsonb) "
+            "jsonb_set(COALESCE(project_scope,'{}')::jsonb, '{systems}', "
+            "(SELECT COALESCE(jsonb_agg(s ORDER BY s), '[]'::jsonb) "
+            "  FROM ( "
+            "    SELECT t.value::text AS s "
+            "      FROM jsonb_array_elements_text(COALESCE(project_scope->'systems','[]'::jsonb)) t "
+            "    UNION "
+            "    SELECT t2.value AS s "
+            "      FROM jsonb_array_elements_text(CAST(:sj AS jsonb)) t2 "
+            "  ) merged "
+            ")::jsonb) "
             "WHERE id IN :ids"
         ).bindparams(
             bindparam("sj", systems_json),
