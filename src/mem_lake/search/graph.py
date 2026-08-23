@@ -150,6 +150,10 @@ class GraphSearcher:
         Requirement --implements--> CodeSnippet --depends_on--> CodeSnippet
         CodeSnippet --realized_by--> Solution --embodies--> DesignIntent
 
+        过滤规则：所有节点以 PG 表为准（status=approved 且未软删除）——
+        AGE 图节点不存 status/is_deleted（归档节点默认保留图投影以维持
+        遍历历史），故遍历结果统一经 PG 过滤后才返回。
+
         参数：
             session: 异步数据库会话
             requirement_id: 需求节点 ID
@@ -164,13 +168,33 @@ class GraphSearcher:
                 "design_intents": [<node dict>, ...], # 方案体现的设计意图
             }
         """
-        # 1. 获取需求节点本身（match_pattern 直接查询，避免 depth=0 边界问题）
-        requirement_row = await self._graph_store.match_pattern(
-            session,
-            "MATCH (n {id: $nid}) RETURN n",
-            {"nid": str(requirement_id)},
-        )
-        requirement = requirement_row[0] if requirement_row else None
+        # 1. 需求节点：PG 查询（存在 + approved + 未软删除），不存在返回全空结果
+        req_row = (
+            await session.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.id == requirement_id,
+                    KnowledgeNode.status == "approved",
+                    KnowledgeNode.is_deleted.is_(False),
+                )
+            )
+        ).scalar_one_or_none()
+        if req_row is None:
+            return {
+                "requirement": None,
+                "codes": [],
+                "dependencies": [],
+                "solutions": [],
+                "design_intents": [],
+            }
+        requirement = {
+            "id": str(req_row.id),
+            "label": req_row.type,
+            "properties": {
+                "id": str(req_row.id),
+                "title": req_row.title,
+                "project_id": str(req_row.project_id),
+            },
+        }
 
         # 2. 获取实现代码（Requirement --implements--> CodeSnippet）
         code_dicts = await self._graph_store.neighbors(
@@ -216,26 +240,87 @@ class GraphSearcher:
                     if sol_id and sol_id not in seen_sol_ids:
                         seen_sol_ids.add(sol_id)
                         all_solutions.append(sol)
-                        # 4. 方案体现的设计意图（Solution --embodies--> DesignIntent）
+
+        # 4. PG 过滤 codes/dependencies/solutions（archived 图投影保留但按状态过滤）
+        def _extract_ids(dicts: list[dict]) -> list[uuid.UUID]:
+            ids: list[uuid.UUID] = []
+            for nd in dicts:
+                if isinstance(nd, dict):
+                    nid_str = (nd.get("properties") or {}).get("id")
+                    if nid_str:
                         try:
-                            sol_uuid = uuid.UUID(str(sol_id))
+                            ids.append(uuid.UUID(str(nid_str)))
                         except (ValueError, AttributeError):
                             continue
-                        intent_dicts = await self._graph_store.neighbors(
-                            session, sol_uuid, edge_type="embodies", depth=1
-                        )
-                        # design_intents 在循环内累加，已去重由上层调用方处理
-                        for intent in intent_dicts:
-                            if isinstance(intent, dict):
-                                intent_id = (intent.get("properties") or {}).get("id")
-                                if intent_id and intent_id not in seen_sol_ids:
-                                    seen_sol_ids.add(intent_id)
-                                    all_solutions.append(intent)  # 复用 seen_sol_ids 去重
+            return ids
+
+        approved_ids = await self._query_approved_ids(
+            session, _extract_ids([*code_dicts, *all_dependencies, *all_solutions])
+        )
+
+        def _filter_approved(dicts: list[dict]) -> list[dict]:
+            return [
+                d
+                for d in dicts
+                if isinstance(d, dict)
+                and (d.get("properties") or {}).get("id") in approved_ids
+            ]
+
+        codes = _filter_approved(code_dicts)
+        dependencies = _filter_approved(all_dependencies)
+        solutions = _filter_approved(all_solutions)
+
+        # 5. 仅对 approved 的方案展开设计意图（Solution --embodies--> DesignIntent）
+        #    （归档方案不再展开其意图：方案已不构成影响范围，其意图同样不算）
+        all_intents: list[dict] = []
+        seen_intent_ids: set[str] = set()
+        for sol in solutions:
+            sol_id = (sol.get("properties") or {}).get("id")
+            if not sol_id:
+                continue
+            try:
+                sol_uuid = uuid.UUID(str(sol_id))
+            except (ValueError, AttributeError):
+                continue
+            intent_dicts = await self._graph_store.neighbors(
+                session, sol_uuid, edge_type="embodies", depth=1
+            )
+            for intent in intent_dicts:
+                if isinstance(intent, dict):
+                    intent_id = (intent.get("properties") or {}).get("id")
+                    if intent_id and intent_id not in seen_intent_ids:
+                        seen_intent_ids.add(intent_id)
+                        all_intents.append(intent)
+
+        intent_approved_ids = await self._query_approved_ids(
+            session, _extract_ids(all_intents)
+        )
+        design_intents = [
+            d
+            for d in all_intents
+            if isinstance(d, dict)
+            and (d.get("properties") or {}).get("id") in intent_approved_ids
+        ]
 
         return {
             "requirement": requirement,
-            "codes": code_dicts,
-            "dependencies": all_dependencies,
-            "solutions": all_solutions,
-            "design_intents": [],  # 已合并入 solutions 去重列表（简化实现，避免单独列表）
+            "codes": codes,
+            "dependencies": dependencies,
+            "solutions": solutions,
+            "design_intents": design_intents,
         }
+
+    async def _query_approved_ids(
+        self, session: AsyncSession, node_ids: list[uuid.UUID]
+    ) -> set[str]:
+        """批量查询节点中 approved 且未软删除的 id 字符串集合。"""
+        if not node_ids:
+            return set()
+        result = await session.execute(
+            select(KnowledgeNode.id).where(
+                KnowledgeNode.id.in_(node_ids),
+                KnowledgeNode.status == "approved",
+                KnowledgeNode.is_deleted.is_(False),
+            )
+        )
+        return {str(row[0]) for row in result}
