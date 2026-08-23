@@ -30,7 +30,11 @@ from mem_lake.approval.service import (
     auto_process_batch,
     get_batch_detail,
     list_pending_batches,
+)
+from mem_lake.approval.service import (
     review_approve as approval_review_approve,
+)
+from mem_lake.approval.service import (
     review_reject as approval_review_reject,
 )
 from mem_lake.config import get_settings
@@ -43,9 +47,9 @@ from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     WRITE_TOOL_ANNOTATIONS,
     ApprovalResultOutput,
+    _safe_enqueue_embed,
     to_tool_error,
 )
-from mem_lake.gateway.background_tasks import start_embed_nodes_task
 from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
 
@@ -393,21 +397,3 @@ def _to_batch_detail_output(batch) -> ReviewBatchDetailOutput:
             for item in batch.items
         ],
     )
-
-
-async def _safe_enqueue_embed(project_id: uuid.UUID, node_ids: list[uuid.UUID]) -> None:
-    """审批提交后安全入队向量补全任务。
-
-    审批的事务已 commit，此处入队仅是后台优化（新建节点 content_vector 暂为
-    NULL，搜索可安全跳过）。入队失败（如 DB 短暂不可用）只记录告警，不阻断
-    审批结果返回——审批已生效，向量缺失由后续 reindex 兜底（AUDIT §2.11）。
-    """
-    try:
-        await start_embed_nodes_task(project_id, node_ids, get_current_key_id())
-    except Exception:  # noqa: BLE001 - 入队失败仅告警，不阻断审批主流程
-        logger.exception(
-            "审批成功但向量补全入队失败，请后续手动 reindex 补全: "
-            "project=%s node_count=%d",
-            project_id,
-            len(node_ids),
-        )

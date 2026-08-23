@@ -110,6 +110,7 @@ class AccessKeyAuthMiddleware(Middleware):
                 "role": auth_result["role"],
                 "key_id": str(auth_result["key_id"]),
                 "project_scope": auth_result["project_scope"],
+                "lax_mode": auth_result["lax_mode"],
             },
         )
 

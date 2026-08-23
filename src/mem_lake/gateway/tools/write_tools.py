@@ -1,17 +1,20 @@
-"""写入类工具：产生审批批次，等待 admin 审批。
+"""写入类工具：产生审批批次（默认等待 admin 审批；宽松模式提交即自动处理）。
 
 工具职责：构造审批项（node/edge items）并提交批次，不在工具层写入知识图谱。
-所有写操作经 admin 审批通过后由 approval/service 原子写入图谱。
+默认所有写操作经 admin 审批通过后由 approval/service 原子写入图谱；若提交方
+Access Key 为宽松模式（lax_mode=true 且全局 LAX_MODE_ENABLED 开启），则在提交时
+同一事务内自动处理（无冲突直接 approved 入库，有冲突升级人工），复用三层冲突检测。
 
 包含工具（PDD 6.1）：
 - publish_requirement（PM）：发布需求节点 + 关联关系
 - update_requirement_relations（PM）：更新需求间关系边
 - submit_dev_artifacts（Dev）：批量提交开发产物（代码/方案/意图/踩坑）
+- update_node（PM/Dev）：更新已通过节点的内容
 
 设计要点：
 - 工具参数采用 flat params 模式，复杂嵌套用 Pydantic 模型
 - 临时引用（ref）在工具层保留为字符串，审批通过时由 approval 层解析为节点 ID
-- 工具层不写业务逻辑，仅参数解析 + items 构造 + 转发 submit_batch
+- 工具层不写业务逻辑，仅参数解析 + items 构造 + 转发 submit_batch_with_mode
 - 角色 RBAC 由中间件层控制，本文件不区分角色
 """
 
@@ -20,14 +23,16 @@ import uuid
 from typing import Any
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from fastmcp.server.dependencies import get_context
+from pydantic import Field
 
 from mem_lake.approval.service import (
     PayloadValidationError,
-    submit_batch,
+    submit_batch_with_mode,
 )
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
+    get_current_lax_mode,
     get_current_role,
     get_readonly_session,
     transactional_session,
@@ -37,6 +42,7 @@ from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     StrictInputModel,
     WriteToolOutput,
+    _safe_enqueue_embed,
     build_edge_item,
     build_node_item,
     build_update_node_item,
@@ -205,6 +211,39 @@ class ArtifactsInput(StrictInputModel):
 # ============================================================================
 
 
+def _lax_lifespan_resources() -> tuple[Any, Any, Any]:
+    """宽松模式下从 lifespan context 取图谱/嵌入/检索依赖。
+
+    返回 (graph_store, embedding_client, vector_searcher)；strict 模式无需调用。
+    """
+    ctx = get_context()
+    lifespan_ctx = ctx.lifespan_context
+    return (
+        lifespan_ctx.graph_store,
+        lifespan_ctx.embedding_client,
+        lifespan_ctx.vector_searcher,
+    )
+
+
+async def _finalize_lax_output(
+    *, lax: bool, decision: str | None, batch, project_id: uuid.UUID
+) -> WriteToolOutput:
+    """宽松模式提交后收尾：已自动审批时异步入队补向量，并构造出参。
+
+    strict 模式（lax=False）不触发入队，仅构造包含 decision=None 的出参。
+    """
+    created = [
+        it.target_id
+        for it in (batch.items or [])
+        if it.item_type == "node"
+        and it.action == "create"
+        and it.target_id is not None
+    ]
+    if lax and decision == "auto_approved" and created:
+        await _safe_enqueue_embed(project_id, created)
+    return WriteToolOutput.from_batch(batch, decision=decision)
+
+
 def register_write_tools(mcp: FastMCP) -> None:
     """注册写入类工具到 FastMCP 实例。"""
 
@@ -222,6 +261,9 @@ def register_write_tools(mcp: FastMCP) -> None:
         """发布需求节点（含关联关系），产生审批批次等待 admin 审批。
 
         PM 工具。需求节点暂存于审批批次，审批通过后才写入知识图谱并参与检索。
+        若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
+        直接入库（返回 status="approved" + decision="auto_approved"），有冲突返回
+        decision="needs_human_review" 并停在待审批。
         支持 operation_id 幂等：同 operation_id 重复提交返回首次 batch_id。
         related.supersedes/relates_to 中的 requirement_id 必须为已有 Requirement 节点的 UUID。
         """
@@ -242,7 +284,12 @@ def register_write_tools(mcp: FastMCP) -> None:
             items = _build_publish_items(project_id, requirement, related, key_id)
 
             async with transactional_session() as session:
-                batch = await submit_batch(
+                graph_store = embedding_client = vector_searcher = None
+                if get_current_lax_mode():
+                    graph_store, embedding_client, vector_searcher = (
+                        _lax_lifespan_resources()
+                    )
+                batch, decision = await submit_batch_with_mode(
                     session,
                     project_id=project_id,
                     batch_type="publish_requirement",
@@ -250,8 +297,17 @@ def register_write_tools(mcp: FastMCP) -> None:
                     submitter_role="pm",
                     items=items,
                     operation_id=operation_id,
+                    lax_mode=get_current_lax_mode(),
+                    graph_store=graph_store,
+                    embedding_client=embedding_client,
+                    vector_searcher=vector_searcher,
                 )
-            return WriteToolOutput.from_batch(batch)
+            return await _finalize_lax_output(
+                lax=get_current_lax_mode(),
+                decision=decision,
+                batch=batch,
+                project_id=project_id,
+            )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
 
@@ -264,6 +320,8 @@ def register_write_tools(mcp: FastMCP) -> None:
         ),
     ) -> WriteToolOutput:
         """更新需求间关系（冲突/关联/替代），产生审批批次等待 admin 审批。
+        若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
+        直接入库（status="approved" + decision="auto_approved"），有冲突停在待审批。
 
         PM 工具。批量添加需求节点间的关系边，审批通过后写入知识图谱。
         from_id/to_id 必须为已有 Requirement 节点的 UUID。
@@ -296,7 +354,12 @@ def register_write_tools(mcp: FastMCP) -> None:
 
             key_id = get_current_key_id()
             async with transactional_session() as session:
-                batch = await submit_batch(
+                graph_store = embedding_client = vector_searcher = None
+                if get_current_lax_mode():
+                    graph_store, embedding_client, vector_searcher = (
+                        _lax_lifespan_resources()
+                    )
+                batch, decision = await submit_batch_with_mode(
                     session,
                     project_id=project_id,
                     batch_type="update_requirement_relations",
@@ -304,8 +367,17 @@ def register_write_tools(mcp: FastMCP) -> None:
                     submitter_role="pm",
                     items=items,
                     operation_id=operation_id,
+                    lax_mode=get_current_lax_mode(),
+                    graph_store=graph_store,
+                    embedding_client=embedding_client,
+                    vector_searcher=vector_searcher,
                 )
-            return WriteToolOutput.from_batch(batch)
+            return await _finalize_lax_output(
+                lax=get_current_lax_mode(),
+                decision=decision,
+                batch=batch,
+                project_id=project_id,
+            )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
 
@@ -332,6 +404,8 @@ def register_write_tools(mcp: FastMCP) -> None:
         ),
     ) -> WriteToolOutput:
         """批量提交开发产物（代码片段+方案+意图+踩坑），产生审批批次等待 admin 审批。
+        若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
+        直接入库（status="approved" + decision="auto_approved"），有冲突停在待审批。
 
         Dev 工具。审批通过后产物节点写入知识图谱。
         自动关系：
@@ -374,7 +448,12 @@ def register_write_tools(mcp: FastMCP) -> None:
                 raise PayloadValidationError("artifacts 和 relations 不能同时为空")
 
             async with transactional_session() as session:
-                batch = await submit_batch(
+                graph_store = embedding_client = vector_searcher = None
+                if get_current_lax_mode():
+                    graph_store, embedding_client, vector_searcher = (
+                        _lax_lifespan_resources()
+                    )
+                batch, decision = await submit_batch_with_mode(
                     session,
                     project_id=project_id,
                     batch_type="submit_dev_artifacts",
@@ -382,8 +461,17 @@ def register_write_tools(mcp: FastMCP) -> None:
                     submitter_role="dev",
                     items=items,
                     operation_id=operation_id,
+                    lax_mode=get_current_lax_mode(),
+                    graph_store=graph_store,
+                    embedding_client=embedding_client,
+                    vector_searcher=vector_searcher,
                 )
-            return WriteToolOutput.from_batch(batch)
+            return await _finalize_lax_output(
+                lax=get_current_lax_mode(),
+                decision=decision,
+                batch=batch,
+                project_id=project_id,
+            )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
 
@@ -406,6 +494,8 @@ def register_write_tools(mcp: FastMCP) -> None:
         ),
     ) -> WriteToolOutput:
         """更新已审批通过节点的内容（标题/正文/属性/标签），产生审批批次等待 admin 审批。
+        若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
+        直接入库（status="approved" + decision="auto_approved"），有冲突停在待审批。
 
         PM/Dev 工具。用于修正已写入知识图谱的错误节点内容（写错且审批通过的场景）。
         审批通过后原子落地：版本号 +1、标题变更同步 AGE 图投影、标题/正文/属性任一
@@ -449,7 +539,12 @@ def register_write_tools(mcp: FastMCP) -> None:
                 )
             ]
             async with transactional_session() as session:
-                batch = await submit_batch(
+                graph_store = embedding_client = vector_searcher = None
+                if get_current_lax_mode():
+                    graph_store, embedding_client, vector_searcher = (
+                        _lax_lifespan_resources()
+                    )
+                batch, decision = await submit_batch_with_mode(
                     session,
                     project_id=project_id,
                     batch_type="update_node",
@@ -457,8 +552,17 @@ def register_write_tools(mcp: FastMCP) -> None:
                     submitter_role=get_current_role(),
                     items=items,
                     operation_id=operation_id,
+                    lax_mode=get_current_lax_mode(),
+                    graph_store=graph_store,
+                    embedding_client=embedding_client,
+                    vector_searcher=vector_searcher,
                 )
-            return WriteToolOutput.from_batch(batch)
+            return await _finalize_lax_output(
+                lax=get_current_lax_mode(),
+                decision=decision,
+                batch=batch,
+                project_id=project_id,
+            )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
 

@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, manage_access_key, manage_project_profile."
-version: 1.1.3
+version: 1.2.0
 ---
 
 # Admin Skills（管理员）
@@ -23,11 +23,11 @@ version: 1.1.3
 
 ## 你的角色
 
-你是 Mem Lake 的管理员 Agent。Mem Lake 是团队共享的知识记忆层，所有 PM 和 Dev 提交的知识写入都需要经过审批才能进入知识图谱。你的核心职责：
+你是 Mem Lake 的管理员 Agent。Mem Lake 是团队共享的知识记忆层，PM/Dev 提交的知识写入默认需要经过审批才能进入知识图谱；你可用 `manage_access_key(set_mode)` 将指定/按角色批量将 Key 设为**宽松模式**（lax_mode=true），此类 Key 提交时会免审批直接入库（仍走三层冲突检测，有冲突才会停到队列等你处理）。你的核心职责：
 
 1. **审批治理**：审查 PM/Dev 提交的批次，决定通过或拒绝
 2. **自动审批**：对无冲突批次自动通过，有冲突批次向人类 admin 描述并等待决策
-3. **密钥管理**：为团队成员签发或吊销 Access Key（绑定角色与项目范围）
+3. **密钥管理**：为团队成员签发或吊销 Access Key（绑定角色与项目范围），并维护审核模式
 4. **画像维护**：直接写入项目画像节点（不走审批流）
 
 关键原则：**你是 admin 的助手，不是决策者**。无冲突时可以自动通过（确定性判断），有冲突时必须向人类 admin 描述冲突详情并等待明确指令。
@@ -133,28 +133,30 @@ version: 1.1.3
 
 status 取值：`pending` / `running` / `done` / `failed`。`done` 表示全部向量已重建完成；`failed` 时 `error` 字段含失败原因。
 
-### manage_access_key — 创建/吊销/查看/改范围/轮换 Access Key
+### manage_access_key — 创建/吊销/查看/改范围/改审核模式/轮换 Access Key
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| action | str | 是 | `create` / `revoke` / `list` / `update_scope` / `rotate` |
+| action | str | 是 | `create` / `revoke` / `list` / `update_scope` / `set_mode` / `rotate` |
 | role | str | create 时必填 | 绑定角色：`admin` / `pm` / `dev` |
 | project_scope | list[UUID] | create / update_scope 时必填 | 项目范围限制（admin 传空列表 `[]` 表示不受限）；update_scope 时为新的项目范围 |
 | key_id | UUID | revoke / rotate 时必填 | 目标 Access Key ID |
 | status_filter | str | list 时可选 | 按状态过滤：`active` / `revoked` |
-| key_ids | list[UUID] \| str | update_scope 时可选 | 显式指定一个或多个目标 Key ID（接受 UUID 列表，或逗号/空格分隔的字符串，兼容客户端将数组序列化为字符串的场景）|
-| role_filter | str | update_scope 时可选 | 按角色批量授权（如 `"dev"` → 所有 dev Key）|
-| grant_all_projects | bool | update_scope 时可选 | `true` 时一键将全部 Key 授权为不受限（配合空 project_scope）|
+| lax_mode | bool | create / set_mode 时必填；list 时可选 | 审核模式：`true`=宽松（免审批直接入库），`false`=严格（需审批）。set_mode 时指定新的审核模式；list 时作为审核模式过滤 |
+| key_ids | list[UUID] \| str | set_mode/update_scope 时可选 | 显式指定一个或多个目标 Key ID（接受 UUID 列表，或逗号/空格分隔的字符串，兼容客户端将数组序列化为字符串的场景）|
+| role_filter | str | set_mode/update_scope 时可选 | 按角色批量（如 `"dev"` → 所有 dev Key）|
+| grant_all_projects | bool | set_mode/update_scope 时可选 | `true` 时作用于全部 Key |
 
 返回：
-- `create`：返回 `created.key_id` + `created.plaintext`（明文仅此一次，需安全保存）
+- `create`：返回 `created.key_id` + `created.plaintext`（明文仅此一次，需安全保存）+ `created.lax_mode`
 - `revoke`：返回 `revoked_key_id`
-- `list`：返回 `listed` 密钥列表（含 role / project_scope / status / created_at）
+- `list`：返回 `listed` 密钥列表（含 role / project_scope / status / lax_mode / created_at），可按 lax_mode 过滤
 - `update_scope`：返回 `scoped` 受影响 Key 列表（同 `listed` 结构）；未指定任何定位方式时返回空列表（空操作）
+- `set_mode`：返回 `mode_set` 受影响 Key 列表（同 `listed` 结构，含新的 lax_mode）
 - `rotate`：返回 `rotated.key_id` + `rotated.plaintext`（新明文仅此一次，旧明文立即失效）
 
-`update_scope` 三种定位方式优先级：`key_ids` > `role_filter` > `grant_all_projects`。
-注：当前**没有** `expires_in_days` 参数，密钥默认长期有效；轮换（rotate）可主动作废旧密钥。
+`set_mode`/`update_scope` 三种定位方式优先级：`key_ids` > `role_filter` > `grant_all_projects`。
+注：宽松模式仅在 Key 标记 lax_mode=true **且**全局开关 `LAX_MODE_ENABLED=true` 时对提交方生效；宽松由冲突检测把关（无冲突直接入库，有冲突停到队列）。当前**没有** `expires_in_days` 参数，密钥默认长期有效；轮换（rotate）可主动作废旧密钥。
 
 ### manage_project_profile — 直接写入项目画像（不走审批）
 
@@ -242,7 +244,27 @@ manage_access_key(action="update_scope", project_scope=[], grant_all_projects=tr
 
 # 轮换某 Key 密钥（旧明文立即失效，新明文仅返回一次）
 manage_access_key(action="rotate", key_id="...")
+
+# 把某 dev Key 设为宽松（免审批直接入库）；key_ids 指 key_id_list
+manage_access_key(action="set_mode", lax_mode=true, key_ids=["dev-key-uuid"])
+
+# 按角色批量把全部 dev 设为宽松
+manage_access_key(action="set_mode", lax_mode=true, role_filter="dev")
+
+# 关闭某 Key 的宽松（改回严格审批）
+manage_access_key(action="set_mode", lax_mode=false, key_ids=["dev-key-uuid"])
+
+# 全局熔断：.env 设 LAX_MODE_ENABLED=false 并重启后，所有 Key 的宽松标记都不生效
 ```
+
+### 宽松模式治理
+
+- **开启/关闭**：`manage_access_key(action="set_mode", lax_mode=true/false, ...)`，定位方式同 update_scope（key_ids > role_filter > grant_all_projects），可单 key 或按角色/全部批量。
+- **即时生效**：认证每请求查库，改完立即作用于下一次提交，无需重启（全局开关除外）。
+- **混合并存**：同一项目可同时有宽松 Key（提交即入库）与严格 Key（走审批），互不影响。
+- **全局熔断**：`LAX_MODE_ENABLED=false`（.env + 重启）时即便 Key 标记宽松也强制走审批，用于紧急收紧。
+- **仍是审批把关**：宽松提交仍走三层冲突检测，无冲突才直接入库；有冲突返回 needs_human_review 停在队列，admin 用 review_auto_process/review_* 照常处理。
+- **审计可追溯**：宽松直接入库会落一条 status=approved 的批记录 + approve（detail 标 lax）审计，`query_audit_log` 可查 update_mode/approve；存量 pending 批次与已入库节点不会因切换模式而迁移或回滚。
 
 ### 场景四：项目画像维护
 
@@ -325,6 +347,8 @@ manage_project_profile(
 7. **rotate 轮换密钥**：`manage_access_key(action="rotate")` 返回的 `plaintext` 是新明文，仅返回一次，旧明文立即失效。用于密钥疑似泄露时主动作废，无需吊销重建（Key ID 不变）。
 
 8. **update_scope 改范围而非轮换**：仅调整 Key 的 `project_scope`（单/多个 key、按角色批量、或 `grant_all_projects` 一键全项目），不影响密钥明文本身；若要作废密钥请用 `rotate` 或 `revoke`。三者均未指定时为空操作（返回空列表）。
+
+9. **宽松模式生效需两者同时为真**：某 Key 标记 lax_mode=true 仅当其提交时才免审批，且全局开关 `LAX_MODE_ENABLED` 必须为 true（否则一律走审批）。宽松下仍有冲突会停在 pending，不是"宽松即可绕过冲突检测"——冲突检测始终是质量门禁。
 
 ## 示例
 

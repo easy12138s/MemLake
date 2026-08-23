@@ -31,11 +31,11 @@ async def create_tables(session: AsyncSession) -> None:
     通过 import 各模块 models 触发 ORM 注册到 Base.metadata，再调用 create_all。
     create_all 对已存在的表跳过，幂等安全。
     """
-    from mem_lake.db.base import Base
     # 触发各模块 ORM 注册到 Base.metadata（import 即注册）
     from mem_lake.approval import models as _approval_models  # noqa: F401
     from mem_lake.audit import models as _audit_models  # noqa: F401
     from mem_lake.auth import models as _auth_models  # noqa: F401
+    from mem_lake.db.base import Base
     from mem_lake.gateway import models as _gateway_models  # noqa: F401
     from mem_lake.knowledge import models as _knowledge_models  # noqa: F401
 
@@ -48,6 +48,13 @@ async def create_tables(session: AsyncSession) -> None:
         text(
             "ALTER TABLE reindex_task "
             "ADD COLUMN IF NOT EXISTS target_node_ids UUID[]"
+        )
+    )
+    # 显式补齐 access_key.lax_mode（宽松模式；存量库升级兼容）。
+    await session.execute(
+        text(
+            "ALTER TABLE access_key "
+            "ADD COLUMN IF NOT EXISTS lax_mode BOOLEAN NOT NULL DEFAULT false"
         )
     )
 

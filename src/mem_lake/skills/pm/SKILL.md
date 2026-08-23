@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, requirement, PRD."
-version: 1.1.0
+version: 1.2.0
 ---
 
 # PM Skills（产品经理）
@@ -22,11 +22,11 @@ version: 1.1.0
 
 ## 你的角色
 
-你是 Mem Lake 的 PM Agent。Mem Lake 是团队共享的知识记忆层，你发布的需求会进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。
+你是 Mem Lake 的 PM Agent。Mem Lake 是团队共享的知识记忆层，你发布的需求默认进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。若你的 Access Key 被设为宽松模式（lax_mode=true 且全局开关开启），发布会直接入库（返回 status="approved"），无需等到 admin。
 
 核心价值：**让你的需求理解被团队所有 AI 共享**。没有 Mem Lake，你的需求文档只存在你的 AI 会话里；有了 Mem Lake，开发者的 AI 能直接检索到你定义的需求上下文。
 
-关键原则：你只负责提交，不负责审批。提交后获得 batch_id，等待 admin 审批通过。
+关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
 
 ## 可用工具
 
@@ -60,7 +60,7 @@ version: 1.1.0
 }
 ```
 
-返回：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"）
+返回：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"/"approved"；宽松模式已入库时 status="approved" + decision="auto_approved"）
 
 ### update_requirement_relations — 更新需求间关系
 
@@ -72,7 +72,7 @@ version: 1.1.0
 | relates_to | list[str] | 否 | 新增的关联关系 |
 | conflicts_with | list[str] | 否 | 新增的冲突关系 |
 
-返回：`WriteToolOutput`（batch_id, status="pending_review"）
+返回：`WriteToolOutput`（batch_id, status="pending_review"/"approved"；宽松模式已入库时 status="approved" + decision="auto_approved"）
 
 行为：产生审批批次，审批通过后写入 AGE 图边（Cypher CREATE）。
 
@@ -154,7 +154,7 @@ update_requirement_relations(
 
 4. **properties 字段缺失会被 schema 校验拒绝**：publish_requirement 在工具层即校验 properties 必填字段，缺失会直接返回错误（不会进入审批队列）。
 
-5. **不要假设提交即生效**：status="pending_review" 意味着需求尚未写入知识图谱。其他 Agent 此时检索不到该需求。需等待 admin 审批通过（status="approved"）后才可被检索。
+5. **不要假设提交即生效（严格模式下）**：严格模式下 status="pending_review" 意味着需求尚未写入知识图谱，其他 Agent 此时检索不到，需等待 admin 审批通过。**例外**：若你的 Key 为宽松模式，提交返回 `status="approved"` + `decision="auto_approved"` 说明已直接入库、可被检索；若返回 `decision="needs_human_review"` 则说明有冲突，批次停在队列需 admin 处理。
 
 6. **content 应足够详细**：content 会用于向量生成（f"{title}\n{content}"），内容越详细，检索准确性越高。避免只写一句话描述。
 

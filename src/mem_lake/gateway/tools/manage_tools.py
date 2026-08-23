@@ -29,8 +29,10 @@ from mem_lake.auth.service import (
     list_access_keys,
     revoke_access_key,
     rotate_access_key,
+    update_access_key_mode,
     update_access_key_scope,
 )
+from mem_lake.config import get_settings
 from mem_lake.gateway.background_tasks import (
     find_running_task,
     get_task_record,
@@ -41,7 +43,6 @@ from mem_lake.gateway.dependencies import (
     transactional_session,
     validate_project_access,
 )
-from mem_lake.config import get_settings
 from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     StrictInputModel,
@@ -69,6 +70,9 @@ class AccessKeyOutput(BaseModel):
     role: str = Field(description="角色")
     project_scope: list[str] = Field(description="项目范围（项目 ID 字符串列表）")
     status: str = Field(description="状态：active/revoked")
+    lax_mode: bool = Field(
+        description="审核模式：false=严格(需审批) true=宽松(免审批直接入库)"
+    )
     created_at: datetime = Field(description="创建时间")
     revoked_at: datetime | None = Field(default=None, description="吊销时间")
 
@@ -82,6 +86,10 @@ class CreateAccessKeyOutput(BaseModel):
     )
     role: str = Field(description="角色")
     project_scope: list[str] = Field(description="项目范围")
+    lax_mode: bool = Field(
+        default=False,
+        description="审核模式：false=严格(需审批) true=宽松(免审批直接入库)",
+    )
     mcp_config: str | None = Field(
         default=None,
         description=(
@@ -100,12 +108,17 @@ class CreateAccessKeyOutput(BaseModel):
 class ManageAccessKeyOutput(BaseModel):
     """manage_access_key 工具出参。"""
 
-    action: str = Field(description="操作类型：create/revoke/list/update_scope/rotate")
+    action: str = Field(
+        description="操作类型：create/revoke/list/update_scope/rotate/set_mode"
+    )
     created: CreateAccessKeyOutput | None = Field(default=None, description="create 结果")
     revoked_key_id: uuid.UUID | None = Field(default=None, description="revoke 结果")
     listed: list[AccessKeyOutput] | None = Field(default=None, description="list 结果")
     scoped: list[AccessKeyOutput] | None = Field(
         default=None, description="update_scope 结果（受影响 Key 列表）"
+    )
+    mode_set: list[AccessKeyOutput] | None = Field(
+        default=None, description="set_mode 结果（受影响 Key 列表）"
     )
     rotated: CreateAccessKeyOutput | None = Field(
         default=None, description="rotate 结果（含新明文，仅返回一次）"
@@ -286,9 +299,9 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def manage_access_key(
-        action: Literal["create", "revoke", "list", "update_scope", "rotate"] = Field(
-            description="操作类型"
-        ),
+        action: Literal[
+            "create", "revoke", "list", "update_scope", "rotate", "set_mode"
+        ] = Field(description="操作类型"),
         role: str | None = Field(
             default=None, description="create 时指定角色：admin/pm/dev"
         ),
@@ -304,6 +317,13 @@ def register_manage_tools(mcp: FastMCP) -> None:
         ),
         status_filter: str | None = Field(
             default=None, description="list 时按状态过滤：active/revoked"
+        ),
+        lax_mode: bool | None = Field(
+            default=None,
+            description=(
+                "create 时指定初始审核模式（true=宽松免审批直接入库）；"
+                "set_mode 时指定新的审核模式；list 时作为审核模式过滤（true=宽松/false=严格）"
+            ),
         ),
         key_ids: str | list[uuid.UUID] | None = Field(
             default=None,
@@ -332,11 +352,14 @@ def register_manage_tools(mcp: FastMCP) -> None:
             · created.onboarding_prompt：给【目标 Agent】的技能安装提示词（不含 Key），
               MCP 接通后复制给 Agent 执行一次性技能安装。
         - revoke：吊销指定 key_id 的 Key（status=revoked）。
-        - list：按角色/状态查看 Key 列表。
+        - list：按角色/状态/审核模式（lax_mode）查看 Key 列表。
         - update_scope：动态修改 Key 的项目范围，支持三种定位（优先级
           key_ids > role_filter > grant_all_projects）：显式指定多个 Key / 按角色批量 /
           一键全项目（grant_all_projects 时 project_scope 留空表示不受限）。
           三者均省略时为空操作（返回空列表，不改任何 Key）。
+        - set_mode：设置/批量设置 Key 的审核模式（lax_mode）。与 update_scope 同三种定位
+          （key_ids > role_filter > grant_all_projects）。lax_mode=true 表示宽松（免审批直接入库）。
+          返回 mode_set 受影响 Key 列表。全局开关 LAX_MODE_ENABLED=false 时即使标记宽松也强制走审批。
         - rotate：轮换指定 key_id 的 Key 密钥（保留 Key ID，旧明文立即失效），
           返回新明文（仅此一次），同样附带 mcp_config 与 onboarding_prompt。
         """
@@ -355,6 +378,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         role=role,
                         project_scope=project_scope,
                         created_by=key_id_actor,
+                        lax_mode=bool(lax_mode),
                     )
                     mcp_url = get_settings().MCP_PUBLIC_URL
                     return ManageAccessKeyOutput(
@@ -364,6 +388,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                             plaintext=plaintext,
                             role=role,
                             project_scope=[str(pid) for pid in project_scope],
+                            lax_mode=bool(lax_mode),
                             mcp_config=_build_mcp_config(mcp_url, plaintext),
                             onboarding_prompt=_build_onboarding_prompt(role),
                         ),
@@ -379,11 +404,26 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     )
                 elif action == "list":
                     keys = await list_access_keys(
-                        session, role=role, status=status_filter
+                        session, role=role, status=status_filter, lax_mode=lax_mode
                     )
                     return ManageAccessKeyOutput(
                         action="list",
                         listed=[_to_access_key_output(k) for k in keys],
+                    )
+                elif action == "set_mode":
+                    if lax_mode is None:
+                        raise ValueError("set_mode 操作必须指定 lax_mode（true/false）")
+                    updated = await update_access_key_mode(
+                        session,
+                        lax_mode=lax_mode,
+                        key_ids=_normalize_uuid_list(key_ids),
+                        role_filter=role_filter,
+                        grant_all_projects=grant_all_projects,
+                        actor=key_id_actor,
+                    )
+                    return ManageAccessKeyOutput(
+                        action="set_mode",
+                        mode_set=[_to_access_key_output(k) for k in updated],
                     )
                 elif action == "update_scope":
                     if project_scope is None:
@@ -416,6 +456,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                             plaintext=plaintext,
                             role=ak.role,
                             project_scope=ak.project_scope or [],
+                            lax_mode=bool(ak.lax_mode),
                             mcp_config=_build_mcp_config(mcp_url, plaintext),
                             onboarding_prompt=_build_onboarding_prompt(ak.role),
                         ),
@@ -651,6 +692,7 @@ def _to_access_key_output(access_key) -> AccessKeyOutput:
         role=access_key.role,
         project_scope=access_key.project_scope or [],
         status=access_key.status,
+        lax_mode=bool(access_key.lax_mode),
         created_at=_as_utc_aware(access_key.created_at),
         revoked_at=_as_utc_aware(access_key.revoked_at),
     )

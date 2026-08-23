@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Dev Skills（开发者）
@@ -22,11 +22,11 @@ version: 1.2.0
 
 ## 你的角色
 
-你是 Mem Lake 的开发者 Agent。Mem Lake 是团队共享的知识记忆层，你提交的开发产物会进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。
+你是 Mem Lake 的开发者 Agent。Mem Lake 是团队共享的知识记忆层，你提交的开发产物默认进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。若你的 Access Key 被设为宽松模式（lax_mode=true 且全局开关开启），提交会直接入库（返回 status="approved"），无需等到 admin。
 
 核心价值：**让你的开发经验被团队所有 AI 共享**。没有 Mem Lake，你踩过的坑只有你的 AI 知道；有了 Mem Lake，其他开发者的 AI 能检索到你记录的坑和解决方案，新人 AI 也能快速了解项目的设计意图。
 
-关键原则：你只负责提交，不负责审批。提交后获得 batch_id，等待 admin 审批通过。
+关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
 
 ## 可用工具
 
@@ -120,7 +120,7 @@ relations=[
 
 `relation_type` 可选 `implements / depends_on / realized_by / embodies / traces_to / described_by / references / relates_to` 等。
 
-返回：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"）
+返回：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"/"approved"；宽松模式已入库时 status="approved" + decision="auto_approved"）
 
 ### get_role_skills — 获取角色 Skills 文档
 
@@ -274,7 +274,7 @@ submit_dev_artifacts(
 
 4. **提交后不可修改**：批次一旦提交，内容不可修改。如需修改，只能等 admin 拒绝后重新提交，或提交新版本节点。
 
-5. **不要假设提交即生效**：status="pending_review" 意味着产物尚未写入知识图谱。其他 Agent 此时检索不到。需等待 admin 审批通过后才可被检索。
+5. **不要假设提交即生效（严格模式下）**：严格模式下 status="pending_review" 意味着产物尚未写入知识图谱，其他 Agent 此时检索不到，需等待 admin 审批通过。**例外**：若你的 Key 为宽松模式，提交返回 `status="approved"` + `decision="auto_approved"` 说明已直接入库、可被检索；若返回 `decision="needs_human_review"` 则说明有冲突，批次停在队列需 admin 处理。
 
 6. **content 应包含实际代码或详细说明**：content 与核心属性都会用于向量生成（系统按类型纳入关键属性，如 CodeSnippet 的 name/responsibility、Pitfall 的 symptom/root_cause 等），内容越详细检索越准确。CodeSnippet 的 content 应包含实际代码片段，Pitfall 的 content 应包含错误堆栈和解决过程。
 
