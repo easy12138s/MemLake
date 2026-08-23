@@ -1858,3 +1858,59 @@ class TestExactKeyConflict:
             review_comment="确认通过",
         )
         assert approved.status == STATUS_APPROVED
+
+
+class TestAutoProcessFloating:
+    """悬浮 system 需求自动审批回归：project_id=None 时冲突检测不崩溃。"""
+
+    async def test_auto_process_floating_requirement_approved(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """悬浮需求（project_id=None + system_id）auto_process 不再因 _to_uuid(None) 崩溃。
+
+        无冲突时 decision=auto_approved，需求以 project_id=NULL 写入图谱。
+        """
+        from mem_lake.approval.service import auto_process_batch
+        from mem_lake.search.vector import VectorSearcher
+
+        sys_id = uuid.uuid4()
+        props = knowledge_helpers["Requirement"]()
+        props["requirement_id"] = "REQ-2026-FLOAT-1"
+        items = [
+            {
+                "item_type": "node",
+                "action": "create",
+                "entity_type": "Requirement",
+                "payload": {
+                    "project_id": None,
+                    "node_type": "Requirement",
+                    "system_id": str(sys_id),
+                    "title": "悬浮自动审批需求",
+                    "content": "跨系统能力沉淀，无归属项目",
+                    "properties": props,
+                    "tags": ["system"],
+                    "source": {"agent": "pm_agent", "tool": "publish_requirement"},
+                    "created_by": "ak_pm",
+                },
+            }
+        ]
+        batch = await submit_batch(
+            db_session,
+            project_id=None,
+            batch_type="publish_requirement",
+            submitted_by="ak_pm",
+            submitter_role="pm",
+            items=items,
+        )
+
+        vector_searcher = VectorSearcher(mock_embedding_client)
+        result = await auto_process_batch(
+            db_session,
+            batch_id=batch.id,
+            reviewed_by="ak_admin",
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            vector_searcher=vector_searcher,
+        )
+        assert result["decision"] == "auto_approved"
+        assert result["batch"].status == STATUS_APPROVED
