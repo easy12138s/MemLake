@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # 换 embedding 模型后必须用该脚本重标。
     CONFLICT_SIMILARITY_THRESHOLD: float = 0.85
 
+    # ========== 宽松模式（免审批直接入库）==========
+    # 全局主开关：false 时即便某个 Access Key 标记为宽松（lax_mode=true）也强制走审批，
+    # 作为紧急熔断（单一判定源见 approval/service.submit_batch_with_mode）。
+    LAX_MODE_ENABLED: bool = True
+
     # ========== 可观测性 ==========
     # 是否挂载网关 /metrics（Prometheus 拉取）。面向内网，默认不加鉴权。
     OBS_METRICS_ENABLED: bool = True

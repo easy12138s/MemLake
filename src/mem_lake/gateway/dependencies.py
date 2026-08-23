@@ -82,6 +82,15 @@ def get_current_project_scope() -> list[str]:
     return [str(pid) for pid in scope] if scope else []
 
 
+def get_current_lax_mode() -> bool:
+    """获取当前调用者的审核模式（是否宽松：true=免审批直接入库）。
+
+    从 AccessToken.claims 读取（AccessKeyAuthMiddleware 已填充），缺省为 False（严格需审批）。
+    """
+    token = get_current_access_token()
+    return bool(token.claims.get("lax_mode", False))
+
+
 def validate_project_access(project_id: uuid.UUID) -> None:
     """校验当前调用者是否有权访问指定项目。
 

@@ -86,6 +86,7 @@ async def authenticate_access_key(
         "key_id": access_key.id,
         "role": access_key.role,
         "project_scope": access_key.project_scope or [],
+        "lax_mode": bool(access_key.lax_mode),
     }
 
 
@@ -95,6 +96,7 @@ async def create_access_key(
     role: str,
     project_scope: list[uuid.UUID],
     created_by: str = "system",
+    lax_mode: bool = False,
 ) -> tuple[uuid.UUID, str]:
     """创建 Access Key。
 
@@ -106,6 +108,8 @@ async def create_access_key(
     5. write_audit_log 记录创建审计
 
     返回 (key_id, plaintext)，明文仅返回一次，调用方负责安全传递给用户。
+
+    lax_mode：宽松模式标记（false=严格需审批，true=免审批直接入库）。
 
     不 commit。
     """
@@ -121,6 +125,7 @@ async def create_access_key(
         role=role,
         project_scope=[str(pid) for pid in project_scope],
         status="active",
+        lax_mode=lax_mode,
     )
     session.add(access_key)
     await session.flush()
@@ -131,7 +136,11 @@ async def create_access_key(
         action="create",
         target_type="access_key",
         target_id=key_id,
-        detail={"role": role, "project_scope_count": len(project_scope)},
+        detail={
+            "role": role,
+            "project_scope_count": len(project_scope),
+            "lax_mode": lax_mode,
+        },
     )
 
     return key_id, plaintext
@@ -179,12 +188,14 @@ async def list_access_keys(
     *,
     role: str | None = None,
     status: str | None = None,
+    lax_mode: bool | None = None,
 ) -> list[AccessKey]:
     """按条件列出 Access Key（不含 key_hash，避免泄漏）。
 
     过滤规则：
     - role=None：不过滤角色
     - status=None：返回所有状态（active + revoked）
+    - lax_mode=None：不过滤审核模式；True/False 时按宽松/严格过滤
     - 返回的 AccessKey 对象的 key_hash 字段为 None（通过 defer 排除）
 
     不 commit。
@@ -194,6 +205,8 @@ async def list_access_keys(
         stmt = stmt.where(AccessKey.role == role)
     if status is not None:
         stmt = stmt.where(AccessKey.status == status)
+    if lax_mode is not None:
+        stmt = stmt.where(AccessKey.lax_mode == lax_mode)
 
     stmt = stmt.order_by(AccessKey.created_at.desc())
     result = await session.execute(stmt)
@@ -256,6 +269,61 @@ async def update_access_key_scope(
             "role_filter": role_filter,
             "grant_all_projects": grant_all_projects,
             "project_scope": scope,
+        },
+    )
+    return updated
+
+
+async def update_access_key_mode(
+    session: AsyncSession,
+    *,
+    lax_mode: bool,
+    key_ids: list[uuid.UUID] | None = None,
+    role_filter: str | None = None,
+    grant_all_projects: bool = False,
+    actor: str = "system",
+) -> list[AccessKey]:
+    """更新 Access Key 的审核模式（lax_mode）。
+
+    定位目标 Key 复用 update_access_key_scope 的三选一逻辑
+    （优先级 key_ids > role_filter > grant_all_projects）。仅改 lax_mode，
+    不动 role/hash/status/project_scope。
+
+    返回受影响、且重新查回的 AccessKey 列表（key_hash 已 defer）。
+
+    不 commit。
+    """
+    target_ids = await _resolve_scope_targets(
+        session, key_ids, role_filter, grant_all_projects
+    )
+    if not target_ids:
+        return []
+
+    await session.execute(
+        update(AccessKey)
+        .where(AccessKey.id.in_(target_ids))
+        .values(lax_mode=lax_mode)
+    )
+
+    refreshed = await session.execute(
+        select(AccessKey)
+        .options(defer(AccessKey.key_hash))
+        .where(AccessKey.id.in_(target_ids))
+        .order_by(AccessKey.created_at.desc())
+    )
+    updated = list(refreshed.scalars().all())
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="update_mode",
+        target_type="access_key",
+        detail={
+            "target_count": len(updated),
+            "key_ids": [str(i) for i in target_ids],
+            "role_filter": role_filter,
+            "grant_all_projects": grant_all_projects,
+            "lax_mode": lax_mode,
         },
     )
     return updated

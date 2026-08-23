@@ -21,6 +21,7 @@ from mem_lake.approval.service import (
     IdempotencyConflictError,
     PayloadValidationError,
 )
+from mem_lake.gateway.dependencies import get_current_key_id
 from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
 
@@ -72,23 +73,37 @@ WRITE_TOOL_ANNOTATIONS = ToolAnnotations(
 class WriteToolOutput(BaseModel):
     """写工具统一出参（publish_requirement/update_requirement_relations/submit_dev_artifacts）。
 
-    所有写工具产生审批批次，返回 batch_id + status + submitted_at + item_count。
-    Agent 据此知道批次已提交，需等待 admin 审批。
+    所有写工具产生审批批次。严格模式（默认）返回 status=pending_review，Agent 据此知道
+    批次已提交、需等待 admin 审批；宽松模式（提交方 Access Key 为 lax 且全局开关开启）
+    提交即自动处理：无冲突 status=approved + decision=auto_approved（已入库），有冲突
+    status=pending_review + decision=needs_human_review（仍在审批队列）。
     """
 
     batch_id: uuid.UUID = Field(description="审批批次 ID")
-    status: str = Field(description="批次状态：pending_review")
+    status: str = Field(
+        description="批次状态：pending_review（严格模式/待审批）/ approved（宽松模式已入库）"
+    )
     submitted_at: datetime = Field(description="提交时间（ISO 8601）")
     item_count: int = Field(description="审批项数量")
+    decision: str | None = Field(
+        default=None,
+        description=(
+            "宽松模式自动处理决策：auto_approved（已直接入库）/ needs_human_review"
+            "（有冲突，批次停在 pending 需 admin 处理）；严格模式为 None"
+        ),
+    )
 
     @classmethod
-    def from_batch(cls, batch) -> "WriteToolOutput":
+    def from_batch(
+        cls, batch, decision: str | None = None
+    ) -> "WriteToolOutput":
         """从 ApprovalBatch ORM 对象构造输出。"""
         return cls(
             batch_id=batch.id,
             status=batch.status,
             submitted_at=batch.submitted_at,
             item_count=len(batch.items) if batch.items else 0,
+            decision=decision,
         )
 
 
@@ -384,3 +399,29 @@ INSTALLATION_GUIDE = """## Skills 文件放置指南
 - 放置后重启 Agent 会话即可生效
 - 如不确定你的 Agent 使用的目录格式，请查阅其官方文档或互联网搜索
 """
+
+
+# ============================================================================
+# 写入/审批后向量补全入队（宽松直接入库与审批通用，共享实现避免循环导入）
+# ============================================================================
+
+
+async def _safe_enqueue_embed(project_id: uuid.UUID, node_ids: list[uuid.UUID]) -> None:
+    """写入/审批提交后安全入队向量补全任务。
+
+    事务已 commit，入队仅是后台优化（新建节点 content_vector 暂为 NULL，搜索可安全
+    跳过）。入队失败（如 DB 短暂不可用）只记录告警，不阻断结果返回——已生效，向量
+    缺失由后续 reindex 兜底（AUDIT §2.11）。
+    """
+    # 惰性导入避免与 background_tasks 的循环依赖
+    from mem_lake.gateway.background_tasks import start_embed_nodes_task
+
+    try:
+        await start_embed_nodes_task(project_id, node_ids, get_current_key_id())
+    except Exception:  # noqa: BLE001 - 入队失败仅告警，不阻断主流程
+        logger.exception(
+            "写入成功但向量补全入队失败，请后续手动 reindex 补全: "
+            "project=%s node_count=%d",
+            project_id,
+            len(node_ids),
+        )

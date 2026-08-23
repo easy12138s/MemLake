@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 
 import bcrypt
-from sqlalchemy import Index, String, text
+from sqlalchemy import Boolean, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -47,6 +47,12 @@ class AccessKey(Base):
     status: Mapped[str] = mapped_column(
         String(16), default="active", server_default=text("'active'"),
         comment="状态: active/revoked",
+    )
+    lax_mode: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=text("false"),
+        comment="审核模式: false=严格(需审批) true=宽松(免审批直接入库)",
     )
     created_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), comment="创建时间"

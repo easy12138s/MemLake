@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from mem_lake.approval.conflict import detect_conflicts
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.audit.service import write_audit_log
+from mem_lake.config import get_settings
 from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
@@ -586,6 +587,68 @@ async def auto_process_batch(
         },
         "batch": batch,
     }
+
+
+async def submit_batch_with_mode(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    batch_type: str,
+    submitted_by: str,
+    submitter_role: str,
+    items: list[dict],
+    operation_id: str | None = None,
+    lax_mode: bool,
+    graph_store: GraphStore | None = None,
+    embedding_client: EmbeddingClient | None = None,
+    vector_searcher: VectorSearcher | None = None,
+) -> tuple[ApprovalBatch, str | None]:
+    """按提交方审核模式创建批次：宽松模式提交即自动处理（同一事务）。
+
+    宽松模式（lax_mode=True 且全局 LAX_MODE_ENABLED=True）：
+    1. 同一事务内先 submit_batch 建批（幂等 + submit 审计不变）
+    2. 立即调用 auto_process_batch：无冲突 → approved 直接入库；有冲突 →
+       needs_human_review 批次保持 pending
+    返回 (batch, decision)；decision 为 "auto_approved"/"needs_human_review"
+    或 None（严格模式/全局熔断，走正常审批）。
+
+    全局开关在此单一判定：lax_mode 即便传 True，若 LAX_MODE_ENABLED=False 也强制走审批，
+    防止绕过（与 config 注释一致）。
+
+    graph_store/embedding_client/vector_searcher 仅宽松路径需要（为 auto_process_batch
+    提供）；严格模式下传 None 即可。
+
+    不 commit（提交与自动审批在同一事务，由调用方提交）。
+    """
+    lax = lax_mode and get_settings().LAX_MODE_ENABLED
+
+    batch = await submit_batch(
+        session,
+        project_id=project_id,
+        batch_type=batch_type,
+        submitted_by=submitted_by,
+        submitter_role=submitter_role,
+        items=items,
+        operation_id=operation_id,
+    )
+
+    if not lax:
+        return batch, None
+
+    if graph_store is None or embedding_client is None or vector_searcher is None:
+        raise RuntimeError(
+            "宽松模式需要 graph_store/embedding_client/vector_searcher 依赖"
+        )
+
+    result = await auto_process_batch(
+        session,
+        batch_id=batch.id,
+        reviewed_by=submitted_by,
+        graph_store=graph_store,
+        embedding_client=embedding_client,
+        vector_searcher=vector_searcher,
+    )
+    return batch, result["decision"]
 
 
 async def list_pending_batches(
