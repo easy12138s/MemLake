@@ -10,8 +10,8 @@
 """
 
 import logging
-import uvicorn
 
+import uvicorn
 from starlette.responses import Response
 
 from mem_lake.config import get_settings

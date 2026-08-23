@@ -1,4 +1,4 @@
-﻿"""M4 集成测试：三引擎检索（向量 + 全文 + 图遍历 + RRF 融合）。
+"""M4 集成测试：三引擎检索（向量 + 全文 + 图遍历 + RRF 融合）。
 
 按实际调用场景验证：
 1. VectorSearcher：相似节点检索、top_k 限制、FilterSpec 过滤（项目/类型/软删除）
@@ -46,6 +46,7 @@ async def _seed_three_nodes(
         properties=knowledge_helpers["Requirement"](),
         tags=["auth", "P0"],
         created_by="ak_pm",
+        system_id=uuid.uuid4(),
     )
 
     code = await create_node(
@@ -335,6 +336,7 @@ class TestGraphSearch:
             content="需求 A 内容",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         b = await create_node(
             db_session,
@@ -743,6 +745,7 @@ class TestSearchEdgeCases:
             content="无关联节点",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         results = await graph_searcher.traverse(

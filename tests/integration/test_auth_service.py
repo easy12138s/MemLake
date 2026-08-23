@@ -24,6 +24,7 @@ from mem_lake.auth.service import (
     revoke_access_key,
     rotate_access_key,
     update_access_key_scope,
+    update_access_key_systems,
 )
 
 # ============================================================================
@@ -54,7 +55,7 @@ class TestCreateAccessKey:
         assert access_key.id == key_id
         assert access_key.role == "dev"
         assert access_key.status == "active"
-        assert str(project_id) in access_key.project_scope
+        assert str(project_id) in access_key.project_scope["projects"]
         assert access_key.key_hash != plaintext  # 存储的是 hash 不是明文
         assert access_key.revoked_at is None
 
@@ -65,7 +66,7 @@ class TestCreateAccessKey:
         )
         access_key = await get_access_key_by_id(db_session, key_id)
         assert access_key.role == "admin"
-        assert access_key.project_scope == []
+        assert access_key.project_scope == {"systems": [], "projects": []}
 
     async def test_create_invalid_role_raises(self, db_session):
         """非法角色抛 ValueError。"""
@@ -348,11 +349,11 @@ class TestUpdateAccessKeyScope:
         )
         assert len(updated) == 1
         assert updated[0].id == k1
-        assert set(updated[0].project_scope) == {str(pid_a), str(pid_b)}
+        assert set(updated[0].project_scope["projects"]) == {str(pid_a), str(pid_b)}
 
         # k2 不受影响
         k2_db = await get_access_key_by_id(db_session, k2)
-        assert k2_db.project_scope == []
+        assert k2_db.project_scope == {"systems": [], "projects": []}
 
     async def test_update_by_role_filter(self, db_session):
         """role_filter 批量更新该角色全部 Key（含既有行，断言覆盖本次创建的 Key）。"""
@@ -370,7 +371,7 @@ class TestUpdateAccessKeyScope:
         assert pm_key not in updated_ids
         for u in updated:
             if u.id in {d1, d2}:
-                assert u.project_scope == [str(pid)]
+                assert u.project_scope["projects"] == [str(pid)]
 
     async def test_update_grant_all_projects(self, db_session):
         """grant_all_projects 更新全部 Key（空 scope = 不受限）。"""
@@ -384,7 +385,7 @@ class TestUpdateAccessKeyScope:
         assert {d1, p1}.issubset(updated_ids)
         for u in updated:
             if u.id in {d1, p1}:
-                assert u.project_scope == []
+                assert u.project_scope == {"systems": [], "projects": []}
 
     async def test_update_no_target_returns_empty(self, db_session):
         """未指定任何定位方式时返回空列表（不改任何 Key）。"""
@@ -392,3 +393,86 @@ class TestUpdateAccessKeyScope:
             db_session, project_scope=[uuid.uuid4()], actor="admin_ak"
         )
         assert updated == []
+
+
+# ============================================================================
+# update_access_key_systems 端到端（manage_system.bind_keys 路径）
+# ============================================================================
+
+
+class TestUpdateAccessKeySystems:
+    """update_access_key_systems 集成测试（回归 bind_keys 的 CAST(:sj AS jsonb) bug）。"""
+
+    async def test_bind_system_by_key_ids(self, db_session):
+        """显式指定 key_ids 绑定 system 层，保留 projects 层不变。"""
+        sid = uuid.uuid4()
+        pid = uuid.uuid4()
+        k1, _ = await create_access_key(
+            db_session, role="pm", project_scope=[pid], created_by="admin_ak"
+        )
+        k2, _ = await create_access_key(
+            db_session, role="pm", project_scope=[], created_by="admin_ak"
+        )
+
+        updated = await update_access_key_systems(
+            db_session, system_ids=[sid], key_ids=[k1], actor="admin_ak"
+        )
+        assert len(updated) == 1
+        assert updated[0].id == k1
+        assert updated[0].project_scope["systems"] == [str(sid)]
+        assert updated[0].project_scope["projects"] == [str(pid)]  # projects 保留
+
+        # k2 不受影响
+        k2_db = await get_access_key_by_id(db_session, k2)
+        assert k2_db.project_scope == {"systems": [], "projects": []}
+
+    async def test_bind_system_by_role_filter(self, db_session):
+        """role_filter 批量绑定 system 层。"""
+        sid = uuid.uuid4()
+        d1, _ = await create_access_key(
+            db_session, role="dev", project_scope=[uuid.uuid4()], created_by="admin_ak"
+        )
+        pm_key, _ = await create_access_key(
+            db_session, role="pm", project_scope=[], created_by="admin_ak"
+        )
+
+        updated = await update_access_key_systems(
+            db_session, system_ids=[sid], role_filter="dev", actor="admin_ak"
+        )
+        updated_ids = {u.id for u in updated}
+        assert d1 in updated_ids
+        assert pm_key not in updated_ids
+        for u in updated:
+            if u.id == d1:
+                assert u.project_scope["systems"] == [str(sid)]
+
+    async def test_bind_system_grant_all(self, db_session):
+        """grant_all 绑定全部 Key 的 system 层。"""
+        sid = uuid.uuid4()
+        d1, _ = await create_access_key(
+            db_session, role="dev", project_scope=[], created_by="admin_ak"
+        )
+
+        updated = await update_access_key_systems(
+            db_session, system_ids=[sid], grant_all=True, actor="admin_ak"
+        )
+        updated_ids = {u.id for u in updated}
+        assert d1 in updated_ids
+        for u in updated:
+            if u.id == d1:
+                assert u.project_scope["systems"] == [str(sid)]
+
+    async def test_bind_system_accumulates(self, db_session):
+        """多次绑定追加到 systems 层，不覆盖已有值。"""
+        sid_a, sid_b = uuid.uuid4(), uuid.uuid4()
+        k1, _ = await create_access_key(
+            db_session, role="pm", project_scope=[], created_by="admin_ak"
+        )
+
+        await update_access_key_systems(
+            db_session, system_ids=[sid_a], key_ids=[k1], actor="admin_ak"
+        )
+        updated = await update_access_key_systems(
+            db_session, system_ids=[sid_b], key_ids=[k1], actor="admin_ak"
+        )
+        assert set(updated[0].project_scope["systems"]) == {str(sid_a), str(sid_b)}

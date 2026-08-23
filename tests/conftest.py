@@ -93,6 +93,8 @@ def mock_embedding_client() -> MagicMock:
         side_effect=lambda text, **kwargs: [0.1] * 1024
     )
     client.health = AsyncMock(return_value={"status": "ok", "model": "mock", "dimension": 1024})
+    # rerank 语义：mock 不启用精排（返回 False 即可 await，避免 _apply_rerank 对 MagicMock await 报错）
+    client.has_rerank = AsyncMock(return_value=False)
     client.close = AsyncMock()
     return client
 
@@ -269,6 +271,7 @@ def sample_batch_payloads(knowledge_helpers):
                 "payload": {
                     "project_id": str(project_id),
                     "node_type": "Requirement",
+                    "system_id": str(uuid.uuid4()),
                     "title": "用户登录鉴权需求",
                     "content": "系统需要支持账号密码登录与 JWT 令牌签发",
                     "properties": req_props,

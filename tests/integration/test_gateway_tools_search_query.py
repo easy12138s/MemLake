@@ -31,7 +31,6 @@ from mem_lake.knowledge.repository import (
 )
 from mem_lake.search.filters import FilterSpec, compile_sqlalchemy
 
-
 # ============================================================================
 # search_similar_requirements / search_code_snippets 端到端
 # ============================================================================
@@ -83,6 +82,7 @@ class TestHybridSearchTools:
             content="需要登录功能",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         code_node = await create_node(
             db_session,
@@ -132,6 +132,7 @@ class TestHybridSearchTools:
             content="需要登录功能",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         code_node = await create_node(
             db_session,
@@ -174,7 +175,7 @@ class TestHybridSearchTools:
         from mem_lake.search.fusion import hybrid_search
 
         project_id = uuid.uuid4()
-        req_node = await create_node(
+        await create_node(
             db_session,
             graph_store=graph_store,
             embedding_client=mock_embedding_client,
@@ -184,9 +185,9 @@ class TestHybridSearchTools:
             content="需要登录功能",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         await db_session.commit()  # 独立 session 检索要求种子数据已提交
-
         try:
             result = await hybrid_search(
                 query="登录功能",
@@ -237,6 +238,7 @@ class TestAnalyzeImpactScope:
             content="需要登录功能",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         # 创建 CodeSnippet 节点
         code_node = await create_node(
@@ -270,8 +272,6 @@ class TestAnalyzeImpactScope:
 
         assert result["requirement"] is not None
         assert len(result["codes"]) >= 1
-        # 验证返回的 code 节点包含 LoginService
-        code_titles = [c.get("properties", {}).get("title") for c in result["codes"]]
         # AGE 返回的节点结构可能不同，验证 codes 非空即可
         assert len(result["codes"]) >= 1
 
@@ -321,6 +321,7 @@ class TestCheckRequirementConflicts:
             content="项目内唯一的需求",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
 
         # 模拟检索结果包含自身（score=1.0，超过阈值 0.85）
@@ -374,6 +375,7 @@ class TestListKnowledge:
             content="内容1",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         await create_node(
             db_session,
@@ -385,6 +387,7 @@ class TestListKnowledge:
             content="内容2",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
 
         nodes = await list_nodes_by_project(
@@ -416,6 +419,7 @@ class TestListKnowledge:
             content="内容",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         await create_node(
             db_session,
@@ -459,6 +463,7 @@ class TestListKnowledge:
                 content=f"内容{i}",
                 properties=req_props,
                 created_by="ak_pm",
+                system_id=uuid.uuid4(),
             )
 
         # 第一页 2 条
@@ -657,6 +662,7 @@ class TestTagsFilter:
             properties=knowledge_helpers["Requirement"](),
             tags=["urgent", "bug"],
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         await db_session.commit()
 
@@ -683,6 +689,7 @@ class TestTagsFilter:
             properties=knowledge_helpers["Requirement"](),
             tags=["urgent", "bug"],
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         await db_session.commit()
 
@@ -743,6 +750,7 @@ class TestGetRequirementContext:
             content="内容",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         code_node = await create_node(
             db_session,
@@ -770,8 +778,8 @@ class TestGetRequirementContext:
         assert req.type == "Requirement"
 
         # 图遍历获取关联节点
-        from mem_lake.search.graph import GraphSearcher
         from mem_lake.search.filters import FilterSpec
+        from mem_lake.search.graph import GraphSearcher
         searcher = GraphSearcher(graph_store)
         filters = FilterSpec(project_id=project_id)
         related = await searcher.traverse(
@@ -779,6 +787,59 @@ class TestGetRequirementContext:
         )
         # 应至少返回 1 个关联节点（CodeSnippet）
         assert len(related) >= 1
+
+    async def test_context_floating_req_with_related_code(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """悬浮需求（project_id=None）连到归属项目的代码片段，图遍历应能检索到关联节点。"""
+        project_id = uuid.uuid4()
+        req_props = knowledge_helpers["Requirement"]()
+        code_props = knowledge_helpers["CodeSnippet"]()
+
+        # 悬浮需求：project_id=None + system_id 有值
+        req_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=None,
+            node_type="Requirement",
+            title="悬浮需求",
+            content="悬浮内容",
+            properties=req_props,
+            created_by="ak_pm",
+            system_id=uuid.uuid4(),
+        )
+        # 归属某项目的代码片段
+        code_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="CodeSnippet",
+            title="代码",
+            content="代码内容",
+            properties=code_props,
+            created_by="ak_dev",
+        )
+        from mem_lake.knowledge.repository import add_edge
+        await add_edge(
+            db_session,
+            graph_store=graph_store,
+            from_id=req_node.id,
+            to_id=code_node.id,
+            edge_type="implements",
+            actor="ak_dev",
+        )
+        await db_session.commit()
+
+        from mem_lake.search.graph import GraphSearcher
+        searcher = GraphSearcher(graph_store)
+        # 悬浮需求 project_id=None → FilterSpec 无 project 过滤，应返回归属代码节点
+        related = await searcher.traverse(
+            db_session, req_node.id, depth=2, filters=FilterSpec(project_id=None)
+        )
+        assert len(related) >= 1
+        assert any(r.node_id == code_node.id for r in related)
 
 
 # ============================================================================
@@ -806,6 +867,7 @@ class TestQueryAuditLog:
             content="内容",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
 
         logs = await query_audit_logs(db_session, limit=100, offset=0)
@@ -830,6 +892,7 @@ class TestQueryAuditLog:
             content="内容1",
             properties=req_props,
             created_by="ak_pm_special",
+            system_id=uuid.uuid4(),
         )
 
         logs = await query_audit_logs(db_session, actor="ak_pm_special")
@@ -852,6 +915,7 @@ class TestQueryAuditLog:
             content="内容",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
 
         write_logs = await query_audit_logs(db_session, action="write")
@@ -874,6 +938,7 @@ class TestQueryAuditLog:
             content="内容",
             properties=req_props,
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
 
         node_logs = await query_audit_logs(db_session, target_type="node")
@@ -898,6 +963,7 @@ class TestQueryAuditLog:
                 content=f"内容{i}",
                 properties=req_props,
                 created_by="ak_pm",
+                system_id=uuid.uuid4(),
             )
 
         page1 = await query_audit_logs(db_session, limit=2, offset=0)
@@ -922,6 +988,7 @@ class TestQueryAuditLog:
             content="内容",
             properties=req_props,
             created_by="ak_pm_convert",
+            system_id=uuid.uuid4(),
         )
 
         logs = await query_audit_logs(db_session, actor="ak_pm_convert")

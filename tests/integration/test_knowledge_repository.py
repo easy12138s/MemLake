@@ -51,6 +51,7 @@ class TestCreateNode:
             tags=["auth", "P0"],
             source={"agent": "pm_agent", "tool": "publish_requirement"},
             created_by="ak_pm_001",
+            system_id=uuid.uuid4(),
         )
 
         # 1. 字段验证
@@ -128,6 +129,7 @@ class TestCreateNode:
                 properties=knowledge_helpers["Requirement"](),
                 created_by="ak",
                 generate_vector=True,
+                system_id=uuid.uuid4(),
             )
 
     async def test_create_node_invalid_properties_raises(
@@ -145,6 +147,7 @@ class TestCreateNode:
                 content="C",
                 properties={"requirement_id": "REQ-001"},  # 缺 priority/module
                 created_by="ak",
+                system_id=uuid.uuid4(),
             )
 
     async def test_create_node_invalid_type_raises(
@@ -212,6 +215,7 @@ class TestCreateNode:
                 content=f"{node_type} 内容描述",
                 properties=knowledge_helpers[node_type](),
                 created_by="ak_test",
+                system_id=uuid.uuid4(),
             )
             assert node.type == node_type
             assert node.status == "approved"
@@ -237,6 +241,7 @@ class TestGetNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         fetched = await get_node(db_session, created.id)
@@ -264,6 +269,7 @@ class TestGetNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         await archive_node(
             db_session,
@@ -290,6 +296,7 @@ class TestGetNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         await archive_node(
             db_session,
@@ -324,6 +331,7 @@ class TestUpdateNode:
             content="原内容",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         original_vector = list(node.content_vector)
 
@@ -361,6 +369,7 @@ class TestUpdateNode:
             content="原内容",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         original_vector = list(node.content_vector)
         mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.3] * 1024
@@ -392,6 +401,7 @@ class TestUpdateNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         # 缺失 priority 必填字段
@@ -461,6 +471,7 @@ class TestUpdateNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         original_version = node.version
 
@@ -509,6 +520,7 @@ class TestUpdateNode:
             properties=knowledge_helpers["Requirement"](),
             tags=["old"],
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         original_vector = list(node.content_vector)
 
@@ -546,6 +558,7 @@ class TestArchiveNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         archived = await archive_node(
@@ -579,6 +592,7 @@ class TestArchiveNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         await archive_node(
@@ -605,6 +619,7 @@ class TestArchiveNode:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         await archive_node(
@@ -651,6 +666,7 @@ class TestAddEdge:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         code = await create_node(
             db_session,
@@ -703,6 +719,7 @@ class TestAddEdge:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         b = await create_node(
             db_session,
@@ -714,6 +731,7 @@ class TestAddEdge:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         # 不传 created_by，由 repository 注入
@@ -751,6 +769,7 @@ class TestAddEdge:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         b = await create_node(
             db_session,
@@ -762,6 +781,7 @@ class TestAddEdge:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         with pytest.raises(SchemaValidationError, match="非法边类型"):
@@ -791,7 +811,7 @@ class TestListNodesByProject:
         await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid1, node_type="Requirement", title="R1", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
         await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
@@ -802,7 +822,7 @@ class TestListNodesByProject:
         await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid2, node_type="Requirement", title="R2", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
 
         nodes = await list_nodes_by_project(db_session, project_id=pid1)
@@ -817,7 +837,7 @@ class TestListNodesByProject:
         await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid, node_type="Requirement", title="R", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
         await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
@@ -837,7 +857,7 @@ class TestListNodesByProject:
         node = await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid, node_type="Requirement", title="R", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
         await archive_node(db_session, graph_store=graph_store, node_id=node.id, actor="ak")
 
@@ -859,7 +879,7 @@ class TestListNodesByProject:
             await create_node(
                 db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
                 project_id=pid, node_type="Requirement", title=f"R{i}", content="C",
-                properties=knowledge_helpers["Requirement"](), created_by="ak",
+                properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
             )
 
         page1 = await list_nodes_by_project(db_session, project_id=pid, limit=2, offset=0)
@@ -890,6 +910,7 @@ class TestTransactionalCoweite:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         code = await create_node(
             db_session,
@@ -941,6 +962,7 @@ class TestTransactionalCoweite:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         # 节点已 flush，可查
@@ -984,6 +1006,7 @@ class TestRegenerateVector:
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
             generate_vector=False,
+            system_id=uuid.uuid4(),
         )
         assert node.content_vector is None
 
@@ -1036,6 +1059,7 @@ class TestUpdateNodeEdgeCases:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         updated = await update_node(
@@ -1068,6 +1092,7 @@ class TestUpdateNodeEdgeCases:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         await archive_node(
             db_session, graph_store=graph_store, node_id=node.id, actor="ak"
@@ -1101,6 +1126,7 @@ class TestUpdateNodeEdgeCases:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         with pytest.raises(ValueError, match="regenerate_vector=True"):
@@ -1129,6 +1155,7 @@ class TestUpdateNodeEdgeCases:
             properties=knowledge_helpers["Requirement"](),
             tags=["old"],
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         original_vector = list(node.content_vector)
 
@@ -1221,6 +1248,7 @@ class TestAddEdgeEdgeCases:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         await add_edge(
@@ -1252,17 +1280,17 @@ class TestListNodesEdgeCases:
         n1 = await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid, node_type="Requirement", title="R1", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
         n2 = await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid, node_type="Requirement", title="R2", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
         n3 = await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid, node_type="Requirement", title="R3", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
         await archive_node(db_session, graph_store=graph_store, node_id=n2.id, actor="ak")
         await archive_node(db_session, graph_store=graph_store, node_id=n3.id, actor="ak")
@@ -1285,7 +1313,7 @@ class TestListNodesEdgeCases:
         await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid, node_type="Requirement", title="R", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
 
         # offset=100 远超总数 1
@@ -1300,7 +1328,7 @@ class TestListNodesEdgeCases:
         await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=pid, node_type="Requirement", title="R", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
 
         nodes = await list_nodes_by_project(db_session, project_id=pid, limit=0)
@@ -1326,6 +1354,7 @@ class TestCreateNodeEdgeCases:
             properties=knowledge_helpers["Requirement"](),
             tags=["认证", "安全 🔒"],
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
 
         fetched = await get_node(db_session, node.id)
@@ -1357,6 +1386,7 @@ class TestCreateNodeEdgeCases:
             content="C",
             properties=special_props,
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
 
         fetched = await get_node(db_session, node.id)
@@ -1385,6 +1415,7 @@ class TestCreateNodeEdgeCases:
             content="",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak",
+            system_id=uuid.uuid4(),
         )
         assert node.title == ""
         assert node.content == ""
@@ -1414,6 +1445,7 @@ class TestTransactionalIntegrity:
             content="C",
             properties=knowledge_helpers["Requirement"](),
             created_by="ak_pm",
+            system_id=uuid.uuid4(),
         )
         code = await create_node(
             db_session,
@@ -1452,7 +1484,7 @@ class TestTransactionalIntegrity:
         req = await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
             project_id=project_id, node_type="Requirement", title="R", content="C",
-            properties=knowledge_helpers["Requirement"](), created_by="ak",
+            properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
         code = await create_node(
             db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
