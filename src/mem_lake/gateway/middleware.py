@@ -168,12 +168,38 @@ class RateLimitMiddleware(Middleware):
 
     实现：滑动窗口 + deque，窗口大小 1 秒，最大请求数 = QPS。
     单实例内存限流为既定设计（docker compose 单实例部署，PDD 既定范围）。
+
+    内存治理（AUDIT §2.9）：桶只在该 key 被访问时创建；除惰性归零删除外，
+    采用两条主动防线限制 `_buckets` 无界驻留：
+    1. 定期清扫：每 `_prune_interval` 次调用全表清理一次所有过期桶（避免
+       RATE_LIMIT_WINDOW_SEC 内访问过一次、此后长期不活跃的 key 桶永久驻留）。
+    2. 容量上限：`_max_buckets` 之内、且清扫后仍超限时触发一次清理再评估，
+       仍超限则逐出最不活跃（最小窗口左边界）的桶，防止任意 key 数量打满内存。
     """
 
     def __init__(self, qps: int | None = None) -> None:
         settings = get_settings()
         self._qps = qps or settings.MCP_RATE_LIMIT_QPS
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
+        # 距上次全表清扫的调用计数与清扫阈值
+        self._calls_since_prune = 0
+        self._prune_interval = 1000
+        # 桶容量上限：当前 qps=100 单实例下，任意活跃 key 数远超该值极不可达
+        self._max_buckets = 10000
+
+    def _prune(self, now: float) -> None:
+        """全表清扫：删除所有过期/空桶，返回清理后的条数。"""
+        expired_before = len(self._buckets)
+        for key in list(self._buckets):
+            bucket = self._buckets[key]
+            while bucket and bucket[0] < now - RATE_LIMIT_WINDOW_SEC:
+                bucket.popleft()
+            if not bucket:
+                del self._buckets[key]
+        if expired_before and len(self._buckets) < expired_before:
+            logger.debug(
+                "限流全表清扫：%d -> %d 桶", expired_before, len(self._buckets)
+            )
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         access_token = get_access_token()
@@ -185,6 +211,12 @@ class RateLimitMiddleware(Middleware):
         client_key = access_token.client_id or "anonymous"
         now = time.time()
         bucket = self._buckets.get(client_key)
+
+        # 定期全表清扫，覆盖「访问一次后长期停用」的不活跃 key 桶
+        self._calls_since_prune += 1
+        if self._calls_since_prune >= self._prune_interval:
+            self._calls_since_prune = 0
+            self._prune(now)
 
         # 清理窗口外的请求记录；空桶删除 key，防止 dict 长期驻留
         if bucket is not None:
@@ -199,8 +231,17 @@ class RateLimitMiddleware(Middleware):
                 f"限流：超过 {self._qps} QPS 限制（Access Key: {client_key[:8]}...）"
             )
 
-        # 记录本次请求（按需创建桶）
+        # 记录本次请求（按需创建桶）；超容量上限时先清理再评估，仍超限则逐出最不活跃桶
         if bucket is None:
+            if len(self._buckets) >= self._max_buckets:
+                self._prune(now)
+            if len(self._buckets) >= self._max_buckets:
+                stale_key = min(
+                    self._buckets,
+                    key=lambda k: self._buckets[k][0] if self._buckets[k] else now,
+                )
+                del self._buckets[stale_key]
+                logger.warning("限流桶达容量上限，已逐出最不活跃桶 %s", stale_key[:8])
             bucket = self._buckets[client_key] = deque()
         bucket.append(now)
         return await call_next(context)
