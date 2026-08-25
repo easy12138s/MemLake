@@ -71,6 +71,19 @@ class TestCreateNode:
         assert len(node.content_vector) == 1024
         assert node.content_vector[0] == 0.1
 
+        # 2b. 32k 适配（D）：多向量 facet 已写入（content facet + 各关键属性 facet）
+        from sqlalchemy import func, select
+
+        from mem_lake.knowledge.models import NodeEmbedding
+
+        facet_count = await db_session.scalar(
+            select(func.count())
+            .select_from(NodeEmbedding)
+            .where(NodeEmbedding.node_id == node.id)
+        )
+        # Requirement 含 content + requirement_id/priority/module/acceptance_criteria 4 属性均非空 = 5
+        assert facet_count == 5
+
         # 3. AGE 图节点存在
         rows = await graph_store.match_pattern(
             db_session,

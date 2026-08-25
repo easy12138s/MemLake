@@ -14,11 +14,11 @@ create_all 创建；M4 实现检索调用。向量检索只查 knowledge_node �
 - 查询向量通过参数化传入，非字符串拼接，零注入风险
 """
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.embedding.client import EmbeddingClient
-from mem_lake.knowledge.models import KnowledgeNode
+from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
 from mem_lake.search.filters import FilterSpec, compile_sqlalchemy
 from mem_lake.search.fusion import SearchResult, _truncate
 
@@ -98,32 +98,45 @@ class VectorSearcher:
     ) -> list[SearchResult]:
         """共享检索执行：构造语句 → 执行 → 构造 SearchResult（search 与 search_by_vector 复用）。
 
-        max_inner_product 是 pgvector-python 提供的混合方法，对应 SQL `<#>`（内积），
-        归一化向量下 <#> = -余弦。dist 为该表达式的值（0~-1→cos∈[0,1]，越大越相似）。
-        ORDER BY <#> ASC 等价于余弦降序（最近在前）。
+        多向量（D）检索：节点在 node_embedding 表有多个 facet 向量，按 node_id 聚合取
+        各 facet 与查询向量的最大余弦（maxsim，ColBERT 式），避免单向量语义稀释。
+        - NodeEmbedding.content_vector.max_inner_product(query_vector) 对应 SQL `<#>`（内积），
+          归一化向量下 <#> = -余弦。distance = <#>，similarity = -distance = 余弦 ∈[0,1]。
+        - 子查询：对通过过滤的节点，按 node_id 取 max(-distance) 作为该节点相似度，降序取 top_k。
+        - 外层再 JOIN knowledge_node 取展示字段（title/content/type/properties/tags）。
+        - 无向量节点（content_vector IS NULL）自动排除（max 对 NULL 忽略，LIMIT 截断后不出现）。
         """
-        distance = KnowledgeNode.content_vector.max_inner_product(query_vector)
-        stmt = (
-            select(KnowledgeNode, distance.label("distance"))
-            # 跳过未向量化节点（content_vector 为 NULL 时 max_inner_product 为 NULL）
-            .where(KnowledgeNode.content_vector.isnot(None))
-            .order_by(distance.asc())
-            .limit(top_k)
-        )
+        distance = NodeEmbedding.content_vector.max_inner_product(query_vector)
+        sim = -distance  # 余弦相似度（归一化向量），越大越相似
 
-        # 编译 FilterSpec 为 WHERE 子句
+        # 子查询：过滤 + 按节点聚合 max 相似度 + 取 top_k
+        # 注意：is_deleted / status 过滤与历史行为一致，由传入的 FilterSpec 提供
+        # （默认 status="approved"、exclude_deleted=True），此处不硬编码，避免覆盖调用方意图。
+        sub = (
+            select(NodeEmbedding.node_id, func.max(sim).label("sim"))
+            .join(KnowledgeNode, KnowledgeNode.id == NodeEmbedding.node_id)
+            .where(NodeEmbedding.content_vector.isnot(None))
+        )
         where_clauses = compile_sqlalchemy(filters)
         if where_clauses:
-            stmt = stmt.where(*where_clauses)
+            sub = sub.where(*where_clauses)
+        sub = sub.group_by(NodeEmbedding.node_id).order_by(text("sim DESC")).limit(top_k)
+        subq = sub.subquery()
+
+        # 外层：取节点展示字段（保留子查询的相似度降序，避免 join 重排）
+        stmt = (
+            select(KnowledgeNode, subq.c.sim)
+            .join(subq, subq.c.node_id == KnowledgeNode.id)
+            .order_by(text("sim DESC"))
+        )
 
         result = await session.execute(stmt)
 
-        # 归一化向量下 score = -max_inner_product = 余弦 ∈[-1,1]，负值截断为 0（兼容 0~1 语义）
+        # 余弦 ∈[-1,1]，负值截断为 0（兼容 0~1 语义）
         search_results: list[SearchResult] = []
         for row in result:
             node: KnowledgeNode = row[0]
-            dist: float = row[1]
-            similarity = max(0.0, -dist)
+            similarity: float = max(0.0, float(row[1]))
             search_results.append(
                 SearchResult(
                     node_id=node.id,

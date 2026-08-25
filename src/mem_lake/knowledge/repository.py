@@ -21,14 +21,14 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
-from mem_lake.knowledge.embed import build_embed_text
+from mem_lake.knowledge.embed import build_embed_facets, build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
-from mem_lake.knowledge.models import KnowledgeNode
+from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
 from mem_lake.knowledge.schema import (
     SchemaValidationError,
     validate_edge_type,
@@ -117,6 +117,20 @@ async def create_node(
     session.add(node)
     await session.flush()  # 触发 server_default 生成 id 与 created_at
 
+    # 多向量 facet 写入（32k 适配 D）：与 content_vector 同条件（generate_vector 且
+    # 有 embedding_client 才 embed）。批量预计算向量场景（content_vector 直传、
+    # embedding_client 为 None）或 generate_vector=False 时跳过，由 reindex worker 后续补写。
+    if generate_vector and embedding_client is not None:
+        await _store_facet_vectors(
+            session,
+            node_id=node.id,
+            node_type=node_type,
+            title=title,
+            content=content,
+            properties=properties,
+            embedding_client=embedding_client,
+        )
+
     # AGE 图节点：携带 id/project_id/title 供图查询过滤（system_id 可选）
     graph_props: dict[str, Any] = {
         "id": str(node.id),
@@ -150,6 +164,49 @@ async def create_node(
     )
 
     return node
+
+
+async def _store_facet_vectors(
+    session: AsyncSession,
+    *,
+    node_id: uuid.UUID,
+    node_type: str,
+    title: str,
+    content: str,
+    properties: dict[str, Any],
+    embedding_client: EmbeddingClient,
+) -> int:
+    """写入节点多向量 facet（32k 适配 D）。
+
+    先删旧 facet 行（幂等更新），再按 build_embed_facets 构造各 facet 文本，
+    一次批量 embed 写回 node_embedding 表。返回写入的 facet 行数（0 表示空节点，不写）。
+    不 commit，由调用方事务控制。
+    """
+    facets = build_embed_facets(node_type, title, content, properties)
+    if not facets:
+        return 0
+    # 幂等：先清后写（更新场景）
+    await session.execute(
+        delete(NodeEmbedding).where(NodeEmbedding.node_id == node_id)
+    )
+    texts = list(facets.values())
+    vectors = await embedding_client.embed(texts)
+    for facet_name, vec in zip(facets.keys(), vectors):
+        session.add(
+            NodeEmbedding(
+                node_id=node_id,
+                facet=facet_name,
+                content_vector=vec,
+            )
+        )
+    return len(facets)
+
+
+async def _delete_facet_vectors(session: AsyncSession, *, node_id: uuid.UUID) -> None:
+    """删除节点的全部 facet 向量行（归档兜底）。不 commit。"""
+    await session.execute(
+        delete(NodeEmbedding).where(NodeEmbedding.node_id == node_id)
+    )
 
 
 async def get_node(
@@ -258,6 +315,16 @@ async def update_node(
         embed_input = build_embed_text(node.type, node.title, node.content, node.properties)
         node.content_vector = await embedding_client.embed_one(embed_input)
         changes["vector_regenerated"] = True
+        # 同步多向量 facet（32k 适配 D）
+        await _store_facet_vectors(
+            session,
+            node_id=node.id,
+            node_type=node.type,
+            title=node.title,
+            content=node.content,
+            properties=node.properties,
+            embedding_client=embedding_client,
+        )
 
     # 标题变更时同步图投影的 title，避免 impact_analysis 等返回旧标题（同事务，不 commit）。
     # 节点不存在时 sync_node_title 静默无操作（图投影非真相源，一致性以 PG 为准）。
@@ -307,6 +374,8 @@ async def archive_node(
 
     node.is_deleted = True
     node.status = "archived"
+    # 归档节点不再参与检索（检索层过滤 is_deleted），同时清掉 facet 向量避免存储膨胀
+    await _delete_facet_vectors(session, node_id=node.id)
     await session.flush()
 
     if delete_from_graph:
@@ -387,6 +456,16 @@ async def regenerate_vector(
     node = await get_node(session, node_id)
     embed_input = build_embed_text(node.type, node.title, node.content, node.properties)
     node.content_vector = await embedding_client.embed_one(embed_input)
+    # 同步多向量 facet（32k 适配 D）
+    await _store_facet_vectors(
+        session,
+        node_id=node.id,
+        node_type=node.type,
+        title=node.title,
+        content=node.content,
+        properties=node.properties,
+        embedding_client=embedding_client,
+    )
     await session.flush()
 
     await write_audit_log(
@@ -472,12 +551,48 @@ async def batch_regenerate_vectors(
     """
     if not nodes:
         return 0
+    # 组合向量（content_vector，冲突检测/向后兼容）
     texts = [
         build_embed_text(n.type, n.title, n.content, n.properties) for n in nodes
     ]
     embeddings = await embedding_client.embed(texts)
+    # 多向量 facet（32k 适配 D）：汇集所有节点所有 facet 文本，一次批量 embed
+    all_facet_texts: list[str] = []
+    node_facet_counts: list[int] = []
+    node_facet_meta: list[tuple[uuid.UUID, str, str, dict]] = []
+    for n in nodes:
+        facets = build_embed_facets(n.type, n.title, n.content, n.properties)
+        node_facet_counts.append(len(facets))
+        for fname, ftext in facets.items():
+            all_facet_texts.append(ftext)
+            node_facet_meta.append((n.id, fname, n.type, n.properties))
+    facet_embeddings = (
+        await embedding_client.embed(all_facet_texts) if all_facet_texts else []
+    )
+
+    # 写回组合向量
     for node, vec in zip(nodes, embeddings):
         node.content_vector = vec
+
+    # 写回 facets：先按节点批量删旧行，再插入新行
+    node_ids = [n.id for n in nodes]
+    await session.execute(
+        delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(node_ids))
+    )
+    facet_idx = 0
+    for n, count in zip(nodes, node_facet_counts):
+        for _ in range(count):
+            fid, fname, _, _ = node_facet_meta[facet_idx]
+            session.add(
+                NodeEmbedding(
+                    node_id=fid,
+                    facet=fname,
+                    content_vector=facet_embeddings[facet_idx],
+                )
+            )
+            facet_idx += 1
+
+    for node in nodes:
         await write_audit_log(
             session,
             actor=actor,

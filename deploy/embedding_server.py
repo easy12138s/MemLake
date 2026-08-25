@@ -105,7 +105,29 @@ def health():
 # 因此不加全局锁（按实证而非臆测决策）；若未来换模型/引擎出现并发不稳定，
 # 再考虑在 encode/rerank 外包 threading.Lock。
 MAX_EMBED_TEXTS = 128   # 单次 embed 文本数上限（防超大请求 OOM）
-MAX_TEXT_CHARS = 32000  # 单条文本上限（超长截断，防超长输入拖垮推理）
+MAX_TEXT_CHARS = 32000  # 单条文本字符硬上限（兜底，防极端超长输入拖垮推理）
+
+# 32k 适配：字符 ≠ token，字符级截断会"隐形误切"（中英文 token 比不同），
+# 且与 sentence-transformers 内部截断口径不一致导致向量不可复现。改用 tokenizer 计数，
+# 按模型 max_seq_length 截断（预留特殊 token 余量），与推理端编码口径一致。
+_TOKEN_MARGIN = 8
+
+
+def _truncate_to_tokens(text: str) -> str:
+    """按模型 tokenizer 将文本截断到 max_seq_length - 余量，返回解码后文本。
+
+    字符硬上限先挡住极端输入，再 token 截断。多向量 facet 文本通常很短，极少触发。
+    """
+    if not text:
+        return ""
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS]
+    max_len = int(getattr(model, "max_seq_length", 8192)) - _TOKEN_MARGIN
+    if max_len <= 0:
+        max_len = 1
+    tok = model.tokenizer
+    ids = tok.encode(text, max_length=max_len, truncation=True, add_special_tokens=False)
+    return tok.decode(ids, skip_special_tokens=False)
 
 
 @app.post("/embed", response_model=EmbedResponse)
@@ -128,7 +150,7 @@ def _embed_impl(req: EmbedRequest) -> EmbedResponse:
         raise HTTPException(
             status_code=422, detail=f"texts 数量超过上限 {MAX_EMBED_TEXTS}"
         )
-    texts = [t[:MAX_TEXT_CHARS] for t in req.texts]
+    texts = [_truncate_to_tokens(t) for t in req.texts]
     embs = model.encode(
         texts,
         normalize_embeddings=True,
@@ -153,7 +175,7 @@ def _rerank_impl(req: RerankRequest) -> RerankResponse:
         raise HTTPException(status_code=503, detail="rerank 模型未加载")
     if not req.texts:
         return RerankResponse(scores=[], order=[])
-    texts = [t[:MAX_TEXT_CHARS] for t in req.texts]
+    texts = [_truncate_to_tokens(t) for t in req.texts]
     if len(texts) > MAX_EMBED_TEXTS:
         raise HTTPException(
             status_code=422, detail=f"texts 数量超过上限 {MAX_EMBED_TEXTS}"

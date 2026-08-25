@@ -149,3 +149,50 @@ class KnowledgeNode(Base):
             postgresql_ops={"content_vector": "vector_ip_ops"},
         ),
     )
+
+
+class NodeEmbedding(Base):
+    """节点多向量 facet 表（32k 适配 D：按字段独立 embed，检索 max-pooling）。
+
+    每个 knowledge_node 在此表有 1~N 行：facet="content"（title+content）或某关键属性键
+    （如 root_cause/solution），content_vector 为该 facet 的 1024 维归一化向量。
+    检索时按 node_id 聚合取各 facet 与查询向量的最大余弦（maxsim），等价 ColBERT 式
+    多向量召回，避免单向量语义稀释。
+
+    HNSW 索引随 create_all 创建；存量节点通过 reindex_project_vectors 后台任务回填 facets。
+    """
+
+    __tablename__ = "node_embedding"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        comment="所属知识节点",
+    )
+    facet: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        comment="facet 名: content / 属性键（root_cause 等）",
+    )
+    content_vector: Mapped[list[float] | None] = mapped_column(
+        Vector(1024), nullable=True, comment="facet 向量（Qwen3-Embedding-0.6B，1024 维）"
+    )
+
+    __table_args__ = (
+        Index("idx_node_embedding_node", "node_id"),
+        Index("idx_node_embedding_node_facet", "node_id", "facet", unique=True),
+        # HNSW 向量索引（与 knowledge_node.content_vector 同参数/opclass）
+        Index(
+            "idx_node_embedding_vector",
+            "content_vector",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 32, "ef_construction": 400},
+            postgresql_ops={"content_vector": "vector_ip_ops"},
+        ),
+    )
