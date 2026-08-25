@@ -63,7 +63,7 @@ curl -X POST http://localhost:8000/mcp \
 docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 ```
 
-明文 Key 仅显示一次，丢失只能重新创建。admin 接入后通过 `manage_access_key` 工具为 PM 和 Dev 创建 Access Key。
+明文 Key 仅显示一次，丢失只能重新创建。admin 接入后通过 `create_access_key` 工具为 PM 和 Dev 创建 Access Key。
 
 ### 5. 配置 MCP 客户端
 
