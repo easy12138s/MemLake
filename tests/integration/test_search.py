@@ -126,6 +126,35 @@ class TestVectorSearch:
         # score 为相似度（0~1）
         assert all(0 <= r.score <= 1 for r in results)
 
+    async def test_vector_search_multi_facet_stored_and_recallable(
+        self, db_session, graph_store, vector_searcher, knowledge_helpers
+    ):
+        """32k 适配（D）：节点写入多 facet 向量，且按属性关键词可召回。
+
+        验证：① 每个节点在 node_embedding 表写入 content + 各非空属性 facet；
+        ② 查询落在一个属性 facet（root_cause）上仍能被多向量检索召回。
+        """
+        from sqlalchemy import func, select
+
+        from mem_lake.knowledge.models import NodeEmbedding
+
+        pid, requirement, code, pitfall = await _seed_three_nodes(
+            db_session, graph_store, vector_searcher._embedding_client, knowledge_helpers
+        )
+        # Pitfall: content + symptom/root_cause/solution/severity = 5 个 facet
+        facet_count = await db_session.scalar(
+            select(func.count())
+            .select_from(NodeEmbedding)
+            .where(NodeEmbedding.node_id == pitfall.id)
+        )
+        assert facet_count == 5
+
+        # 按 root_cause 关键词检索可召回 pitfall（facet 级匹配，max-pooling 取最优 facet）
+        results = await vector_searcher.search(
+            db_session, query="分布式锁竞争导致 token 续期冲突", top_k=10
+        )
+        assert pitfall.id in {r.node_id for r in results}
+
     async def test_vector_search_respects_top_k(
         self, db_session, graph_store, vector_searcher, knowledge_helpers
     ):
