@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, requirement, PRD."
-version: 1.4.0
+version: 1.5.0
 ---
 
 # PM Skills（产品经理）
@@ -28,7 +28,7 @@ version: 1.4.0
 
 核心价值：**让你的需求理解被团队所有 AI 共享**。没有 Mem Lake，你的需求文档只存在你的 AI 会话里；有了 Mem Lake，开发者的 AI 能直接检索到你定义的需求上下文。
 
-关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
+关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。提交后**不要立即检索**刚提交的内容——宽松模式向量在后台异步生成，刚提交瞬间可能检索不到；严格模式需等 admin 审批通过后才会写入图谱。
 
 ## 核心工作流：先检索后提交
 
@@ -380,7 +380,10 @@ update_requirement_relations(
 
 4. **properties 字段缺失会被 schema 校验拒绝**：publish_requirement 在工具层即校验 properties 必填字段，缺失会直接返回错误（不会进入审批队列）。
 
-5. **不要假设提交即生效（严格模式下）**：严格模式下 status="pending_review" 意味着需求尚未写入知识图谱，其他 Agent 此时检索不到，需等待 admin 审批通过。**例外**：若你的 Key 为宽松模式，提交返回 `status="approved"` + `decision="auto_approved"` 说明已直接入库、可被检索；若返回 `decision="needs_human_review"` 则说明有冲突，批次停在队列需 admin 处理。
+5. **提交后如何跟进（不要轮询、不要立即检索）**：
+   - **严格模式**：返回 `status="pending_review"` 表示批次在队列等待 admin 审批。**拿到 batch_id 后只需告知用户「待 admin 审批」，无需轮询**；审批通过前需求未写入图谱，其他 Agent 检索不到。
+   - **宽松模式**：返回 `status="approved"` + `decision="auto_approved"` 即已直接入库生效、可被检索；若返回 `decision="needs_human_review"` 表示有冲突，批次停在队列等待 admin 人工决策（你这边无需再操作）。
+   - **不要提交后立即检索刚提交的内容**：宽松模式向量在后台异步生成，刚提交瞬间可能检索不到；严格模式则要等审批通过后才写入。
 
 6. **content 应足够详细**：content 会用于向量生成（f"{title}\n{content}"），内容越详细，检索准确性越高。避免只写一句话描述。
 

@@ -135,16 +135,17 @@ class GetProjectInfoOutput(BaseModel):
 class RelatedNodeOutput(BaseModel):
     """关联节点项。
 
-    edge_type/direction/depth 为占位（当前图遍历不透出边类型/方向/实际距离，
-    edge_type 恒为 "unknown"、direction 恒为 "unknown"、depth 恒为 1）。
+    edge_type 为从需求节点到该关联节点的路径边类型列表（每一跳一个），
+    depth 为路径跳数（1=直接关联）。图遍历为无向，direction 无第一语义，故不提供。
     """
     node_id: uuid.UUID = Field(description="节点 ID")
     title: str = Field(description="节点标题")
     content: str = Field(description="节点摘要（前 200 字符）")
     node_type: str = Field(description="节点类型")
-    edge_type: str = Field(description="关联边类型（当前均为 unknown 占位）")
-    direction: str = Field(description="方向（当前均为 unknown 占位）")
-    depth: int = Field(description="与起点的距离（当前均为 1 占位）")
+    edge_type: list[str] = Field(
+        description="关联路径上的边类型列表（从需求出发每一跳一个；无向图无方向概念）"
+    )
+    depth: int = Field(description="与起点的跳数距离（1=直接关联）")
 
 
 class RequirementContextOutput(BaseModel):
@@ -317,8 +318,8 @@ def register_query_tools(mcp: FastMCP) -> None:
         """查询需求上下文（关联的代码/方案/意图/踩坑节点）。
 
         PM/Dev/Admin 共享工具。基于图遍历获取需求节点的关联节点列表（按关联距离大致排序）。
-        注意：当前返回的每个关联节点 depth 统一为 1、edge_type/direction 为 "unknown" 占位，
-        真实距离与边类型暂未透出。需求节点不存在时 requirement=None，related_nodes 为空。
+        每个关联节点返回真实的 edge_type（从需求到该节点的路径边类型列表）与 depth（跳数）；
+        图遍历为无向，故不提供 direction。需求节点不存在时 requirement=None，related_nodes 为空。
         """
         try:
             # 深度校验（1~5）
@@ -365,24 +366,22 @@ def register_query_tools(mcp: FastMCP) -> None:
                 filters = FilterSpec(
                     project_id=req_node.project_id,
                 )
-                results = await graph_searcher.traverse(
+                results = await graph_searcher.context_traverse(
                     session,
                     requirement_id,
                     depth=depth,
                     filters=filters,
                 )
 
-                # 3. 转换为 RelatedNodeOutput（GraphSearcher.traverse 不返回方向/边类型/实际
-                #    距离；edge_type/direction 用 unknown 如实占位，深度统一 1）
+                # 3. 转换为 RelatedNodeOutput（context_traverse 已透出真实 edge_type/depth）
                 related = [
                     RelatedNodeOutput(
                         node_id=r.node_id,
                         title=r.title,
                         content=r.content,
                         node_type=r.node_type,
-                        edge_type="unknown",
-                        direction="unknown",
-                        depth=1,
+                        edge_type=r.edge_types or [],
+                        depth=r.graph_depth or 1,
                     )
                     for r in results
                 ]

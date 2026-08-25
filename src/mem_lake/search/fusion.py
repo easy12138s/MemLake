@@ -44,6 +44,9 @@ class SearchResult:
     source: str  # "vector" / "fulltext" / "graph" / "fused"
     properties: dict
     tags: list
+    # 图遍历上下文（仅 get_requirement_context 路径填充，其他来源为 None）：
+    edge_types: list[str] | None = None  # 路径边类型列表（从起点出发每一跳一个）
+    graph_depth: int | None = None  # 路径跳数（1=直接关联）
 
     # 注意：fused 结果的 score 为向量余弦分（0~1，来自 vector 引擎），便于判相关性；
     # 排序仍由 RRF 排名决定。RRF 原始分数仅用于融合排序，不直接透出。
