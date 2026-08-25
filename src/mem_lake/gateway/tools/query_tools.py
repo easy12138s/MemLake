@@ -314,11 +314,11 @@ def register_query_tools(mcp: FastMCP) -> None:
             description="关系链遍历深度（1=直接关联，2=间接关联，最大 5）",
         ),
     ) -> RequirementContextOutput:
-        """查询需求上下文（关联的代码/方案/意图/踩坑节点 + 关系链）。
+        """查询需求上下文（关联的代码/方案/意图/踩坑节点）。
 
-        PM/Dev/Admin 共享工具。基于图遍历获取需求节点的关联节点列表，
-        按深度排序返回。深度越大返回的关联节点越多，但延迟越高。
-        需求节点不存在时 requirement=None，related_nodes 为空。
+        PM/Dev/Admin 共享工具。基于图遍历获取需求节点的关联节点列表（按关联距离大致排序）。
+        注意：当前返回的每个关联节点 depth 统一为 1、edge_type/direction 为 "unknown" 占位，
+        真实距离与边类型暂未透出。需求节点不存在时 requirement=None，related_nodes 为空。
         """
         try:
             # 深度校验（1~5）

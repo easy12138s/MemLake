@@ -193,6 +193,8 @@ def register_search_tools(mcp: FastMCP) -> None:
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
         query 不能为空（空查询下全文引擎无排序依据）。
+        用途边界：本工具检索**需求节点(Requirement)**。要查某需求的关联代码/方案/意图，
+        用 get_requirement_context；要做"改这个需求会影响哪些代码"的影响分析，用 analyze_impact_scope。
         """
         try:
             if project_id is None and system_id is None:
@@ -250,6 +252,8 @@ def register_search_tools(mcp: FastMCP) -> None:
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
         query 不能为空（空查询下全文引擎无排序依据）。
+        用途边界：本工具检索**研发资产**(CodeSnippet/Solution/DesignIntent/Pitfall)。
+        要找需求本身用 search_similar_requirements；要拿某需求关联的实现/方案/坑用 get_requirement_context。
         """
         try:
             validate_project_access(project_id)
@@ -281,6 +285,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         Requirement --implements--> CodeSnippet --depends_on--> CodeSnippet
         CodeSnippet --realized_by--> Solution --embodies--> DesignIntent
         返回需求节点、直接实现代码、依赖链、方案、设计意图的完整影响范围。
+        用途边界：本工具做**变更影响范围**遍历。若只想看某需求的**直接关联节点**，用 get_requirement_context。
         """
         try:
             validate_project_access(project_id)

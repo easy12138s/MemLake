@@ -38,5 +38,4 @@ Mem Lake 的答案：**不需要专人维护知识库，也不需要单独部署
 
 - [README.md](../../README.md)：项目门面，定位 + 最小部署说明
 - [DEPLOYMENT.md](../../DEPLOYMENT.md)：部署与运维的完整操作手册（本 wiki 的部署/运维页是其结构化承接）
-- [Mem Lake 项目总体设计文档（PDD）](../Mem%20Lake%20项目总体设计文档（PDD）.md)：完整设计规格，面向设计评审
 - `src/mem_lake/skills/{admin,pm,dev}/SKILL.md`：面向 Agent 的角色技能文档，由 `get_role_skills` 工具按角色分发

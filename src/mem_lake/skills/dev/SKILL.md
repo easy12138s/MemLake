@@ -6,6 +6,8 @@ version: 1.3.0
 
 # Dev Skills（开发者）
 
+> 本文件参数表以工具实际签名（代码）为准；如与运行时 MCP 客户端展示不符，以代码为准。
+
 ## When to Use
 
 当开发者或其 Agent 需要执行以下操作时加载本 skill：
@@ -37,12 +39,21 @@ version: 1.3.0
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | project_id | UUID | 是 | 项目 ID |
+| artifacts | dict | 否 | 嵌套产物集合，结构见下：`{code_snippets:list, solutions:list, design_intents:list, pitfalls:list}` |
 | requirement_id | UUID | 否 | 关联的需求节点 ID（自动为每个 CodeSnippet 构造 implements 边）。省略则提交「游离知识点」，自动挂到本项目 ProjectProfile 节点（若存在） |
-| code_snippets | list[dict] | 否 | 代码片段列表 |
-| solutions | list[dict] | 否 | 解决方案列表 |
-| design_intents | list[dict] | 否 | 设计意图列表 |
-| pitfalls | list[dict] | 否 | 踩坑记录列表 |
 | relations | list[dict] | 否 | 节点间关系（用 ref 引用）|
+| operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
+
+`artifacts` 内部结构（各子列表均为 list[dict]）：
+
+```python
+artifacts={
+    "code_snippets":  [ {...} ],   # 见下方 CodeSnippet 必填字段
+    "solutions":      [ {...} ],   # 见下方 Solution 必填字段
+    "design_intents": [ {...} ],   # 见下方 DesignIntent 必填字段
+    "pitfalls":       [ {...} ],   # 见下方 Pitfall 必填字段
+}
+```
 
 **各产物类型必填字段**：
 
@@ -66,8 +77,9 @@ version: 1.3.0
 | ref | str | 引用名 |
 | title | str | 方案标题 |
 | content | str | 方案详细描述 |
-| properties.approach | str | 采用的方案 |
-| properties.alternatives | str | 备选方案 |
+| properties.version | str | 版本号（必填）|
+| properties.approach | str | 采用的方案（必填）|
+| properties.alternatives | str | 备选方案（可选）|
 | tags | list[str] | 否，标签 |
 
 #### DesignIntent（设计意图）
@@ -120,7 +132,7 @@ relations=[
 ]
 ```
 
-`relation_type` 可选 `implements / depends_on / realized_by / embodies / traces_to / described_by / references / relates_to` 等。
+`relation_type` 可选 `implements / depends_on / realized_by / embodies / traces_to / described_by / references`。
 
 返回：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"/"approved"；宽松模式已入库时 status="approved" + decision="auto_approved"）
 
@@ -130,7 +142,152 @@ relations=[
 |------|------|------|------|
 | role | str | 否 | 指定角色，None 返回当前调用者角色 |
 
-返回：role, skills_markdown, version, installation_guide
+ 返回：role, skills_markdown, version, installation_guide
+
+### update_node — 修正已审批通过的节点
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 节点所属项目 ID |
+| node_id | UUID | 是 | 要更新的已审批节点 UUID |
+| title | str | 否 | 新标题；留空则不更新 |
+| content | str | 否 | 新正文；留空则不更新 |
+| properties | dict | 否 | 新属性字典，整体替换原属性（不会深度合并）；留空则不更新。整体替换后会重新校验该节点类型的必填字段 |
+| tags | list[str] | 否 | 新标签列表；留空则不更新 |
+| operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
+
+**何时用**：修正已写入知识图谱（审批通过）的错误节点内容——标题/正文/属性/标签任一变更均重新生成向量、版本号 +1、写审计日志。节点不存在/不属于本项目/已归档则拒绝。
+**何时不用**：修正尚未审批通过的产物请改 `submit_dev_artifacts`（重新提交批次）；本工具不改变节点类型。
+
+```python
+update_node(
+    project_id="proj-uuid-001",
+    node_id="node-uuid-xxx",
+    content="修正后的正确描述...",
+    properties={"name": "LoginService", "type": "class",
+                "responsibility": "处理用户认证逻辑", "file_path": "src/auth/login_service.py"}
+)
+# 返回 batch_id, status="pending_review"/"approved"
+```
+
+### search_similar_requirements — 检索相似需求
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| query | str | 是 | 查询文本（需求描述/关键词）|
+| system_id | UUID | 否 | 归属 system 域（可选；有值则检索该系统全部需求含悬浮）|
+| project_id | UUID | 否 | 归属项目 ID（与 system_id 至少其一必填）|
+| top_n | int | 否 | 融合后返回数量上限，默认 10 |
+| tags | list[str] | 否 | 标签过滤（tags_op 控制 AND/OR）|
+| tags_op | str | 否 | 标签匹配语义：`all`=AND（默认），`any`=OR（命中任一标签）|
+| min_score | float | 否 | 向量余弦相似度下限（0~1）；传 None 关闭默认阈值（默认 0.5）|
+| semantic_tags | bool | 否 | 标签语义扩展，默认 False |
+
+检索**需求节点(Requirement)**。找"某类需求/某功能有哪些需求"用我；找某需求的**关联代码/方案/意图**用 get_requirement_context。
+**何时用**：从需求维度泛搜（"登录相关有哪些需求""某功能需求怎么写"），或经 `system_id` 定位可见 System 的悬浮需求并拿其 UUID。
+**何时不用**：找"某功能怎么实现/踩过什么坑"用 `search_code_snippets`；找某需求下挂的代码/方案用 `get_requirement_context`。
+
+```python
+search_similar_requirements(
+    query="用户登录认证",
+    system_id="sys-uuid-001",   # 或 project_id="proj-uuid-001"
+    top_n=10
+)
+# 返回 fused 列表，每项含 requirement 节点 + score
+```
+
+### search_code_snippets — 检索研发资产
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 归属项目 ID |
+| query | str | 是 | 查询文本（代码功能/关键词）|
+| top_n | int | 否 | 融合后返回数量上限，默认 10 |
+| tags | list[str] | 否 | 标签过滤（tags_op 控制 AND/OR）|
+| tags_op | str | 否 | 标签匹配语义：`all`=AND（默认），`any`=OR（命中任一标签）|
+| min_score | float | 否 | 向量余弦相似度下限（0~1）；传 None 关闭默认阈值（默认 0.5）|
+| semantic_tags | bool | 否 | 标签语义扩展，默认 False |
+
+检索**研发资产**(CodeSnippet/Solution/DesignIntent/Pitfall)。找"某功能怎么实现/踩过什么坑/用了什么方案"用我；找需求本身用 search_similar_requirements。
+**何时用**：按功能/关键词检索项目内经验资产（实现代码、方案、踩坑、设计意图）。
+**何时不用**：找需求本身用 `search_similar_requirements`；找某需求的关联资产用 `get_requirement_context`。
+
+```python
+search_code_snippets(
+    project_id="proj-uuid-001",
+    query="yaml 缩进",
+    top_n=10
+)
+# 返回 fused 列表，node_type 区分 CodeSnippet/Solution/DesignIntent/Pitfall
+```
+
+### analyze_impact_scope — 变更影响范围分析
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 归属项目 ID |
+| requirement_id | UUID | 是 | 需求节点 ID |
+| max_depth | int | 否 | depends_on 依赖链遍历深度，默认 5 |
+
+从需求出发做**变更影响范围**遍历(需求→代码→依赖→方案→意图)。用于"改这个需求会影响哪些代码"；仅看直接关联用 get_requirement_context。
+**何时用**：评估某需求变更波及的代码、依赖、方案、设计意图完整影响范围。
+**何时不用**：仅需该需求直接关联的少量节点用 `get_requirement_context`。
+
+```python
+analyze_impact_scope(
+    project_id="proj-uuid-001",
+    requirement_id="req-uuid-001",
+    max_depth=5
+)
+# 返回需求节点、直接实现代码、依赖链、方案、设计意图的完整影响范围
+```
+
+### get_project_profile — 查询项目画像
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 项目 ID |
+
+**何时用**：了解项目的技术栈/架构/约定/团队（ProjectProfile 节点）。
+**何时不用**：项目尚未创建画像时 profile=None，需 admin 用 manage_project_profile 创建。
+
+```python
+get_project_profile(project_id="proj-uuid-001")
+# 返回最新 ProjectProfile 节点（profile=None 表示尚未创建）
+```
+
+### get_project_info — 枚举/查询项目画像（DEV 视角）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| action | str | 是 | `list` 枚举当前 key 可见项目 / `get` 查询单个项目 |
+| project_id | UUID | 否 | `get` 时必填的项目 ID |
+| include_profile | bool | 否 | 为 true 时附完整画像属性，默认 False |
+| include_scope_meta | bool | 否 | 为 true 时附 scope 自证信息，默认 False |
+
+**何时用**：DEV 自查可见项目范围（pm/dev 仅 scope 内），或拉取某项目详情/画像。
+**何时不用**：创建/维护项目画像用 admin 的 manage_project_profile；DEV 越权访问 scope 外项目会返回权限拒绝。
+
+```python
+get_project_info(action="list", include_profile=True)
+get_project_info(action="get", project_id="proj-uuid-001", include_scope_meta=True)
+```
+
+### get_requirement_context — 查询需求上下文
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| requirement_id | UUID | 是 | 需求节点 ID |
+| depth | int | 否 | 关系链遍历深度（1=直接关联，2=间接关联，最大 5），默认 2 |
+
+给定需求 UUID，返回其**关联节点**(代码/方案/意图/踩坑)。先经 search_similar_requirements 拿到需求 UUID；泛搜需求用 search_similar_requirements。
+**何时用**：已知某需求 UUID，要取其关联的代码/方案/意图/踩坑节点与关系链。
+**何时不用**：泛搜"有哪些需求"用 `search_similar_requirements`；评估完整变更影响范围用 `analyze_impact_scope`。
+
+```python
+get_requirement_context(requirement_id="req-uuid-001", depth=2)
+# 返回关联节点列表（按深度排序）
+```
 
 ## 工作流
 
@@ -143,21 +300,23 @@ relations=[
    - 填充 properties（name, type, responsibility, file_path）
    - 声明 ref 名
 
-2. submit_dev_artifacts(
-       project_id=uuid,
-       code_snippets=[{
-           "ref": "LoginService",
-           "title": "用户登录服务实现",
-           "content": "class LoginService: ...",
-           "properties": {
-               "name": "LoginService",
-               "type": "class",
-               "responsibility": "处理用户认证逻辑",
-               "file_path": "src/auth/login_service.py"
-           },
-           "tags": ["auth", "login"]
-       }]
-   )
+ 2. submit_dev_artifacts(
+        project_id=uuid,
+        artifacts={
+            "code_snippets": [{
+                "ref": "LoginService",
+                "title": "用户登录服务实现",
+                "content": "class LoginService: ...",
+                "properties": {
+                    "name": "LoginService",
+                    "type": "class",
+                    "responsibility": "处理用户认证逻辑",
+                    "file_path": "src/auth/login_service.py"
+                },
+                "tags": ["auth", "login"]
+            }]
+        }
+    )
    ← 返回 batch_id, status="pending_review"
 
 3. 告知开发者："代码片段已提交，批次 {batch_id} 待 admin 审批"
@@ -169,26 +328,29 @@ relations=[
 # 提交登录服务代码 + 对应方案 + 关联到已有需求
 submit_dev_artifacts(
     project_id=uuid,
-    code_snippets=[{
-        "ref": "LoginService",
-        "title": "用户登录服务实现",
-        "content": "class LoginService: ...",
-        "properties": {
-            "name": "LoginService",
-            "type": "class",
-            "responsibility": "处理用户认证逻辑",
-            "file_path": "src/auth/login_service.py"
-        }
-    }],
-    solutions=[{
-        "ref": "TokenAuth",
-        "title": "Token 认证方案",
-        "content": "采用 JWT Token 方案...",
-        "properties": {
-            "approach": "JWT Token + Redis 缓存",
-            "alternatives": "Session-based auth（因扩展性差未采用）"
-        }
-    }],
+    artifacts={
+        "code_snippets": [{
+            "ref": "LoginService",
+            "title": "用户登录服务实现",
+            "content": "class LoginService: ...",
+            "properties": {
+                "name": "LoginService",
+                "type": "class",
+                "responsibility": "处理用户认证逻辑",
+                "file_path": "src/auth/login_service.py"
+            }
+        }],
+        "solutions": [{
+            "ref": "TokenAuth",
+            "title": "Token 认证方案",
+            "content": "采用 JWT Token 方案...",
+            "properties": {
+                "version": "v1",
+                "approach": "JWT Token + Redis 缓存",
+                "alternatives": "Session-based auth（因扩展性差未采用）"
+            }
+        }]
+    },
      relations=[
          {"from_ref": "LoginService", "relation_type": "implements", "to_ref": "req-uuid"},
          {"from_ref": "TokenAuth", "relation_type": "traces_to", "to_ref": "LoginService"}
@@ -203,18 +365,20 @@ submit_dev_artifacts(
 submit_dev_artifacts(
     project_id=uuid,
     requirement_id=req_uuid,   # 必填；但坑不会自动挂到需求，需下方 relations 显式声明
-    pitfalls=[{
-        "ref": "AsyncSessionLeak",
-        "title": "async SQLAlchemy Session 泄漏导致连接池耗尽",
-        "content": "在高并发下出现 PoolExhausted 错误...",
-        "properties": {
-            "symptom": "PoolExhausted: Connection pool exhausted",
-            "root_cause": "AsyncSession 未在 finally 中 close",
-            "solution": "使用 async with session: 上下文管理器",
-            "severity": "P1"
-        },
-        "tags": ["async", "sqlalchemy", "bug"]
-    }],
+    artifacts={
+        "pitfalls": [{
+            "ref": "AsyncSessionLeak",
+            "title": "async SQLAlchemy Session 泄漏导致连接池耗尽",
+            "content": "在高并发下出现 PoolExhausted 错误...",
+            "properties": {
+                "symptom": "PoolExhausted: Connection pool exhausted",
+                "root_cause": "AsyncSession 未在 finally 中 close",
+                "solution": "使用 async with session: 上下文管理器",
+                "severity": "P1"
+            },
+            "tags": ["async", "sqlalchemy", "bug"]
+        }]
+    },
     # 坑不会自动挂载到需求，必须显式声明关系，否则它只是孤立节点
     relations=[
         {"from_ref": str(req_uuid), "relation_type": "described_by", "to_ref": "AsyncSessionLeak"}
@@ -229,15 +393,17 @@ submit_dev_artifacts(
 submit_dev_artifacts(
     project_id=uuid,
     requirement_id=req_uuid,
-    design_intents=[{
-        "ref": "WhyPGOverMongo",
-        "title": "为什么选择 PostgreSQL 而非 MongoDB",
-        "content": "知识图谱需要关系型 + 向量 + 全文检索...",
-        "properties": {
-            "rationale": "PostgreSQL 支持 pgvector + AGE + zhparser 三合一",
-        "trade_offs": "放弃 MongoDB 的 schema-free 灵活性，换取事务一致性"
-        }
-    }]
+    artifacts={
+        "design_intents": [{
+            "ref": "WhyPGOverMongo",
+            "title": "为什么选择 PostgreSQL 而非 MongoDB",
+            "content": "知识图谱需要关系型 + 向量 + 全文检索...",
+            "properties": {
+                "rationale": "PostgreSQL 支持 pgvector + AGE + zhparser 三合一",
+                "trade_offs": "放弃 MongoDB 的 schema-free 灵活性，换取事务一致性"
+            }
+        }]
+    }
 )
 
 ### 场景五：记录游离知识点（不绑定需求）
@@ -247,18 +413,20 @@ submit_dev_artifacts(
 submit_dev_artifacts(
     project_id=uuid,
     # 不传 requirement_id → 游离知识点
-    pitfalls=[{
-        "ref": "YamlIndentTrap",
-        "title": "YAML 缩进错误导致服务启动失败",
-        "content": "2 空格 vs 4 空格混用被解析为嵌套结构...",
-        "properties": {
-            "symptom": "service fails to start",
-            "root_cause": "mixed indentation",
-            "solution": "统一 2 空格缩进",
-            "severity": "P2"
-        },
-        "tags": ["yaml", "config"]
-    }]
+    artifacts={
+        "pitfalls": [{
+            "ref": "YamlIndentTrap",
+            "title": "YAML 缩进错误导致服务启动失败",
+            "content": "2 空格 vs 4 空格混用被解析为嵌套结构...",
+            "properties": {
+                "symptom": "service fails to start",
+                "root_cause": "mixed indentation",
+                "solution": "统一 2 空格缩进",
+                "severity": "P2"
+            },
+            "tags": ["yaml", "config"]
+        }]
+    }
 )
 # 审批通过后自动生成：ProjectProfile --references--> YamlIndentTrap
 # 检索：search_code_snippets(project_id, query="yaml 缩进") 可命中
@@ -295,32 +463,35 @@ Dev: "把登录模块的实现和方案录入 Mem Lake"
 
 → submit_dev_artifacts(
     project_id="proj-uuid-001",
-    code_snippets=[{
-        "ref": "LoginService",
-        "title": "用户登录服务实现",
-        "content": """class LoginService:
+    artifacts={
+        "code_snippets": [{
+            "ref": "LoginService",
+            "title": "用户登录服务实现",
+            "content": """class LoginService:
     async def login(self, email: str, password: str) -> Token:
         user = await self.user_repo.find_by_email(email)
         if not user or not verify_password(password, user.password_hash):
             raise AuthError("Invalid credentials")
         return self.token_service.generate(user.id)""",
-        "properties": {
-            "name": "LoginService",
-            "type": "class",
-            "responsibility": "处理用户认证逻辑，含密码校验和 Token 生成",
-            "file_path": "src/auth/login_service.py"
-        },
-        "tags": ["auth", "login"]
-    }],
-    solutions=[{
-        "ref": "TokenAuth",
-        "title": "JWT Token 认证方案",
-        "content": "采用 JWT Token 方案，access_token 有效期 2h，refresh_token 7d...",
-        "properties": {
-            "approach": "JWT Token + Redis 黑名单",
-            "alternatives": "Session-based（因水平扩展困难未采用）"
-        }
-    }],
+            "properties": {
+                "name": "LoginService",
+                "type": "class",
+                "responsibility": "处理用户认证逻辑，含密码校验和 Token 生成",
+                "file_path": "src/auth/login_service.py"
+            },
+            "tags": ["auth", "login"]
+        }],
+        "solutions": [{
+            "ref": "TokenAuth",
+            "title": "JWT Token 认证方案",
+            "content": "采用 JWT Token 方案，access_token 有效期 2h，refresh_token 7d...",
+            "properties": {
+                "version": "v1",
+                "approach": "JWT Token + Redis 黑名单",
+                "alternatives": "Session-based（因水平扩展困难未采用）"
+            }
+        }]
+    },
      relations=[
          {"from_ref": "LoginService", "relation_type": "implements", "to_ref": "req-001-uuid"},
          {"from_ref": "TokenAuth", "relation_type": "traces_to", "to_ref": "LoginService"}
@@ -338,20 +509,22 @@ Dev: "昨天踩的 async session 泄漏的坑记一下"
 
 → submit_dev_artifacts(
     project_id="proj-uuid-001",
-    pitfalls=[{
-        "ref": "AsyncSessionLeak",
-        "title": "async SQLAlchemy Session 泄漏导致连接池耗尽",
-        "content": """高并发下出现 PoolExhausted 错误。
+    artifacts={
+        "pitfalls": [{
+            "ref": "AsyncSessionLeak",
+            "title": "async SQLAlchemy Session 泄漏导致连接池耗尽",
+            "content": """高并发下出现 PoolExhausted 错误。
 错误堆栈: sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached
 排查发现 AsyncSession 未在异常路径中 close。""",
-        "properties": {
-            "symptom": "PoolExhausted: Connection pool exhausted",
-            "root_cause": "AsyncSession 在异常路径未 close，连接泄漏",
-            "solution": "使用 async with session: 上下文管理器替代手动 close",
-            "severity": "P1"
-        },
-        "tags": ["async", "sqlalchemy", "bug", "P1"]
-    }]
+            "properties": {
+                "symptom": "PoolExhausted: Connection pool exhausted",
+                "root_cause": "AsyncSession 在异常路径未 close，连接泄漏",
+                "solution": "使用 async with session: 上下文管理器替代手动 close",
+                "severity": "P1"
+            },
+            "tags": ["async", "sqlalchemy", "bug", "P1"]
+        }]
+    }
 )
 ← batch_id="def-456"
 

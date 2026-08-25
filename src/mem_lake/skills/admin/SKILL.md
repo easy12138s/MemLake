@@ -1,10 +1,12 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, manage_access_key, manage_project_profile."
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Admin Skills（管理员）
+
+> 本文件参数表以工具实际签名（代码）为准；如与运行时 MCP 客户端展示不符，以代码为准。
 
 ## When to Use
 
@@ -38,12 +40,11 @@ version: 1.2.0
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | 否 | 项目 ID，None 表示所有项目 |
-| status | str | 否 | 批次状态过滤，默认 pending_review |
-| page | int | 否 | 页码，默认 1 |
-| page_size | int | 否 | 每页数量，默认 20 |
+| project_id | UUID \| None | 否 | 项目 ID 过滤，None=所有项目 |
+| limit | int | 否 | 返回数量上限，默认 50 |
+| offset | int | 否 | 分页偏移，默认 0 |
 
-返回：批次列表（batch_id, project_id, batch_type, submitted_by, status, item_count, created_at）
+返回：pending_review 状态批次列表（含 is_warning 超期预警 / is_timeout 已超期标记），每项含 batch_id, project_id, batch_type, submitted_by, status, item_count, created_at
 
 ### review_auto_process — 自动处理审批批次（核心工具）
 
@@ -141,6 +142,7 @@ PM 需求按 system 隔离；System 由 admin 统一建并签发。
 |------|------|------|------|
 | action | str | 是 | `create` / `list` / `set_projects` / `bind_keys` |
 | name | str | create 时必填 | 系统域名（唯一）|
+| description | str \| None | create 时可选 | 系统域描述 |
 | system_id | UUID | set_projects/bind_keys 时必填 | 目标 System ID |
 | project_ids | list[UUID] | set_projects 时 | 该系统下归属的 project 列表（决定 dev 对悬浮需求的可见性）|
 | key_ids / role_filter / grant_all | - | bind_keys 时 | 定位目标 Key（优先级 key_ids > role_filter > grant_all）|
@@ -212,12 +214,93 @@ list 时 admin 枚举全量项目，pm/dev 仅返回 scope 内项目；get 时 p
 
 返回：role, skills_markdown, version, installation_guide
 
+### get_project_profile — 查询项目画像（三角色共享）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 项目 ID |
+
+返回：项目最新的 ProjectProfile 节点；项目尚未创建画像时 `profile=None`，可调用 `manage_project_profile`（admin）创建。
+
+何时用：需要读取项目技术栈/架构/约定/团队等画像元信息时。
+何时不用：仅需列举可见项目范围时用 `get_project_info`，无需取完整画像。
+
+示例：
+```
+get_project_profile(project_id="...")
+→ {"profile": {"title": "...", "properties": {...}}} 或 {"profile": None}
+```
+
+### get_requirement_context — 查询需求上下文（三角色共享）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| requirement_id | UUID | 是 | 需求节点 ID |
+| depth | int | 否 | 关系链遍历深度（1=直接关联，2=间接关联，最大 5），默认 2 |
+
+返回：基于图遍历获取需求节点的关联节点列表（关联的代码/方案/意图/踩坑节点 + 关系链），按深度排序返回。
+
+何时用：需一次性了解某需求关联的代码、方案、设计意图、踩坑记录及其关系链时。
+何时不用：仅需检索相似需求时用 `search_similar_requirements`；需求节点不存在时 `requirement=None`、related_nodes 为空。
+
+示例：
+```
+get_requirement_context(requirement_id="...", depth=2)
+→ {"requirement": {...}, "related_nodes": [...关联节点按深度排序]}
+```
+
+### list_knowledge — 分页列出项目知识节点（Admin）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID | 是 | 项目 ID |
+| node_type | str \| None | 否 | 节点类型过滤（None 表示所有类型）|
+| status | str \| None | 否 | 状态过滤：`approved`（默认，仅已审批）/ `archived`（仅已归档）/ None（所有状态，含已归档）|
+| limit | int | 否 | 返回数量上限，默认 100 |
+| offset | int | 否 | 分页偏移，默认 0 |
+
+返回：项目知识节点列表（按时间倒序）。
+
+何时用：直接查看项目下所有节点（不走融合检索），排查已归档或特定类型节点时。
+何时不用：按语义检索研发资产用 `search_code_snippets`（Dev 工具）。
+
+示例：
+```
+list_knowledge(project_id="...", status=None)   # 含已归档
+list_knowledge(project_id="...", node_type="Pitfall", status="approved")
+```
+
+### query_audit_log — 查询审计日志（Admin）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | UUID \| None | 否 | 项目 ID 过滤（None 表示所有项目）|
+| actor | str \| None | 否 | 操作者 Access Key ID 过滤 |
+| action | str \| None | 否 | 操作类型过滤：`write` / `update` / `archive` |
+| target_type | str \| None | 否 | 目标类型过滤：`node` / `edge` |
+| target_id | UUID \| None | 否 | 目标 ID 过滤 |
+| start_time | datetime \| None | 否 | 起始时间（ISO 8601）|
+| end_time | datetime \| None | 否 | 结束时间（ISO 8601）|
+| limit | int | 否 | 返回数量上限，默认 100 |
+| offset | int | 否 | 分页偏移，默认 0 |
+
+返回：审计日志记录列表（多条件过滤 + 分页）。审计日志为 append-only，记录所有知识图谱写操作。
+
+何时用：需要追溯某 key/某节点/某时间段的所有知识写入操作时（如宽松模式入库审计、密钥轮换审计）。
+何时不用：仅需查看待审批批次用 `review_pending_list`。
+
+示例：
+```
+query_audit_log(project_id="...", actor="key-uuid", action="update")
+query_audit_log(target_id="node-uuid", start_time="2026-08-01T00:00:00")
+```
+
 ## 工作流
 
 ### 场景一：常规审批处理（推荐自动审批优先）
 
 ```
-1. review_pending_list(status="pending_review")
+1. review_pending_list(limit=50, offset=0)
    → 获取待审批批次队列
 
 2. 对每个批次调用 review_auto_process(batch_id=...)
@@ -373,7 +456,7 @@ manage_project_profile(
 
 ```
 Admin Agent: 收到通知，有新批次待审批
-→ review_pending_list(status="pending_review")
+→ review_pending_list(limit=50, offset=0)
 ← 返回 1 个批次: batch_id=abc-123, summary="REQ-001 用户登录需求", submitted_by="pm"
 
 → review_auto_process(batch_id="abc-123")
