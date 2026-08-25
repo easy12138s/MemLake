@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.4.0
+version: 1.5.0
 ---
 
 # Dev Skills（开发者）
@@ -28,7 +28,7 @@ version: 1.4.0
 
 核心价值：**让你的开发经验被团队所有 AI 共享**。没有 Mem Lake，你踩过的坑只有你的 AI 知道；有了 Mem Lake，其他开发者的 AI 能检索到你记录的坑和解决方案，新人 AI 也能快速了解项目的设计意图。
 
-关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
+关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。提交后**不要立即检索**刚提交的内容——宽松模式向量在后台异步生成，刚提交瞬间可能检索不到；严格模式需等 admin 审批通过后才会写入图谱。
 
 ## 核心工作流：先检索后提交
 
@@ -113,6 +113,50 @@ artifacts={
 | properties.solution | str | 解决方案 |
 | properties.severity | str | 严重程度（P0/P1/P2/P3）|
 | tags | list[str] | 否，标签 |
+
+**最简调用模板（每种产物只填必填字段，可单独提交）**：
+
+CodeSnippet：
+```python
+submit_dev_artifacts(project_id=uuid, artifacts={"code_snippets":[{
+    "ref": "MySvc", "title": "标题", "content": "代码或说明",
+    "properties": {"name":"MySvc","type":"class",
+                   "responsibility":"职责","file_path":"src/x.py"}
+}]})
+```
+
+Solution：
+```python
+submit_dev_artifacts(project_id=uuid, artifacts={"solutions":[{
+    "ref":"SolA","title":"方案","content":"描述",
+    "properties":{"version":"v1","approach":"采用的方案"}
+}]})
+```
+
+DesignIntent：
+```python
+submit_dev_artifacts(project_id=uuid, artifacts={"design_intents":[{
+    "ref":"WhyA","title":"意图","content":"描述",
+    "properties":{"rationale":"理由","trade_offs":"权衡"}
+}]})
+```
+
+Pitfall：
+```python
+submit_dev_artifacts(project_id=uuid, artifacts={"pitfalls":[{
+    "ref":"BugA","title":"坑","content":"描述",
+    "properties":{"symptom":"症状","root_cause":"根因",
+                   "solution":"解决方案","severity":"P1"}
+}]})
+```
+
+relations（批次内 ref 互引 / 引用已有节点 UUID）：
+```python
+submit_dev_artifacts(project_id=uuid,
+    artifacts={"code_snippets":[{"ref":"MySvc","title":"...","content":"...",
+        "properties":{"name":"MySvc","type":"class","responsibility":"...","file_path":"..."}}]},
+    relations=[{"from_ref":"MySvc","relation_type":"implements","to_ref":"<req-uuid 或批次内 ref>"}])
+```
 
 **relations 结构**（用 ref 引用批次内节点或已有节点 UUID）：
 
@@ -452,7 +496,10 @@ submit_dev_artifacts(
 
 4. **提交后不可修改**：批次一旦提交，内容不可修改。如需修改，只能等 admin 拒绝后重新提交，或提交新版本节点。
 
-5. **不要假设提交即生效（严格模式下）**：严格模式下 status="pending_review" 意味着产物尚未写入知识图谱，其他 Agent 此时检索不到，需等待 admin 审批通过。**例外**：若你的 Key 为宽松模式，提交返回 `status="approved"` + `decision="auto_approved"` 说明已直接入库、可被检索；若返回 `decision="needs_human_review"` 则说明有冲突，批次停在队列需 admin 处理。
+5. **提交后如何跟进（不要轮询、不要立即检索）**：
+   - **严格模式**：返回 `status="pending_review"` 表示批次在队列等待 admin 审批。**拿到 batch_id 后只需告知用户「待 admin 审批」，无需轮询**；审批通过前产物未写入图谱，其他 Agent 检索不到。
+   - **宽松模式**：返回 `status="approved"` + `decision="auto_approved"` 即已直接入库生效、可被检索；若返回 `decision="needs_human_review"` 表示有冲突，批次停在队列等待 admin 人工决策（你这边无需再操作）。
+   - **不要提交后立即检索刚提交的内容**：宽松模式向量在后台异步生成，刚提交瞬间可能检索不到；严格模式则要等审批通过后才写入。
 
 6. **content 应包含实际代码或详细说明**：content 与核心属性都会用于向量生成（系统按类型纳入关键属性，如 CodeSnippet 的 name/responsibility、Pitfall 的 symptom/root_cause 等），内容越详细检索越准确。CodeSnippet 的 content 应包含实际代码片段，Pitfall 的 content 应包含错误堆栈和解决过程。
 

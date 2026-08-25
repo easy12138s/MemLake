@@ -112,6 +112,71 @@ class GraphSearcher:
 
         return search_results
 
+    async def context_traverse(
+        self,
+        session: AsyncSession,
+        node_id: uuid.UUID,
+        depth: int = 2,
+        filters: FilterSpec | None = None,
+    ) -> list[SearchResult]:
+        """需求上下文遍历：返回邻居节点并透出真实 edge_type（路径边类型）与 depth（跳数）。
+
+        区别于 traverse：本方法走 GraphStore.neighbors_with_context，附带路径边类型与
+        跳数，供 get_requirement_context 替换原 "unknown" 占位字段。遍历为无向，direction
+        无意义，故不返回。
+        """
+        neighbor_ctxs = await self._graph_store.neighbors_with_context(
+            session, node_id, depth=depth
+        )
+        if not neighbor_ctxs:
+            return []
+
+        id_to_ctx: dict[uuid.UUID, dict] = {}
+        neighbor_ids: list[uuid.UUID] = []
+        for nc in neighbor_ctxs:
+            props = (nc.get("node") or {}).get("properties", {}) or {}
+            nid_str = props.get("id")
+            if not nid_str:
+                continue
+            try:
+                nid = uuid.UUID(str(nid_str))
+            except (ValueError, AttributeError):
+                continue
+            if nid not in id_to_ctx:
+                id_to_ctx[nid] = {
+                    "edge_types": nc.get("edge_types") or [],
+                    "depth": nc.get("depth"),
+                }
+                neighbor_ids.append(nid)
+
+        if not neighbor_ids:
+            return []
+
+        stmt = select(KnowledgeNode).where(KnowledgeNode.id.in_(neighbor_ids))
+        where_clauses = compile_sqlalchemy(filters)
+        if where_clauses:
+            stmt = stmt.where(*where_clauses)
+        result = await session.execute(stmt)
+
+        search_results: list[SearchResult] = []
+        for node in result.scalars():
+            ctx = id_to_ctx.get(node.id)
+            search_results.append(
+                SearchResult(
+                    node_id=node.id,
+                    title=node.title,
+                    content=_truncate(node.content),
+                    node_type=node.type,
+                    score=None,
+                    source="graph",
+                    properties=node.properties or {},
+                    tags=node.tags or [],
+                    edge_types=ctx.get("edge_types") if ctx else None,
+                    graph_depth=ctx.get("depth") if ctx else None,
+                )
+            )
+        return search_results
+
     async def subgraph(
         self,
         session: AsyncSession,

@@ -295,6 +295,63 @@ class AGEGraphStore(GraphStore):
         rows = await self._exec_cypher(session, cypher, params)
         return [p for p in (self._parse_agtype(r) for r in rows) if p is not None]
 
+    async def neighbors_with_context(
+        self,
+        session: AsyncSession,
+        node_id: uuid.UUID,
+        depth: int = 2,
+    ) -> list[dict]:
+        """邻居遍历并透出路径边类型与跳数（供 get_requirement_context 替换 unknown 占位）。
+
+        返回结构化结果列表，每项：{"node": <agtype 节点 dict>, "edge_types": [label...],
+        "depth": <跳数>}。edge_types 为从起点出发沿路径每一跳的边类型（label）列表，
+        depth 为路径跳数（= len(edge_types)）。
+
+        去重：同一目标节点若经多条路径到达，保留跳数最小者（并列取首次遇见）。
+        图遍历为无向（-[r]-），direction 无第一语义，故本方法不返回方向。
+        """
+        if depth < 1:
+            depth = 1
+        cypher = (
+            f"MATCH (n {{id: $node_id}})-[r*1..{depth}]-(m) "
+            f"RETURN {{node: m, edges: r}} AS result"
+        )
+        params = {"node_id": str(node_id)}
+        rows = await self._exec_cypher(session, cypher, params)
+        seen: dict[str, dict] = {}
+        for row in rows:
+            parsed = self._parse_agtype(row)
+            if not isinstance(parsed, dict):
+                continue
+            node = parsed.get("node")
+            edges = parsed.get("edges") or []
+            if not isinstance(node, dict):
+                continue
+            nid = node.get("properties", {}).get("id")
+            if not nid:
+                continue
+            edge_types = [
+                e.get("label")
+                for e in edges
+                if isinstance(e, dict) and e.get("label")
+            ]
+            hop = len(edges)
+            # 去重：保留最短路径
+            if nid in seen:
+                if hop < seen[nid]["depth"]:
+                    seen[nid] = {
+                        "node": node,
+                        "edge_types": edge_types,
+                        "depth": hop,
+                    }
+                continue
+            seen[nid] = {
+                "node": node,
+                "edge_types": edge_types,
+                "depth": hop,
+            }
+        return [v for v in seen.values()]
+
     async def find_path(
         self,
         session: AsyncSession,

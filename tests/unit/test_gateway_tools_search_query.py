@@ -359,11 +359,10 @@ class TestOutputModels:
             title="关联节点",
             content="内容",
             node_type="CodeSnippet",
-            edge_type="implements",
-            direction="outgoing",
+            edge_type=["implements"],
             depth=1,
         )
-        assert output.direction == "outgoing"
+        assert output.edge_type == ["implements"]
         assert output.depth == 1
 
     def test_requirement_context_output_not_found(self):

@@ -841,6 +841,86 @@ class TestGetRequirementContext:
         assert len(related) >= 1
         assert any(r.node_id == code_node.id for r in related)
 
+    async def test_context_traverse_real_edge_types_and_depth(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """context_traverse 应透出真实 edge_type（路径边类型）与 depth（跳数）。"""
+        project_id = uuid.uuid4()
+        req_props = knowledge_helpers["Requirement"]()
+        code_props = knowledge_helpers["CodeSnippet"]()
+        sol_props = knowledge_helpers["Solution"]()
+
+        req_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="需求",
+            content="内容",
+            properties=req_props,
+            created_by="ak_pm",
+            system_id=uuid.uuid4(),
+        )
+        code_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="CodeSnippet",
+            title="代码",
+            content="代码内容",
+            properties=code_props,
+            created_by="ak_dev",
+        )
+        sol_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Solution",
+            title="方案",
+            content="方案内容",
+            properties=sol_props,
+            created_by="ak_dev",
+        )
+        from mem_lake.knowledge.repository import add_edge
+
+        await add_edge(
+            db_session,
+            graph_store=graph_store,
+            from_id=req_node.id,
+            to_id=code_node.id,
+            edge_type="implements",
+            actor="ak_dev",
+        )
+        await add_edge(
+            db_session,
+            graph_store=graph_store,
+            from_id=code_node.id,
+            to_id=sol_node.id,
+            edge_type="realized_by",
+            actor="ak_dev",
+        )
+        await db_session.commit()
+
+        from mem_lake.search.graph import GraphSearcher
+        from mem_lake.search.filters import FilterSpec
+
+        searcher = GraphSearcher(graph_store)
+        related = await searcher.context_traverse(
+            db_session, req_node.id, depth=2, filters=FilterSpec(project_id=project_id)
+        )
+        by_id = {r.node_id: r for r in related}
+        # 直接关联：1 跳，边类型 implements
+        assert code_node.id in by_id
+        assert by_id[code_node.id].graph_depth == 1
+        assert by_id[code_node.id].edge_types == ["implements"]
+        # 间接关联：2 跳，路径边类型 [implements, realized_by]
+        assert sol_node.id in by_id
+        assert by_id[sol_node.id].graph_depth == 2
+        assert by_id[sol_node.id].edge_types == ["implements", "realized_by"]
+
 
 # ============================================================================
 # query_audit_log 端到端

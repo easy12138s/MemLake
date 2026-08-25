@@ -464,8 +464,8 @@ class TestRoleSkillsMd:
         assert len(ROLE_SKILLS_VERSION) > 0
 
     def test_version_upgraded_to_1_2_0(self):
-        """skills 内容优化（含宽松模式）后版本号升级为 1.3.0。"""
-        assert ROLE_SKILLS_VERSION == "1.4.0"
+        """skills 内容优化（含提交后跟进/默认审批工具/最简示例）后版本号升级为 1.5.0。"""
+        assert ROLE_SKILLS_VERSION == "1.5.0"
 
     def test_admin_skills_contains_auto_approval(self):
         """Admin Skills 文档含自动审批工具。"""

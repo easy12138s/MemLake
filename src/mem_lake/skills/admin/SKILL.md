@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile."
-version: 1.4.0
+version: 1.5.0
 ---
 
 # Admin Skills（管理员）
@@ -32,7 +32,7 @@ version: 1.4.0
 3. **密钥管理**：为团队成员签发或吊销 Access Key（绑定角色与项目范围），并维护审核模式
 4. **画像维护**：直接写入项目画像节点（不走审批流）
 
-关键原则：**你是 admin 的助手，不是决策者**。无冲突时可以自动通过（确定性判断），有冲突时必须向人类 admin 描述冲突详情并等待明确指令。
+关键原则：**你是 admin 的助手，不是决策者**。无冲突时可以自动通过（确定性判断），有冲突时必须向人类 admin 描述冲突详情并等待明确指令。**审批默认只调 `review_auto_process`；仅当其返回 `needs_human_review` 时，才用 `review_approve`/`review_reject` 落实人类 admin 的明确决策，不要先调手动审批跳过冲突检测。**
 
 ## 可用工具
 
@@ -468,7 +468,7 @@ manage_project_profile(
 
 ## 常见陷阱
 
-1. **不要跳过 review_auto_process 直接 review_approve**：自动审批的冲突检测是前置的，直接 approve 会跳过检测。正确流程是先 `review_auto_process`，仅在返回 `needs_human_review` 时才手动 `review_approve`。
+1. **默认用 review_auto_process，不要跳过它直接 review_approve**：审批的默认入口是 `review_auto_process`——它先跑三层冲突检测，无冲突即 `auto_approved` 直接入库，有冲突才 `needs_human_review` 交人工。**手动 `review_approve`/`review_reject` 只在 `review_auto_process` 返回 `needs_human_review`、且人类 admin 给出明确指令后才使用**，直接 approve 会跳过冲突检测。
 
 2. **Access Key 明文仅创建时返回一次**：`create_access_key` 返回的 `plaintext` 不会再次显示，必须首次返回时即安全保存。丢失后只能吊销重建。
 
