@@ -1,4 +1,4 @@
-"""manage_tools 集成测试：manage_project_profile 经真实 MCP 链路端到端验证。
+"""manage_tools 集成测试：Access Key 与项目画像经真实 MCP 链路端到端验证。
 
 用 FastMCP 内存客户端触发真实中间件链 + 生命周期（需 Docker PG/AGE/embedding）。
 通过 monkeypatch 认证相关函数为 admin，避免依赖真实 Access Key / HTTP 头。
@@ -78,7 +78,10 @@ def admin_app(monkeypatch):
 
 
 def _parse(result):
-    """从 CallToolResult 解析出参 dict，失败时抛错。"""
+    """从 CallToolResult 解析出参 dict，失败时抛错。
+
+    列表型工具返回具名结构 {"items": [...], "total": N}，调用方按需 .get("items", ...) 取列表。
+    """
     if getattr(result, "is_error", False):
         text = ""
         for item in getattr(result, "content", []) or []:
@@ -147,38 +150,33 @@ async def test_manage_project_profile_explicit_id_returns_same(admin_app):
         assert uuid.UUID(data["project_id"]) == pid
 
 
-async def test_manage_access_key_rotate(admin_app):
-    """rotate 返回新明文，且 key_id 不变。"""
+async def test_create_access_key_rotate(admin_app):
+    """rotate_access_key 返回新明文，且 key_id 不变。"""
     async with Client(admin_app) as client:
         created = await client.call_tool(
-            "manage_access_key",
-            {
-                "action": "create",
-                "role": "dev",
-                "project_scope": [str(uuid.uuid4())],
-            },
+            "create_access_key",
+            {"role": "dev", "project_scope": [str(uuid.uuid4())]},
         )
         created_data = _parse(created)
-        key_id = created_data["created"]["key_id"]
-        old_plaintext = created_data["created"]["plaintext"]
+        key_id = created_data["key_id"]
+        old_plaintext = created_data["plaintext"]
 
         rotated = await client.call_tool(
-            "manage_access_key", {"action": "rotate", "key_id": key_id}
+            "rotate_access_key", {"key_id": key_id}
         )
         rotated_data = _parse(rotated)
-        assert rotated_data["action"] == "rotate"
-        assert rotated_data["rotated"]["key_id"] == key_id
-        new_plaintext = rotated_data["rotated"]["plaintext"]
+        assert rotated_data["key_id"] == key_id
+        new_plaintext = rotated_data["plaintext"]
         assert new_plaintext.startswith("ak_")
         assert new_plaintext != old_plaintext
 
         # create / rotate 均返回两部分初始化产物
-        _assert_onboarding(created_data["created"], old_plaintext, "dev")
-        _assert_onboarding(rotated_data["rotated"], new_plaintext, "dev")
+        _assert_onboarding(created_data, old_plaintext, "dev")
+        _assert_onboarding(rotated_data, new_plaintext, "dev")
 
 
 def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
-    """断言 create/rotate 出参含 mcp_config（给用户）与 onboarding_prompt（给 Agent）。"""
+    """断言 create/rotate 出参含 mcp_config（给用户）与 onboarding_prompt（不含 Key，给 Agent）。"""
     import json as _json
 
     mcp_config = output["mcp_config"]
@@ -195,73 +193,59 @@ def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
     assert plaintext not in prompt
 
 
-async def test_manage_access_key_create_onboarding(admin_app):
-    """create 返回 mcp_config（JSON 给用户）与 onboarding_prompt（不含 Key，给 Agent）。"""
+async def test_create_access_key_onboarding(admin_app):
+    """create_access_key 返回 mcp_config（JSON 给用户）与 onboarding_prompt（不含 Key，给 Agent）。"""
     async with Client(admin_app) as client:
         created = await client.call_tool(
-            "manage_access_key",
-            {
-                "action": "create",
-                "role": "pm",
-                "project_scope": [str(uuid.uuid4())],
-            },
+            "create_access_key",
+            {"role": "pm", "project_scope": [str(uuid.uuid4())]},
         )
         data = _parse(created)
-        assert data["action"] == "create"
-        _assert_onboarding(data["created"], data["created"]["plaintext"], "pm")
+        _assert_onboarding(data, data["plaintext"], "pm")
 
 
-async def test_manage_access_key_update_scope_by_role(admin_app):
-    """update_scope 按 role_filter 批量更新该角色 Key 的 project_scope。"""
+async def test_update_access_key_scope_by_role(admin_app):
+    """update_access_key_scope 按 role_filter 批量更新该角色 Key 的 project_scope。"""
     async with Client(admin_app) as client:
         pid = uuid.uuid4()
         # 创建两个 dev Key
         c1 = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
         c2 = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
-        k1, k2 = c1["created"]["key_id"], c2["created"]["key_id"]
+        k1, k2 = c1["key_id"], c2["key_id"]
 
         updated = await client.call_tool(
-            "manage_access_key",
-            {
-                "action": "update_scope",
-                "project_scope": [str(pid)],
-                "role_filter": "dev",
-            },
+            "update_access_key_scope",
+            {"project_scope": [str(pid)], "role_filter": "dev"},
         )
-        updated_data = _parse(updated)
-        assert updated_data["action"] == "update_scope"
-        scoped_ids = {k["key_id"] for k in updated_data["scoped"]}
+        updated_data = _parse(updated).get("items", [])
+        scoped_ids = {k["key_id"] for k in updated_data}
         # 本次创建的两个 dev Key 必须被更新
         assert k1 in scoped_ids and k2 in scoped_ids
-        for k in updated_data["scoped"]:
+        for k in updated_data:
             if k["key_id"] in {k1, k2}:
                 assert k["project_scope"] == [str(pid)]
 
 
-async def test_manage_access_key_update_scope_requires_target(admin_app):
-    """update_scope 未指定任何定位方式时返回空 scoped 列表。"""
+async def test_update_access_key_scope_requires_target(admin_app):
+    """update_access_key_scope 未指定任何定位方式时返回空列表。"""
     async with Client(admin_app) as client:
         updated = await client.call_tool(
-            "manage_access_key",
-            {"action": "update_scope", "project_scope": [str(uuid.uuid4())]},
+            "update_access_key_scope", {"project_scope": [str(uuid.uuid4())]}
         )
-        updated_data = _parse(updated)
-        assert updated_data["action"] == "update_scope"
-        assert updated_data["scoped"] == []
+        updated_data = _parse(updated).get("items", [])
+        assert updated_data == []
 
 
-async def test_manage_access_key_update_scope_key_ids_as_string(admin_app):
-    """update_scope 的 key_ids 以字符串（逗号分隔）传入时仍正确归一化并更新。
+async def test_update_access_key_scope_key_ids_as_string(admin_app):
+    """update_access_key_scope 的 key_ids 以字符串（逗号分隔）传入时仍正确归一化并更新。
 
     复现并修复：部分客户端将数组序列化成字符串，导致 pydantic 报
     "Input should be a list"。工具层 _normalize_uuid_list 归一化后路径可用。
@@ -270,118 +254,99 @@ async def test_manage_access_key_update_scope_key_ids_as_string(admin_app):
         pid = uuid.uuid4()
         c1 = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
         c2 = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
-        k1, k2 = c1["created"]["key_id"], c2["created"]["key_id"]
+        k1, k2 = c1["key_id"], c2["key_id"]
 
         # 以逗号分隔的字符串传入 key_ids（模拟客户端序列化）
         updated = await client.call_tool(
-            "manage_access_key",
-            {
-                "action": "update_scope",
-                "project_scope": [str(pid)],
-                "key_ids": f"{k1},{k2}",
-            },
+            "update_access_key_scope",
+            {"project_scope": [str(pid)], "key_ids": f"{k1},{k2}"},
         )
-        updated_data = _parse(updated)
-        assert updated_data["action"] == "update_scope"
-        scoped_ids = {k["key_id"] for k in updated_data["scoped"]}
+        updated_data = _parse(updated).get("items", [])
+        scoped_ids = {k["key_id"] for k in updated_data}
         assert {k1, k2} == scoped_ids
-        for k in updated_data["scoped"]:
+        for k in updated_data:
             assert k["project_scope"] == [str(pid)]
 
 
-async def test_manage_access_key_set_mode_by_key_ids(admin_app):
-    """set_mode 显式指定 key_ids 可把该 Key 设为宽松（lax_mode=true）。"""
+async def test_set_access_key_mode_by_key_ids(admin_app):
+    """set_access_key_mode 显式指定 key_ids 可把该 Key 设为宽松（lax_mode=true）。"""
     async with Client(admin_app) as client:
         c1 = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
         c2 = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
-        k1 = c1["created"]["key_id"]
-        assert c1["created"]["lax_mode"] is False  # create 默认严格
+        k1 = c1["key_id"]
+        assert c1["lax_mode"] is False  # create 默认严格
 
         updated = await client.call_tool(
-            "manage_access_key",
-            {"action": "set_mode", "lax_mode": True, "key_ids": [k1]},
+            "set_access_key_mode", {"lax_mode": True, "key_ids": [k1]}
         )
-        updated_data = _parse(updated)
-        assert updated_data["action"] == "set_mode"
-        mode_ids = {k["key_id"] for k in updated_data["mode_set"]}
+        updated_data = _parse(updated).get("items", [])
+        mode_ids = {k["key_id"] for k in updated_data}
         assert k1 in mode_ids
-        target = next(k for k in updated_data["mode_set"] if k["key_id"] == k1)
+        target = next(k for k in updated_data if k["key_id"] == k1)
         assert target["lax_mode"] is True
         # 未被指定的 k2 不受影响
-        assert c2["created"]["key_id"] not in mode_ids
+        assert c2["key_id"] not in mode_ids
 
 
-async def test_manage_access_key_set_mode_by_role(admin_app):
-    """set_mode 按 role_filter 可批量将该角色全部 Key 设为宽松。"""
+async def test_set_access_key_mode_by_role(admin_app):
+    """set_access_key_mode 按 role_filter 可批量将该角色全部 Key 设为宽松。"""
     async with Client(admin_app) as client:
         c1 = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
-        k1 = c1["created"]["key_id"]
+        k1 = c1["key_id"]
 
         updated = await client.call_tool(
-            "manage_access_key",
-            {"action": "set_mode", "lax_mode": True, "role_filter": "dev"},
+            "set_access_key_mode", {"lax_mode": True, "role_filter": "dev"}
         )
-        updated_data = _parse(updated)
-        mode_ids = {k["key_id"] for k in updated_data["mode_set"]}
+        updated_data = _parse(updated).get("items", [])
+        mode_ids = {k["key_id"] for k in updated_data}
         assert k1 in mode_ids  # 本次创建的 dev Key 都被设为宽松
 
 
-async def test_manage_access_key_list_filter_by_lax_mode(admin_app):
-    """list 按 lax_mode=true 过滤可查到宽松 Key，严格 Key 不在其中。"""
+async def test_list_access_keys_filter_by_lax_mode(admin_app):
+    """list_access_keys 按 lax_mode=true 过滤可查到宽松 Key，严格 Key 不在其中。"""
     async with Client(admin_app) as client:
         created = _parse(
             await client.call_tool(
-                "manage_access_key",
-                {"action": "create", "role": "dev", "project_scope": []},
+                "create_access_key", {"role": "dev", "project_scope": []}
             )
         )
-        target_key = created["created"]["key_id"]
+        target_key = created["key_id"]
         await client.call_tool(
-            "manage_access_key",
-            {"action": "set_mode", "lax_mode": True, "key_ids": [target_key]},
+            "set_access_key_mode", {"lax_mode": True, "key_ids": [target_key]}
         )
 
         lax_list = _parse(
-            await client.call_tool(
-                "manage_access_key", {"action": "list", "lax_mode": True}
-            )
-        )
-        lax_ids = {k["key_id"] for k in lax_list["listed"]}
+            await client.call_tool("list_access_keys", {"lax_mode": True})
+        ).get("items", [])
+        lax_ids = {k["key_id"] for k in lax_list}
         assert target_key in lax_ids
-        for k in lax_list["listed"]:
+        for k in lax_list:
             assert k["lax_mode"] is True
 
         strict_list = _parse(
-            await client.call_tool(
-                "manage_access_key", {"action": "list", "lax_mode": False}
-            )
-        )
-        strict_ids = {k["key_id"] for k in strict_list["listed"]}
+            await client.call_tool("list_access_keys", {"lax_mode": False})
+        ).get("items", [])
+        strict_ids = {k["key_id"] for k in strict_list}
         assert target_key not in strict_ids
-        for k in strict_list["listed"]:
+        for k in strict_list:
             assert k["lax_mode"] is False

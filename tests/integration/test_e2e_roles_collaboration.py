@@ -201,13 +201,13 @@ class TestRolesCollaboration:
 
             # 建 PM/Dev Key
             pm = await _call(
-                admin, "manage_access_key", {"action": "create", "role": "pm", "project_scope": [project_id]}
+                admin, "create_access_key", {"role": "pm", "project_scope": [project_id]}
             )
             dev = await _call(
-                admin, "manage_access_key", {"action": "create", "role": "dev", "project_scope": [project_id]}
+                admin, "create_access_key", {"role": "dev", "project_scope": [project_id]}
             )
-            assert pm["created"]["plaintext"]
-            assert dev["created"]["plaintext"]
+            assert pm["plaintext"]
+            assert dev["plaintext"]
 
             # 建 ProjectProfile
             prof = await _call(
@@ -496,7 +496,7 @@ class TestRolesCollaboration:
             err = await _expect_tool_error(pm, "review_pending_list", {})
             assert "权限" in err or "拒绝" in err
 
-            err = await _expect_tool_error(pm, "manage_access_key", {"action": "list"})
+            err = await _expect_tool_error(pm, "list_access_keys", {})
             assert "权限" in err or "拒绝" in err
 
             # 8.5 Schema 校验失败（缺必填字段）

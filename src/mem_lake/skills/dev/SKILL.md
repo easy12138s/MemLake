@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.3.0
+version: 1.4.0
 ---
 
 # Dev Skills（开发者）
@@ -24,11 +24,19 @@ version: 1.3.0
 
 ## 你的角色
 
-你是 Mem Lake 的开发者 Agent。Mem Lake 是团队共享的知识记忆层，你提交的开发产物默认进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。若你的 Access Key 被设为宽松模式（lax_mode=true 且全局开关开启），提交会直接入库（返回 status="approved"），无需等到 admin。
+你是当前项目的开发者。MemLake 是团队共享的知识记忆工具，你在工作中用它检索已有经验、沉淀产出。你提交的开发产物默认进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。若你的 Access Key 被设为宽松模式（lax_mode=true 且全局开关开启），提交会直接入库（返回 status="approved"），无需等到 admin。
 
 核心价值：**让你的开发经验被团队所有 AI 共享**。没有 Mem Lake，你踩过的坑只有你的 AI 知道；有了 Mem Lake，其他开发者的 AI 能检索到你记录的坑和解决方案，新人 AI 也能快速了解项目的设计意图。
 
 关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
+
+## 核心工作流：先检索后提交
+
+提交开发产物前，**先查重、再提交**：
+1. 用 `search_code_snippets(query=..., project_id=...)`（查代码/方案/意图/坑）和 `search_similar_requirements(...)`（查关联需求）检索已有相似内容；
+2. 若命中已有节点：不要重复提交新节点，改用 `submit_dev_artifacts(...)` 的 `relations`（from_ref/to_ref 引用命中节点 UUID 或批次内 ref）建立 `depends_on`/`realized_by`/`embodies`/`traces_to`/`described_by` 等引用边，让新产物挂接到既有知识上；
+3. 若未命中：再提交新产物。
+这样避免知识图谱中出现重复/矛盾的代码与经验节点，也保证检索聚合质量。
 
 > **实现前先看需求（system 维度）**：需求可按 `system_id` 隔离、且可能是"悬浮"（project 为空、先于实现）。要定位可见的 System 需求，用 `search_similar_requirements(project_id=...)` 或加 `system_id=...`（你被 admin 通过 `manage_system.bind_keys` 绑定的 system），拿到需求 UUID 后 `submit_dev_artifacts(requirement_id=UUID, ...)` 建 implements 边。dev 对 system 需求可见 = 该 system 含你任一 project（经 admin 配置的 system↔project 归属）。
 

@@ -162,19 +162,18 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
         # 1.2 创建 PM key
         r, err = await call_tool_safe(
             admin,
-            "manage_access_key",
-            {"action": "create", "role": "pm", "project_scope": [ctx.project_id]},
+            "create_access_key",
+            {"role": "pm", "project_scope": [ctx.project_id]},
         )
         if result.check(err is None, "1.2 创建 PM Access Key"):
-            created = r.get("created") or {}
-            ctx.pm_key = created.get("plaintext")
+            ctx.pm_key = r.get("plaintext")
             result.check(
                 bool(ctx.pm_key),
                 "1.2 验证返回 plaintext",
-                f"key_id={created.get('key_id', 'N/A')}",
+                f"key_id={r.get('key_id', 'N/A')}",
             )
-            mcp_cfg = created.get("mcp_config")
-            prompt = created.get("onboarding_prompt")
+            mcp_cfg = r.get("mcp_config")
+            prompt = r.get("onboarding_prompt")
             result.check(
                 bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
                 "1.2 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
@@ -191,19 +190,18 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
         # 1.3 创建 Dev key
         r, err = await call_tool_safe(
             admin,
-            "manage_access_key",
-            {"action": "create", "role": "dev", "project_scope": [ctx.project_id]},
+            "create_access_key",
+            {"role": "dev", "project_scope": [ctx.project_id]},
         )
         if result.check(err is None, "1.3 创建 Dev Access Key"):
-            created = r.get("created") or {}
-            ctx.dev_key = created.get("plaintext")
+            ctx.dev_key = r.get("plaintext")
             result.check(
                 bool(ctx.dev_key),
                 "1.3 验证返回 plaintext",
-                f"key_id={created.get('key_id', 'N/A')}",
+                f"key_id={r.get('key_id', 'N/A')}",
             )
-            mcp_cfg = created.get("mcp_config")
-            prompt = created.get("onboarding_prompt")
+            mcp_cfg = r.get("mcp_config")
+            prompt = r.get("onboarding_prompt")
             result.check(
                 bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
                 "1.3 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
@@ -218,11 +216,9 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
             result.fail("1.3 创建 Dev Key", err or "未知错误")
 
         # 1.4 列出 access keys
-        r, err = await call_tool_safe(
-            admin, "manage_access_key", {"action": "list"}
-        )
+        r, err = await call_tool_safe(admin, "list_access_keys", {})
         if result.check(err is None, "1.4 列出 Access Keys"):
-            listed = r.get("listed") or []
+            listed = (r or {}).get("items", []) if isinstance(r, dict) else (r or [])
             result.check(
                 len(listed) >= 3, "1.4 验证 >=3 个 key", f"count={len(listed)}"
             )
@@ -898,13 +894,11 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
             f"error={err[:80] if err else 'N/A'}",
         )
 
-        # 8.4 PM 调用 manage_access_key
-        r, err = await call_tool_safe(
-            pm, "manage_access_key", {"action": "list"}
-        )
+        # 8.4 PM 调用 list_access_keys
+        r, err = await call_tool_safe(pm, "list_access_keys", {})
         result.check(
             err is not None,
-            "8.4 PM 越权调用 manage_access_key 被拒",
+            "8.4 PM 越权调用 list_access_keys 被拒",
             f"error={err[:80] if err else 'N/A'}",
         )
 

@@ -455,7 +455,7 @@ class TestRoleSkillsMd:
         assert "review_pending_list" in content
         assert "review_approve" in content
         assert "review_reject" in content
-        assert "manage_access_key" in content
+        assert "create_access_key" in content
         assert "manage_project_profile" in content
 
     def test_version_is_string(self):
@@ -465,7 +465,7 @@ class TestRoleSkillsMd:
 
     def test_version_upgraded_to_1_2_0(self):
         """skills 内容优化（含宽松模式）后版本号升级为 1.3.0。"""
-        assert ROLE_SKILLS_VERSION == "1.3.0"
+        assert ROLE_SKILLS_VERSION == "1.4.0"
 
     def test_admin_skills_contains_auto_approval(self):
         """Admin Skills 文档含自动审批工具。"""

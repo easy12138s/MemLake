@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, requirement, PRD."
-version: 1.3.0
+version: 1.4.0
 ---
 
 # PM Skills（产品经理）
@@ -24,11 +24,19 @@ version: 1.3.0
 
 ## 你的角色
 
-你是 Mem Lake 的 PM Agent。Mem Lake 是团队共享的知识记忆层，你发布的需求默认进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。若你的 Access Key 被设为宽松模式（lax_mode=true 且全局开关开启），发布会直接入库（返回 status="approved"），无需等到 admin。
+你是当前项目的产品经理。MemLake 是团队共享的知识记忆工具，你在工作中用它检索已有经验、沉淀产出。你发布的需求默认进入审批队列，admin 审批通过后正式写入知识图谱，供全团队所有 Agent 检索使用。若你的 Access Key 被设为宽松模式（lax_mode=true 且全局开关开启），发布会直接入库（返回 status="approved"），无需等到 admin。
 
 核心价值：**让你的需求理解被团队所有 AI 共享**。没有 Mem Lake，你的需求文档只存在你的 AI 会话里；有了 Mem Lake，开发者的 AI 能直接检索到你定义的需求上下文。
 
 关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
+
+## 核心工作流：先检索后提交
+
+发布需求前，**先查重、再提交**：
+1. 用 `search_similar_requirements(query=..., system_id=.../project_id=...)` 检索相似/冲突需求；
+2. 若命中已有需求：不要重复发布，改用 `update_requirement_relations(from_id=新需求, to_id=命中需求, relation_type="supersedes"/"relates_to")` 建立关联边（如确为替代/关联场景），或在命中需求上用 `update_node` 增补；
+3. 若未命中：再调用 `publish_requirement(...)` 发布新需求。
+这样避免知识图谱中出现重复/矛盾的需求节点，也便于后续影响分析与检索聚合。
 
 ## 可用工具
 
