@@ -211,8 +211,8 @@ def register_review_tools(mcp: FastMCP) -> None:
     ) -> ApprovalResultOutput:
         """审批通过批次，原子性写入知识图谱（节点+边+审计日志同一事务）。
 
-        Admin 工具。审批通过后：节点写入 knowledge_node 表 + AGE 图节点 + 生成向量；
-        边写入 AGE 图；conflict_hint 返回冲突检测结果（不阻断审批，仅提示）。
+        Admin 工具。审批通过后：节点正式写入团队知识图谱（关系库 + 图 + 向量），可被其他 Agent 检索；
+        边同步写入图；conflict_hint 返回冲突检测结果（不阻断审批，仅提示）。
         临时引用（from_ref/to_ref）在此时解析为实际节点 ID。
         """
         try:

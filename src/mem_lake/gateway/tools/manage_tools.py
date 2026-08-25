@@ -297,6 +297,18 @@ class ReindexStatusOutput(BaseModel):
 # ============================================================================
 
 
+class ManageSystemOutput(BaseModel):
+    """manage_system 工具出参。"""
+
+    action: str = Field(description="操作类型：create/list/set_projects/bind_keys")
+    system_id: str | None = Field(default=None, description="system 域 ID")
+    name: str | None = Field(default=None, description="系统域名（create 时）")
+    description: str | None = Field(default=None, description="系统域描述（create 时）")
+    project_count: int | None = Field(default=None, description="归属项目数（set_projects/list 时）")
+    systems: list[dict] | None = Field(default=None, description="系统域列表（list 时，含 project_count）")
+    affected_key_ids: list[str] | None = Field(default=None, description="受影响 Key ID 列表（bind_keys 时）")
+
+
 def register_manage_tools(mcp: FastMCP) -> None:
     """注册管理类工具到 FastMCP 实例。"""
 
@@ -510,7 +522,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
         grant_all: bool = Field(
             default=False, description="bind_keys 时作用于全部 Key"
         ),
-    ) -> dict:
+    ) -> ManageSystemOutput:
         """管理 system 域（admin 专属）：建立/枚举系统域、维护系统↔项目归属、绑定 Key 的 system 授权。
 
         PM 需求按 system 隔离；System 由 admin 统一建并签发。行为：
@@ -528,11 +540,12 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     sys_obj = System(name=name, description=description or "")
                     session.add(sys_obj)
                     await session.flush()
-                    return {
-                        "action": "create",
-                        "system_id": str(sys_obj.id),
-                        "name": sys_obj.name,
-                    }
+                    return ManageSystemOutput(
+                        action="create",
+                        system_id=str(sys_obj.id),
+                        name=sys_obj.name,
+                        description=description,
+                    )
                 if action == "list":
                     rows = (
                         await session.execute(select(System).order_by(System.name))
@@ -554,7 +567,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                                 "project_count": len(cnt),
                             }
                         )
-                    return {"action": "list", "systems": result}
+                    return ManageSystemOutput(action="list", systems=result)
 
                 if not system_id:
                     raise ValueError("set_projects / bind_keys 必须指定 system_id")
@@ -577,11 +590,11 @@ def register_manage_tools(mcp: FastMCP) -> None:
                             SystemProject(system_id=system_id, project_id=uuid.UUID(pid))
                         )
                     await session.flush()
-                    return {
-                        "action": "set_projects",
-                        "system_id": str(system_id),
-                        "project_count": len(pids),
-                    }
+                    return ManageSystemOutput(
+                        action="set_projects",
+                        system_id=str(system_id),
+                        project_count=len(pids),
+                    )
 
                 if action == "bind_keys":
                     updated = await update_access_key_systems(
@@ -592,11 +605,11 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         grant_all=grant_all,
                         actor=key_id_actor,
                     )
-                    return {
-                        "action": "bind_keys",
-                        "system_id": str(system_id),
-                        "affected_key_ids": [str(k.id) for k in updated],
-                    }
+                    return ManageSystemOutput(
+                        action="bind_keys",
+                        system_id=str(system_id),
+                        affected_key_ids=[str(k.id) for k in updated],
+                    )
 
                 raise ValueError(f"未知 action: {action}")
         except Exception as e:
