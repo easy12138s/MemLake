@@ -57,12 +57,15 @@ RUN if [ "$DOWNLOAD_RERANK_MODEL" = "true" ]; then \
 WORKDIR /app
 COPY embedding_server.py /app/
 
-# /metrics Prometheus 指标依赖（独立 RUN：不改动上方模型下载层，构建复用层缓存，
-# 避免安装依赖导致已下载模型层失效重下）
-RUN pip install --no-cache-dir "prometheus-client>=0.20.0"
+# /metrics Prometheus 指标 + 结构化日志（structlog，与 mem-lake 网关同构）依赖
+#（独立 RUN：不改动上方模型下载层，构建复用层缓存，
+#  避免安装依赖导致已下载模型层失效重下）
+RUN pip install --no-cache-dir "prometheus-client>=0.20.0" "structlog>=24.1.0"
 
 ENV MODEL_PATH=/models/Qwen3-Embedding-0.6B
 ENV RERANK_MODEL_PATH=/models/bge-reranker-base
 
 EXPOSE 8001
-CMD ["uvicorn", "embedding_server:app", "--host", "0.0.0.0", "--port", "8001"]
+# --no-access-log：关闭每请求的 HTTP access 日志（health 每 10s + embed 的 GET/POST 噪音），
+# --log-level warning：抑制 uvicorn 自身 INFO；业务日志由 embedding_server logger 输出（批次+耗时）
+CMD ["uvicorn", "embedding_server:app", "--host", "0.0.0.0", "--port", "8001", "--no-access-log", "--log-level", "warning"]
