@@ -1,1 +1,0 @@
-SELECT * FROM ag_catalog.cypher('mem_lake_graph', 'MATCH ()-[r]- RETURN type(r), count(*)') AS (et agtype, c agtype); 
