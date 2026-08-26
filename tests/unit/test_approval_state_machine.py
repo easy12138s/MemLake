@@ -642,10 +642,9 @@ class TestToUuid:
         with pytest.raises(ValueError):
             _to_uuid("not-a-uuid")
 
-    def test_empty_string_raises_value_error(self):
-        """空字符串抛 ValueError。"""
-        with pytest.raises(ValueError):
-            _to_uuid("")
+    def test_empty_string_returns_none(self):
+        """空字符串返回 None（悬浮需求无 project_id 场景）。"""
+        assert _to_uuid("") is None
 
 
 # ============ ORM 模型字段定义校验 ============

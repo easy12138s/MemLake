@@ -3,8 +3,14 @@
 通过 httpx.AsyncClient 调用独立运行的 embedding 容器（FastAPI + sentence-transformers），
 不在 app 进程本地加载模型。容器端点：GET /health、POST /embed。
 返回向量经服务端 normalize_embeddings=True 归一化，pgvector 余弦距离检索可直接使用。
+
+批量分块与重试：
+- 服务端单次 /embed 文本数上限 MAX_EMBED_TEXTS=128，超限返回 422；客户端在此按
+  MAX_TEXTS_PER_REQUEST 分块后合并结果（与 embedding_server 常量需两端同步维护）。
+- 对瞬时错误（429/5xx、网络连接与超时）做指数退避重试，避免大批量任务一次抖动整体失败。
 """
 
+import asyncio
 import time
 from functools import lru_cache
 
@@ -12,6 +18,16 @@ import httpx
 
 from mem_lake.config import get_settings
 from mem_lake.observability.metrics import EMBEDDING_CALLS, EMBEDDING_DURATION
+
+# 与 embedding_server.MAX_EMBED_TEXTS 对齐的客户端侧分块上限（两端需同步维护）
+MAX_TEXTS_PER_REQUEST = 128
+
+# 瞬时错误重试：最多 MAX_RETRIES 次退避（2s / 4s），覆盖 429/5xx 与网络/超时
+MAX_RETRIES = 2
+RETRY_BASE_DELAY = 2.0
+
+# 默认请求超时（秒）：CPU 大批量 embed 可能显著超过 30s，放宽默认值
+DEFAULT_TIMEOUT = 120.0
 
 
 class EmbeddingError(Exception):
@@ -25,7 +41,7 @@ class EmbeddingClient:
     进程内通过 get_embedding_client() 单例复用，显式 close() 释放连接。
     """
 
-    def __init__(self, base_url: str, dimension: int, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, dimension: int, timeout: float = DEFAULT_TIMEOUT) -> None:
         self._base_url = base_url
         self._dimension = dimension
         self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
@@ -44,37 +60,71 @@ class EmbeddingClient:
         prompt / prompt_name 为指令感知参数，仅查询侧（如 VectorSearcher）按需传入，
         文档侧（落库节点）保持 None 以维持与历史向量的兼容。二者均为 None 时退化为默认编码。
         校验响应 dimension 与 config.EMBEDDING_DIMENSION 一致，不符抛 EmbeddingError。
+
+        超过 MAX_TEXTS_PER_REQUEST 的输入自动分块（每块一次 HTTP），结果按原顺序合并；
+        单块瞬时错误（429/5xx/网络/超时）自动指数退避重试。
         """
+        if not texts:
+            return []
+        EMBEDDING_CALLS.labels(op="embed").inc()
+        t = time.time()
+        try:
+            results: list[list[float]] = []
+            for i in range(0, len(texts), MAX_TEXTS_PER_REQUEST):
+                chunk = texts[i : i + MAX_TEXTS_PER_REQUEST]
+                results.extend(await self._embed_chunk(chunk, prompt, prompt_name))
+            return results
+        finally:
+            EMBEDDING_DURATION.labels(op="embed").observe(time.time() - t)
+
+    async def _embed_chunk(
+        self,
+        texts: list[str],
+        prompt: str | None,
+        prompt_name: str | None,
+    ) -> list[list[float]]:
+        """单块 /embed 请求（≤ MAX_TEXTS_PER_REQUEST），带瞬时错误指数退避重试。"""
         body: dict = {"texts": texts}
         if prompt is not None:
             body["prompt"] = prompt
         if prompt_name is not None:
             body["prompt_name"] = prompt_name
-        EMBEDDING_CALLS.labels(op="embed").inc()
-        t = time.time()
-        try:
-            resp = await self._client.post("/embed", json=body)
-        except httpx.HTTPError as exc:
-            raise EmbeddingError(f"Embedding 服务请求失败: {exc}") from exc
 
-        if resp.status_code != 200:
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = await self._client.post("/embed", json=body)
+            except httpx.HTTPError as exc:
+                # 网络连接/超时等瞬时错误：退避后重试，最后抛 EmbeddingError
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
+                    continue
+                raise EmbeddingError(f"Embedding 服务请求失败: {exc}") from exc
+
+            if resp.status_code == 200:
+                data = resp.json()
+                dim = data.get("dimension")
+                if dim != self._dimension:
+                    raise EmbeddingError(
+                        f"Embedding 维度不符: 期望 {self._dimension}, 实际 {dim}"
+                    )
+                embeddings = data.get("embeddings")
+                if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+                    raise EmbeddingError(
+                        f"Embedding 响应格式错误: embeddings={embeddings}"
+                    )
+                return embeddings
+
+            # 429/5xx 视为瞬时错误可退避重试；其余（如 422 契约不符）直接失败
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
+                    continue
+
             raise EmbeddingError(
-                f"Embedding 服务返回非 200: status={resp.status_code} body={resp.text}"
+                f"Embedding 服务返回非 200: status={resp.status_code} body={resp.text[:200]}"
             )
 
-        data = resp.json()
-        dim = data.get("dimension")
-        if dim != self._dimension:
-            raise EmbeddingError(
-                f"Embedding 维度不符: 期望 {self._dimension}, 实际 {dim}"
-            )
-
-        embeddings = data.get("embeddings")
-        if not isinstance(embeddings, list):
-            raise EmbeddingError(f"Embedding 响应格式错误: embeddings={embeddings}")
-
-        EMBEDDING_DURATION.labels(op="embed").observe(time.time() - t)
-        return embeddings
+        raise EmbeddingError("Embedding 服务重试耗尽")
 
     async def embed_one(
         self,
