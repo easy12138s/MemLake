@@ -97,17 +97,18 @@ async def _apply_rerank(
       rerank 模型时执行。
     - 取 fused[:RERANK_TOP_K] 交精排，按精排分数降序重组；尾部（超出 RERANK_TOP_K）
       保持原 RRF 序，最终长度不超过 top_n。
-    - 容错：任何 rerank 异常（服务不可用/未加载/响应异常）静默回退为原顺序，不阻断检索。
+    - 容错：任何 rerank 异常（服务不可用/未加载/响应异常）静默回退为原顺序（截断到
+      top_n），不阻断检索。
     - score 字段保持不变（保留向量余弦分），仅改变返回顺序。
     """
     settings = get_settings()
     if not settings.ENABLE_RERANK or not settings.RERANK_MODEL_PATH or not fused:
-        return fused
+        return fused[:top_n]
 
     rerank_candidate = fused[: settings.RERANK_TOP_K]
     try:
         if not await embedding_client.has_rerank():
-            return fused
+            return fused[:top_n]
         # 精排对象用 "标题\n正文"（标题在前，与 build_embed_text 的构造顺序对齐；
         # 空正文退化为标题本身）。
         texts = [f"{r.title}\n{r.content or ''}".strip() for r in rerank_candidate]
@@ -115,7 +116,7 @@ async def _apply_rerank(
     except EmbeddingError:
         RERANK_FALLBACK.inc()
         logger.warning("rerank 精排不可用，回退 RRF 原序", exc_info=True)
-        return fused
+        return fused[:top_n]
 
     order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
     reranked = [rerank_candidate[i] for i in order]
@@ -241,8 +242,14 @@ async def hybrid_search(
         _vector_task(), _fulltext_task(), _graph_task()
     )
 
-    # 向量与全文 RRF 融合
-    fused = rrf_fuse([vector_results, fulltext_results], k=60, top_n=top_n)
+    # 向量与全文 RRF 融合。启用精排时先融合出 ≥ RERANK_TOP_K 的候选池（而非直接截断到
+    # top_n），rerank 在候选池内重排后再收口到 top_n——否则 rerank 只在前 top_n 内重排，
+    # 无法挽回被 RRF 排到 6~30 名的相关结果（A/B 对照验证：候选池 30 使 hit@5 提升）。
+    settings = get_settings()
+    candidate_n = top_n
+    if settings.ENABLE_RERANK and settings.RERANK_MODEL_PATH:
+        candidate_n = max(top_n, settings.RERANK_TOP_K)
+    fused = rrf_fuse([vector_results, fulltext_results], k=60, top_n=candidate_n)
 
     # 融合结果 score 透出向量余弦分（0~1）：便于调用方判相关性，并修复
     # check_requirement_conflicts 用 r.score >= threshold(0.85) 过滤时 RRF 小数
