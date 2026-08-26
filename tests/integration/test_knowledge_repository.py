@@ -28,7 +28,6 @@ from mem_lake.knowledge.repository import (
 )
 from mem_lake.knowledge.schema import SchemaValidationError
 
-
 # ============ create_node ============
 
 class TestCreateNode:
@@ -384,7 +383,6 @@ class TestUpdateNode:
             created_by="ak",
             system_id=uuid.uuid4(),
         )
-        original_vector = list(node.content_vector)
         mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.3] * 1024
 
         updated = await update_node(
@@ -763,9 +761,14 @@ class TestAddEdge:
             {},
         )
         assert len(rows) >= 1
-        # 边属性含 created_by
-        edge_props = rows[0].get("properties", {}) if isinstance(rows[0], dict) else {}
-        assert edge_props.get("created_by") == "ak_pm"
+        # 边属性含注入的 created_by=ak_pm（容忍共享库中历史残留的 relates_to 边，
+        # 不依赖全局匹配结果的首行）
+        injected = any(
+            (r.get("properties", {}) if isinstance(r, dict) else {}).get("created_by")
+            == "ak_pm"
+            for r in rows
+        )
+        assert injected
 
     async def test_add_edge_invalid_type_raises(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
