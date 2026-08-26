@@ -21,6 +21,15 @@ from mem_lake.observability.metrics import get_metrics_body, get_metrics_media_t
 
 # 配置日志（结构化：json/console 由 OBS_LOG_FORMAT 控制）
 configure_logging(level=logging.INFO)
+
+# 压制内部 HTTP 客户端与健康探针的"接口级"logger：工具调用业务日志由
+# AuditLogMiddleware 的 TOOL_CALL 覆盖，事务型 embed 请求细节交由 embedding
+# 服务自身的业务日志呈现，不在此重复输出（避免每次 embed 打一条请求行噪音）。
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+
 logger = logging.getLogger("mem_lake.main")
 
 # 全局 FastMCP 实例（模块级单例，uvicorn 多 worker 时每 worker 一个）
@@ -56,4 +65,7 @@ if __name__ == "__main__":
         app,
         host=settings.MCP_SERVER_HOST,
         port=settings.MCP_SERVER_PORT,
+        # 关闭每请求 HTTP access 日志（GET/POST /mcp 噪音）；工具调用业务日志
+        # 已由 AuditLogMiddleware 的 TOOL_CALL 结构化日志覆盖，不重复打请求行
+        access_log=False,
     )

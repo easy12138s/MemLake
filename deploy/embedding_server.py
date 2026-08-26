@@ -4,10 +4,12 @@
 仅提供 /embed 与 /health，不阻断启动（精排为可降级依赖）。
 """
 
+import logging
 import os
 import time
 
 import numpy as np
+import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from prometheus_client import (
@@ -18,6 +20,54 @@ from prometheus_client import (
 )
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder, SentenceTransformer
+
+# 结构化日志：与 mem-lake 网关（observability/logging.py configure_logging）保持同构——
+# 相同 structlog stdlib 桥接、相同 OBS_LOG_FORMAT 驱动（json / console）。
+# 独立进程不 import mem_lake，自带一份等价配置，保证三容器日志格式一致。
+# 业务日志用 stdlib logging %-format（如 mem-lake 的 TOOL_CALL 行），经 ProcessorFormatter
+# 输出结构化行（level/logger/timestamp 由 foreign_pre_chain 注入）。
+_LOG_FMT = os.environ.get("OBS_LOG_FORMAT", "console")
+
+structlog.configure(
+    processors=[
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.stdlib.BoundLogger,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+
+_renderer = (
+    structlog.processors.JSONRenderer()
+    if _LOG_FMT == "json"
+    else structlog.dev.ConsoleRenderer()
+)
+_handler = logging.StreamHandler()
+_handler.setFormatter(
+    structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=[
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="iso"),
+        ],
+        processors=[
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            _renderer,
+        ],
+    )
+)
+
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+for _h in list(_root.handlers):
+    _root.removeHandler(_h)
+_root.addHandler(_handler)
+
+logger = logging.getLogger("embedding_server")
 
 app = FastAPI(title="Mem Lake Embedding Service")
 
@@ -38,6 +88,16 @@ EMBED_DURATION = Histogram(
 model_path = os.environ.get("MODEL_PATH", "/models/Qwen3-Embedding-0.6B")
 device = os.environ.get("DEVICE", "cpu")
 model = SentenceTransformer(model_path, device=device)
+
+
+def _model_dimension() -> int:
+    """模型输出维度。优先新方法名 get_embedding_dimension（sentence-transformers 已弃用旧名），
+    旧版本兜底用 get_sentence_embedding_dimension，避免 FutureWarning。"""
+    getter = getattr(model, "get_embedding_dimension", None) or getattr(
+        model, "get_sentence_embedding_dimension"
+    )
+    return int(getter())
+
 
 # 可选 rerank 模型：仅当 RERANK_MODEL_PATH 非空时加载（不阻断启动）
 rerank_model_path = os.environ.get("RERANK_MODEL_PATH", "")
@@ -94,7 +154,7 @@ def health():
     return {
         "status": "ok",
         "model": model_path,
-        "dimension": model.get_sentence_embedding_dimension(),
+        "dimension": _model_dimension(),
         "has_rerank": _reranker is not None,
     }
 
@@ -135,7 +195,17 @@ def embed(req: EmbedRequest):
     EMBED_EMBED_CALLS.inc()
     t = time.time()
     try:
-        return _embed_impl(req)
+        resp = _embed_impl(req)
+        logger.info(
+            "EMBED_CALL op=embed texts=%d dim=%d duration=%.0fms",
+            len(req.texts),
+            resp.dimension,
+            (time.time() - t) * 1000,
+        )
+        return resp
+    except Exception as exc:
+        logger.warning("EMBED_CALL op=embed texts=%d status=error error=%s", len(req.texts), exc)
+        raise
     finally:
         EMBED_DURATION.labels(op="embed").observe(time.time() - t)
 
@@ -144,7 +214,7 @@ def _embed_impl(req: EmbedRequest) -> EmbedResponse:
     if not req.texts:
         # 空列表短路：encode([]) 返回 (0,) 无第二维，embs.shape[1] 会 IndexError
         return EmbedResponse(
-            embeddings=[], dimension=model.get_sentence_embedding_dimension()
+            embeddings=[], dimension=_model_dimension()
         )
     if len(req.texts) > MAX_EMBED_TEXTS:
         raise HTTPException(
@@ -165,7 +235,16 @@ def rerank(req: RerankRequest):
     EMBED_RERANK_CALLS.inc()
     t = time.time()
     try:
-        return _rerank_impl(req)
+        resp = _rerank_impl(req)
+        logger.info(
+            "RERANK_CALL op=rerank texts=%d duration=%.0fms",
+            len(req.texts),
+            (time.time() - t) * 1000,
+        )
+        return resp
+    except Exception as exc:
+        logger.warning("RERANK_CALL op=rerank texts=%d status=error error=%s", len(req.texts), exc)
+        raise
     finally:
         EMBED_DURATION.labels(op="rerank").observe(time.time() - t)
 
