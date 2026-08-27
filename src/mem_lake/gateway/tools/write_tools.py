@@ -85,8 +85,9 @@ class RequirementInput(StrictInputModel):
     content: str = Field(description="需求详细描述")
     properties: dict[str, Any] = Field(
         description=(
-            "需求属性，必填字段：requirement_id（需求编号）、priority（P0/P1/P2/P3）、"
-            "module（模块）、acceptance_criteria（验收标准）；可选：source_doc、version"
+            "需求属性。**必填字段**：requirement_id（需求编号，调用方自生成、需稳定且唯一，"
+            "相同值视为同一需求实体）、priority（P0/P1/P2/P3）、module（模块）。"
+            "**可选字段**：acceptance_criteria（验收标准）、source_doc、version"
         )
     )
     tags: list[str] = Field(default=[], description="标签数组")
@@ -268,6 +269,8 @@ def register_write_tools(mcp: FastMCP) -> None:
 
         PM 工具。需求默认按 system 域隔离（system_id 必填）；project_id 可选，None 表示
         "先于实现"的悬浮需求。审批通过后才写入知识图谱并参与检索。
+        requirement_id 为调用方提供的业务主键，应稳定且唯一；冲突检测据此判定是否为
+        同一需求的重复/矛盾提交（相同 requirement_id 一律判为冲突）。
         若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
         直接入库（返回 status="approved" + decision="auto_approved"），有冲突返回
         decision="needs_human_review" 并停在待审批。
