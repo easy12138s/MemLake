@@ -84,7 +84,6 @@ class TestValidateNode:
         [
             ("ProjectProfile", "name"),
             ("ProjectProfile", "description"),
-            ("Requirement", "requirement_id"),
             ("Requirement", "priority"),
             ("Requirement", "module"),
             ("CodeSnippet", "name"),

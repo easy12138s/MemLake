@@ -75,7 +75,7 @@ version: 1.5.0
             "existing_node_id": "uuid",
             "existing_node_title": "...",
             "similarity": 0.95,
-            "matched_key_attrs": {"requirement_id": "REQ-001"},
+            "matched_key_attrs": {},
             "conflict_type": "duplicate"  # duplicate | contradictory
         }
     ],
@@ -429,16 +429,16 @@ manage_project_profile(
 
 | 层级 | 检测内容 | 不冲突条件 |
 |------|---------|-----------|
-| L0 硬判定 | 类型关键标识字段精确匹配（直接查库，不依赖向量） | 同项目同类型下关键标识字段**完全相同**（如相同 requirement_id）→ 直接判冲突（duplicate），升级人工 |
+| L0 硬判定 | 类型关键标识字段精确匹配（直接查库，不依赖向量） | 同项目同类型下关键标识字段**完全相同**（如相同 name+file_path）→ 直接判冲突（duplicate），升级人工（Requirement 无 L0/L2 关键标识字段，仅走 L3） |
 | L1 硬门控 | 项目 + 节点类型 | 不同项目或不同类型 → 直接通过 |
-| L2 关键属性 | 类型特有标识字段 | 向量召回候选中关键属性不同（如不同 requirement_id）→ 排除 |
+| L2 关键属性 | 类型特有标识字段 | 向量召回候选中关键属性不同（如不同 name）→ 排除（Requirement 不适用） |
 | L3 内容语义 | build_embed_text（标题+正文+关键属性段）向量相似度 | 相似度 < 0.85（CONFLICT_SIMILARITY_THRESHOLD，已实测标定） → 直接通过 |
 
 各节点类型的关键标识字段：
 
 | 节点类型 | 关键标识字段 | 含义 |
 |----------|-------------|------|
-| Requirement | requirement_id | 不同 ID = 不同需求 |
+| Requirement | 无（规范主键为服务端分配的 requirement_key） | 仅按 L3 内容相似度判重（≥ 0.85） |
 | CodeSnippet | name + file_path | 不同名称或路径 = 不同代码片段 |
 | Solution | approach | 不同方案 = 不同解决方案 |
 | DesignIntent | rationale | 不同设计理由 = 不同设计意图 |
@@ -510,18 +510,18 @@ Admin Agent → 人类: "批次 abc-123（REQ-001 用户登录需求）已自动
         "new_node_title": "用户登录功能需求",
         "existing_node_title": "用户登录功能需求",
         "similarity": 0.96,
-        "matched_key_attrs": {"requirement_id": "REQ-001"},
+        "matched_key_attrs": {},
         "conflict_type": "duplicate"
     }]
   }
 
-Admin Agent → 人类: "批次 def-456 检测到 1 个冲突节点：
-  节点「用户登录功能需求」与已有节点「用户登录功能需求」冲突
-  相似度: 0.96，匹配属性: requirement_id=REQ-001
-  冲突类型: duplicate（疑似重复）
-  建议: review
-  是否通过此批次？"
+ Admin Agent → 人类: "批次 def-456 检测到 1 个冲突节点：
+   节点「用户登录功能需求」与已有节点「用户登录功能需求」冲突
+   相似度: 0.96（内容相似，无关键属性匹配）
+   冲突类型: duplicate（疑似重复）
+   建议: review
+   是否通过此批次？"
 
-人类: "拒绝，这是重复提交"
-→ review_reject(batch_id="def-456", review_comment="重复提交 REQ-001")
+ 人类: "拒绝，这是重复提交"
+ → review_reject(batch_id="def-456", review_comment="重复提交")
 ```

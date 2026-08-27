@@ -60,9 +60,8 @@ system 维度：`system_id` 必填；`project_id` 可选（None=悬浮，表示"
 {
     "title": "用户登录功能需求",
     "content": "支持邮箱+密码登录，含记住我功能...",
-    "properties": {
-        "requirement_id": "REQ-001",   # 必填
-        "priority": "P0",              # 必填 P0/P1/P2/P3
+        "properties": {
+            "priority": "P0",              # 必填 P0/P1/P2/P3
         "module": "auth",              # 必填
         "acceptance_criteria": "...",  # 必填
         # 可选：source_doc, version
@@ -312,7 +311,7 @@ get_project_info(action="list", include_scope_meta=True)
 1. 准备需求信息
    - 确认 project_id（从项目配置获取）
    - 编写 title, content
-   - 填充 properties（requirement_id, priority, module, acceptance_criteria）
+   - 填充 properties（priority、module 为必填；acceptance_criteria 可选）
    - 可选：添加 tags
 
  2. publish_requirement(
@@ -321,7 +320,6 @@ get_project_info(action="list", include_scope_meta=True)
             "title": "用户登录功能需求",
             "content": "支持邮箱+密码登录，含记住我功能...",
             "properties": {
-                "requirement_id": "REQ-001",
                 "priority": "P0",
                 "module": "auth",
                 "acceptance_criteria": "1. 邮箱登录成功 2. 错误密码提示..."
@@ -331,27 +329,26 @@ get_project_info(action="list", include_scope_meta=True)
     )
     ← 返回 batch_id, status="pending_review"
 
-3. 告知 PM："需求 REQ-001 已提交，批次 {batch_id} 待 admin 审批"
+ 3. 告知 PM："需求已提交（主键由服务端分配），批次 {batch_id} 待 admin 审批"
 ```
 
 ### 场景二：需求版本演进（替代旧需求）
 
 ```
-# REQ-002 是 REQ-001 的升级版
+# 新需求替代已存在的旧需求（supersedes 取旧需求的节点 UUID）
 publish_requirement(
     system_id=sys_uuid,
     requirement={
         "title": "用户登录功能需求 V2",
         "content": "在 V1 基础上增加 OAuth 第三方登录...",
         "properties": {
-            "requirement_id": "REQ-002",
             "priority": "P0",
             "module": "auth",
             "acceptance_criteria": "1. V1 所有功能 2. OAuth 登录..."
         }
     },
     related={
-        "supersedes": ["REQ-001"]  # 声明替代关系
+        "supersedes": ["<旧需求节点 UUID>"]  # 声明替代关系
     }
 )
 ```
@@ -372,7 +369,7 @@ update_requirement_relations(
 
 ## 常见陷阱
 
-1. **requirement_id 必须全局唯一**：同一项目内不能有重复的 requirement_id。如果发布时与已有需求冲突，admin 审批阶段会检测到（内容相似度 ≥ 0.85 或相同 requirement_id 硬键命中）。
+1. **需求主键由服务端分配**：不必（也不应）自生成需求编号。提交后节点会带 `requirement_key`（如 `HIS-0001`，按 system 域可读序号）返回。需求间的重复/矛盾判定基于内容语义相似度（L3，≥ 0.85），不再依赖任何业务编号。
 
 2. **supersedes/relates_to 中的 ID 必须已存在**：引用的 requirement_id 必须是知识图谱中已审批通过的节点。引用不存在的 ID 会导致审批失败。
 
@@ -402,7 +399,6 @@ PM: "把用户登录需求录入 Mem Lake"
         登录成功后跳转到首页，失败时提示错误原因。
         连续 5 次失败锁定账号 30 分钟。""",
         "properties": {
-            "requirement_id": "REQ-001",
             "priority": "P0",
             "module": "auth",
             "acceptance_criteria": "1. 邮箱+密码登录成功 2. 记住我功能 3. 失败提示 4. 锁定机制"
@@ -412,7 +408,7 @@ PM: "把用户登录需求录入 Mem Lake"
 )
 ← batch_id="abc-123", status="pending_review"
 
-PM Agent → 人类: "需求 REQ-001 已提交，批次 abc-123 待 admin 审批通过后生效。"
+PM Agent → 人类: "需求已提交（主键由服务端分配），批次 abc-123 待 admin 审批通过后生效。"
 ```
 
 ### 示例 2：需求版本演进
@@ -426,15 +422,14 @@ PM: "登录需求升级到 V2，增加 OAuth"
         "title": "用户登录功能需求 V2",
         "content": "在 V1 基础上增加 Google/GitHub OAuth 第三方登录...",
         "properties": {
-            "requirement_id": "REQ-002",
             "priority": "P0",
             "module": "auth",
             "acceptance_criteria": "1. V1 所有功能 2. OAuth 登录 3. 账号绑定"
         }
     },
-    related={"supersedes": ["REQ-001"]}
+    related={"supersedes": ["<旧需求节点 UUID>"]}
 )
 ← batch_id="def-456"
 
-PM Agent → 人类: "需求 REQ-002 已提交，声明替代 REQ-001，批次 def-456 待审批。"
+PM Agent → 人类: "新需求已提交，声明替代旧需求，批次 def-456 待审批。"
 ```

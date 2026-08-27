@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index, PrimaryKeyConstraint, String, Text, text
+from sqlalchemy import Index, PrimaryKeyConstraint, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -41,7 +41,12 @@ class System(Base):
     description: Mapped[str] = mapped_column(
         Text, default="", comment="系统域描述"
     )
-
+    code: Mapped[str | None] = mapped_column(
+        String(32),
+        unique=True,
+        nullable=True,
+        comment="系统前缀编码（用于需求主键前缀，如 HIS）；缺省由 name 派生或回退 SYS",
+    )
 
 class SystemProject(Base):
     """system ↔ project 归属（反查 project 属于哪些 system）。
@@ -84,6 +89,11 @@ class KnowledgeNode(Base):
         nullable=True,
         index=True,
         comment="所属 system 域（仅 Requirement 使用）",
+    )
+    requirement_key: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="需求主键（服务端分配，如 HIS-0001），仅 Requirement 使用",
     )
     type: Mapped[str] = mapped_column(
         String(32),
@@ -137,6 +147,13 @@ class KnowledgeNode(Base):
         Index("idx_node_system_type_status", "system_id", "type", "status"),
         Index("idx_node_project_tags", "tags", postgresql_using="gin"),
         Index("idx_node_tsv", "content_tsv", postgresql_using="gin"),
+        Index("idx_node_requirement_key", "requirement_key"),
+        # 需求主键按 system 唯一（仅对非空 requirement_key 生效；其它类型该列为 NULL 不参与）
+        UniqueConstraint(
+            "system_id",
+            "requirement_key",
+            name="uq_node_system_requirement_key",
+        ),
         # HNSW 向量索引（pgvector-python 官方方案，随 create_all 创建）
         # 适配 1024 维高维向量：m=32、ef_construction=400（业界建议 m≈32-48、ef_construction≈m*10-20）。
         # opclass 用 vector_ip_ops（内积）：向量均来自归一化 embedding 服务，内积 <#> 与余弦等价且更快，
@@ -195,4 +212,17 @@ class NodeEmbedding(Base):
             postgresql_with={"m": 32, "ef_construction": 400},
             postgresql_ops={"content_vector": "vector_ip_ops"},
         ),
+    )
+
+
+class RequirementCounter(Base):
+    """每个 system 域的需求序号计数器（用于分配可读需求主键 HIS-0001）。"""
+
+    __tablename__ = "requirement_counter"
+
+    system_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, comment="system 域 ID"
+    )
+    last_value: Mapped[int] = mapped_column(
+        default=0, server_default=text("0"), comment="该 system 下需求序号当前值"
     )

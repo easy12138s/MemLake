@@ -30,7 +30,7 @@ from mem_lake.search.vector import VectorSearcher
 # 各节点类型的关键标识字段：用于 L2 关键属性比对
 # 字段值不同 → 不同实体 → 不构成冲突
 KEY_IDENTITY_FIELDS: dict[str, list[str]] = {
-    "Requirement": ["requirement_id"],
+    "Requirement": [],  # 需求主键由服务端分配（requirement_key），不依赖业务属性判重
     "CodeSnippet": ["name", "file_path"],
     "Solution": ["approach"],
     "DesignIntent": ["rationale"],
