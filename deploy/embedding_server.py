@@ -226,6 +226,7 @@ def _embed_impl(req: EmbedRequest) -> EmbedResponse:
         normalize_embeddings=True,
         prompt=req.prompt,
         prompt_name=req.prompt_name,
+        show_progress_bar=False,
     )
     return EmbedResponse(embeddings=embs.tolist(), dimension=embs.shape[1])
 

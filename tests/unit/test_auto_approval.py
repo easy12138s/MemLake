@@ -92,18 +92,18 @@ def _make_node_item(node_type: str, properties: dict, title: str = "测试节点
 class TestMatchKeyAttrs:
     """_match_key_attrs 纯函数测试：L2 关键属性比对逻辑。"""
 
-    def test_requirement_same_id_matches(self):
-        """Requirement 相同 requirement_id → 匹配（即使 priority 不同）。"""
+    def test_requirement_no_key_fields_returns_empty(self):
+        """Requirement 不再有业务关键标识字段（主键由服务端分配），_match_key_attrs 恒返回空 dict。"""
         new = {"requirement_id": "REQ-001", "priority": "P0"}
         existing = {"requirement_id": "REQ-001", "priority": "P1"}
         result = _match_key_attrs(new, existing, "Requirement")
-        assert result == {"requirement_id": "REQ-001"}
+        assert result == {}
 
-    def test_requirement_different_id_no_match(self):
-        """Requirement 不同 requirement_id → None（不同实体）。"""
+    def test_requirement_different_id_still_no_key_fields(self):
+        """Requirement 即便 requirement_id 不同也返回空 dict（判重改由 L3 语义相似度负责）。"""
         new = {"requirement_id": "REQ-001"}
         existing = {"requirement_id": "REQ-002"}
-        assert _match_key_attrs(new, existing, "Requirement") is None
+        assert _match_key_attrs(new, existing, "Requirement") == {}
 
     def test_code_snippet_same_name_and_path(self):
         """CodeSnippet 相同 name + file_path → 匹配。"""
@@ -143,18 +143,18 @@ class TestMatchKeyAttrs:
         result = _match_key_attrs({"foo": "bar"}, {"baz": "qux"}, "UnknownType")
         assert result == {}
 
-    def test_missing_key_attr_in_existing_treated_as_mismatch(self):
-        """已有节点缺失关键字段 → 视为不匹配（None != 某值）。"""
+    def test_missing_key_attr_in_existing_empty_for_requirement(self):
+        """Requirement 无关键标识字段 → 返回空 dict（不再按缺失判定不匹配）。"""
         new = {"requirement_id": "REQ-001"}
-        existing = {}  # 缺失 requirement_id
-        assert _match_key_attrs(new, existing, "Requirement") is None
+        existing = {}
+        assert _match_key_attrs(new, existing, "Requirement") == {}
 
-    def test_both_missing_key_attr_treated_as_match(self):
-        """双方都缺失关键字段 → 视为匹配（None == None）。"""
+    def test_both_missing_key_attr_empty_for_requirement(self):
+        """Requirement 双方均无关键字段 → 返回空 dict。"""
         new = {}
         existing = {}
         result = _match_key_attrs(new, existing, "Requirement")
-        assert result == {"requirement_id": None}
+        assert result == {}
 
 
 # ============================================================================
@@ -239,11 +239,11 @@ class TestDetectConflictsV2:
         assert result["has_conflict"] is False
 
     @pytest.mark.asyncio
-    async def test_l2_different_key_attr_no_conflict(self):
-        """L2 过滤：相似度 ≥ 阈值（默认 0.85）但关键属性不同 → 无冲突。"""
+    async def test_requirement_l3_below_threshold_no_conflict(self):
+        """Requirement 无 L2 关键属性；相似度 < 阈值（默认 0.85）→ 无冲突。"""
         session = AsyncMock()
         candidate = FakeSearchResult(
-            node_id=uuid.uuid4(), title="已有需求", score=0.95
+            node_id=uuid.uuid4(), title="已有需求", score=0.80
         )
         vector_searcher = MagicMock()
         vector_searcher.search = AsyncMock(return_value=[candidate])
@@ -269,8 +269,8 @@ class TestDetectConflictsV2:
         assert result["candidates_examined"] == 1
 
     @pytest.mark.asyncio
-    async def test_three_layers_pass_conflict_detected(self):
-        """三层全通过 → 冲突（相似度 ≥ 阈值（默认 0.85）+ 关键属性相同）。"""
+    async def test_requirement_l3_passes_conflict_detected(self):
+        """Requirement 仅 L3：相似度 ≥ 阈值（默认 0.85）→ 冲突，matched_key_attrs 为空 dict。"""
         session = AsyncMock()
         candidate = FakeSearchResult(
             node_id=uuid.uuid4(), title="已有需求", score=0.95
@@ -299,7 +299,7 @@ class TestDetectConflictsV2:
         assert len(result["conflicting_nodes"]) == 1
         conflict = result["conflicting_nodes"][0]
         assert conflict["similarity"] == 0.95
-        assert conflict["matched_key_attrs"] == {"requirement_id": "REQ-001"}
+        assert conflict["matched_key_attrs"] == {}
         assert conflict["conflict_type"] == "duplicate"
         assert result["suggestion"] == "review"
 
@@ -331,21 +331,21 @@ class TestDetectConflictsV2:
         assert result["candidates_examined"] == 1
 
     @pytest.mark.asyncio
-    async def test_multiple_candidates_partial_conflict(self):
-        """多候选：部分冲突 → 只返回冲突的。"""
+    async def test_requirement_multiple_candidates_partial_conflict(self):
+        """Requirement 仅 L3：多候选中仅相似度 ≥ 阈值的冲突。"""
         session = AsyncMock()
         candidate_a = FakeSearchResult(
             node_id=uuid.uuid4(), title="需求A", score=0.95
         )
         candidate_b = FakeSearchResult(
-            node_id=uuid.uuid4(), title="需求B", score=0.93
+            node_id=uuid.uuid4(), title="需求B", score=0.70
         )
         vector_searcher = MagicMock()
         vector_searcher.search = AsyncMock(
             return_value=[candidate_a, candidate_b]
         )
 
-        # 第一个候选关键属性相同（冲突），第二个不同（不冲突）
+        # 第一个候选相似度 ≥ 阈值（冲突），第二个 < 阈值（不冲突）
         node_a = MagicMock()
         node_a.properties = {"requirement_id": "REQ-001"}
         node_b = MagicMock()
@@ -682,9 +682,9 @@ class TestConflictConstants:
         }
         assert set(KEY_IDENTITY_FIELDS.keys()) == expected_types
 
-    def test_requirement_key_field_is_requirement_id(self):
-        """Requirement 的关键标识字段为 requirement_id。"""
-        assert KEY_IDENTITY_FIELDS["Requirement"] == ["requirement_id"]
+    def test_requirement_has_no_business_key_fields(self):
+        """Requirement 不再依赖业务关键标识字段（主键 requirement_key 由服务端按 system 分配）。"""
+        assert KEY_IDENTITY_FIELDS["Requirement"] == []
 
     def test_code_snippet_key_fields_are_name_and_file_path(self):
         """CodeSnippet 的关键标识字段为 name + file_path。"""

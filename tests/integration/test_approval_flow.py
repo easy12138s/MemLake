@@ -34,7 +34,8 @@ from mem_lake.approval.service import (
     submit_batch,
 )
 from mem_lake.audit.service import query_audit_logs
-from mem_lake.knowledge.models import KnowledgeNode
+from mem_lake.knowledge.models import KnowledgeNode, System
+from mem_lake.knowledge.repository import create_node
 
 # ============ 辅助函数 ============
 
@@ -50,6 +51,7 @@ async def _create_approved_node_for_conflict(
     title="用户登录鉴权需求",
     content="系统需要支持账号密码登录与 JWT 令牌签发",
     tags=None,
+    system_id=None,
 ):
     """创建一个已 approved 的节点，用作冲突检测的"已有知识"。
 
@@ -69,7 +71,7 @@ async def _create_approved_node_for_conflict(
         properties=knowledge_helpers[node_type](),
         tags=tags or ["auth", "P0"],
         source={"agent": "pm_agent", "tool": "publish_requirement"},
-        system_id=uuid.uuid4(),
+        system_id=system_id or uuid.uuid4(),
         created_by="ak_pm_existing",
     )
 
@@ -1056,6 +1058,7 @@ class TestConflictDetection:
     ):
         """内容级重复（相同内容 + 相同 requirement_id）的两节点，conflict_hint 含 conflicting_nodes。"""
         project_id = uuid.uuid4()
+        system_id = uuid.uuid4()
 
         # 先创建一个已 approved 的"用户登录鉴权需求"节点
         await _create_approved_node_for_conflict(
@@ -1064,6 +1067,7 @@ class TestConflictDetection:
             real_embedding_client,
             knowledge_helpers,
             project_id=project_id,
+            system_id=system_id,
             title="用户登录鉴权需求",
             content="系统需要支持账号密码登录与 JWT 令牌签发",
         )
@@ -1077,7 +1081,7 @@ class TestConflictDetection:
                 "payload": {
                     "project_id": str(project_id),
                     "node_type": "Requirement",
-                    "system_id": str(uuid.uuid4()),
+                    "system_id": str(system_id),
                     "title": "用户登录鉴权需求",  # 完全相同标题
                     "content": "系统需要支持账号密码登录与 JWT 令牌签发",
                     "properties": knowledge_helpers["Requirement"](),
@@ -1106,7 +1110,7 @@ class TestConflictDetection:
             vector_searcher=vector_searcher,
         )
 
-        # 内容级重复 + 关键属性相同（requirement_id 一致）→ 冲突
+        # 内容级重复 → 由 L3 语义相似度判为冲突（Requirement 无关键属性硬键）
         assert approved_batch.conflict_hint is not None
         assert approved_batch.conflict_hint["has_conflict"] is True
         details = approved_batch.conflict_hint["details"]
@@ -1115,8 +1119,7 @@ class TestConflictDetection:
         assert len(conflict["conflicting_nodes"]) == 1
         assert conflict["conflicting_nodes"][0]["conflict_type"] == "duplicate"
         assert (
-            conflict["conflicting_nodes"][0]["matched_key_attrs"]
-            == {"requirement_id": "REQ-2026-001"}
+            conflict["conflicting_nodes"][0]["matched_key_attrs"] == {}
         )
 
     async def test_conflict_detection_tag_overlap_only_no_conflict(
@@ -1688,15 +1691,15 @@ class TestApprovalEndToEnd:
 
 
 class TestExactKeyConflict:
-    """相同关键标识字段（如 requirement_id）无论内容相似度如何，一律判冲突。
+    """Requirement 已无业务关键标识字段，判重纯靠 L3 内容语义相似度。
 
     覆盖：
-    - 相同 requirement_id + 内容差异大（向量相似度不足）→ 仍判冲突
+    - 相同 requirement_id（遗留属性）但内容不同且无 L3 相似候选 → 不判冲突
     - 不同 requirement_id → 不判冲突
-    - auto_process_batch 因此路由到 needs_human_review（正向审批路径可触发，问题 6）
+    - 内容相似（L3 ≥ 阈值）时 auto_process_batch 路由到 needs_human_review
     """
 
-    async def test_same_requirement_id_different_content_conflicts(
+    async def test_same_requirement_id_different_content_no_conflict(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
         from mem_lake.approval.conflict import detect_conflicts
@@ -1705,7 +1708,6 @@ class TestExactKeyConflict:
 
         project_id = uuid.uuid4()
         props = knowledge_helpers["Requirement"]()
-        props["requirement_id"] = "REQ-2026-0818-1"
 
         # 已存在的 approved 节点
         await create_node(
@@ -1721,9 +1723,9 @@ class TestExactKeyConflict:
             created_by="ak_pm",
         )
 
-        # 新提交：相同 requirement_id，但标题/内容明显不同（向量相似度低）
+        # requirement_id 已废弃、不再作为硬键；内容明显不同且无 L3 相似候选 → 不冲突
         vector_searcher = VectorSearcher(mock_embedding_client)
-        vector_searcher.search = AsyncMock(return_value=[])  # 模拟无相似候选召回
+        vector_searcher.search = AsyncMock(return_value=[])
 
         result = await detect_conflicts(
             db_session,
@@ -1732,15 +1734,12 @@ class TestExactKeyConflict:
             node_type="Requirement",
             title="登录模块重构需求（完全不同表述）",
             content="将登录鉴权逻辑拆分为独立微服务并引入 OAuth2",
-            properties={"requirement_id": "REQ-2026-0818-1"},
+            properties={},
             tags=[],
         )
 
-        assert result["has_conflict"] is True
-        assert len(result["conflicting_nodes"]) == 1
-        conflict = result["conflicting_nodes"][0]
-        assert conflict["matched_key_attrs"] == {"requirement_id": "REQ-2026-0818-1"}
-        assert conflict["conflict_type"] == "duplicate"
+        assert result["has_conflict"] is False
+        assert result["conflicting_nodes"] == []
 
     async def test_different_requirement_id_no_conflict(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
@@ -1789,6 +1788,7 @@ class TestExactKeyConflict:
         from mem_lake.search.vector import VectorSearcher
 
         project_id = uuid.uuid4()
+        system_id = uuid.uuid4()
         props = knowledge_helpers["Requirement"]()
         props["requirement_id"] = "REQ-2026-0818-1"
         await create_node(
@@ -1800,13 +1800,12 @@ class TestExactKeyConflict:
             title="用户登录需求 v1",
             content="系统需要支持账号密码登录",
             properties=props,
-            system_id=uuid.uuid4(),
+            system_id=system_id,
             created_by="ak_pm",
         )
 
-        # 新批次：相同 requirement_id，不同内容
+        # 新批次：与已有需求内容相同（L3 语义相似度 ≥ 阈值）→ 判冲突并升级人工
         new_props = knowledge_helpers["Requirement"]()
-        new_props["requirement_id"] = "REQ-2026-0818-1"
         items = [
             {
                 "item_type": "node",
@@ -1815,9 +1814,9 @@ class TestExactKeyConflict:
                 "payload": {
                     "project_id": str(project_id),
                     "node_type": "Requirement",
-                    "system_id": str(uuid.uuid4()),
-                    "title": "登录重构需求",
-                    "content": "登录鉴权拆分为独立微服务并引入 OAuth2",
+                    "system_id": str(system_id),
+                    "title": "用户登录需求 v1",
+                    "content": "系统需要支持账号密码登录",
                     "properties": new_props,
                     "tags": ["auth"],
                     "source": {"agent": "pm_agent", "tool": "publish_requirement"},
@@ -1858,6 +1857,85 @@ class TestExactKeyConflict:
             review_comment="确认通过",
         )
         assert approved.status == STATUS_APPROVED
+
+
+class TestRequirementKeyAllocation:
+    """需求主键 requirement_key 由服务端按 system 分配可读序号（如 HIS-0001）。"""
+
+    async def test_prefix_from_system_code_and_sequence(
+        self, db_session, graph_store, mock_embedding_client
+    ):
+        sys_id = uuid.uuid4()
+        db_session.add(
+            System(id=sys_id, name=f"支付系统-{uuid.uuid4().hex[:6]}", code="PAY")
+        )
+        await db_session.flush()
+
+        n1 = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            node_type="Requirement",
+            title="需求1",
+            content="内容1",
+            properties={"priority": "P0", "module": "pay"},
+            project_id=uuid.uuid4(),
+            system_id=sys_id,
+            created_by="ak",
+        )
+        n2 = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            node_type="Requirement",
+            title="需求2",
+            content="内容2",
+            properties={"priority": "P1", "module": "pay"},
+            project_id=uuid.uuid4(),
+            system_id=sys_id,
+            created_by="ak",
+        )
+        assert n1.requirement_key == "PAY-0001"
+        assert n2.requirement_key == "PAY-0002"
+
+    async def test_prefix_fallback_to_name_then_sys(
+        self, db_session, graph_store, mock_embedding_client
+    ):
+        sys_a = uuid.uuid4()
+        db_session.add(
+            System(id=sys_a, name=f"PaymentSystem-{uuid.uuid4().hex[:6]}", code=None)
+        )
+        await db_session.flush()
+        na = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            node_type="Requirement",
+            title="a",
+            content="a",
+            properties={"priority": "P0", "module": "m"},
+            project_id=uuid.uuid4(),
+            system_id=sys_a,
+            created_by="ak",
+        )
+        assert na.requirement_key == "PAYMEN-0001"
+
+        sys_b = uuid.uuid4()
+        db_session.add(System(id=sys_b, name="结算中心", code=None))
+        await db_session.flush()
+        nb = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            node_type="Requirement",
+            title="b",
+            content="b",
+            properties={"priority": "P0", "module": "m"},
+            project_id=uuid.uuid4(),
+            system_id=sys_b,
+            created_by="ak",
+        )
+        assert nb.requirement_key == "SYS-0001"
 
 
 class TestAutoProcessFloating:

@@ -345,6 +345,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                         "status": req_node.status,
                         "version": req_node.version,
                         "tags": req_node.tags or [],
+                        "requirement_key": req_node.requirement_key,
                     }
                     # 需求存在则校验权限：有项目按项目；悬浮需求按 system
                     if req_node.project_id is not None:

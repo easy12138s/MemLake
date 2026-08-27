@@ -49,7 +49,7 @@ class TestConflictQueryTextConsistency:
 
         title = "登录需求"
         content = "支持账号密码登录"
-        properties = {"requirement_id": "REQ-001", "priority": "P0", "module": "auth"}
+        properties = {"priority": "P0", "module": "auth"}
 
         await detect_conflicts(
             _make_session(),
@@ -66,8 +66,9 @@ class TestConflictQueryTextConsistency:
         vector_searcher.search.assert_awaited_once()
         actual = vector_searcher.search.call_args.args[-1]
         assert actual == expected
-        # 属性段确实参与（含 requirement_id 键值）
-        assert "requirement_id" in expected
+        # 属性段确实参与（含 priority/module 键值）
+        assert "priority" in expected
+        assert "module" in expected
 
     async def test_build_embed_text_contains_property_segment(self):
         """build_embed_text 结构守护：title + content + 属性段。"""

@@ -18,17 +18,25 @@
 - update_node 不修改 type 字段（节点类型不可变更，避免图谱与关系表不一致）。
 """
 
+import re
 import uuid
 from typing import Any
 
 from sqlalchemy import delete, func, select, text
+from sqlalchemy import update as sa_update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.knowledge.embed import build_embed_facets, build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
-from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
+from mem_lake.knowledge.models import (
+    KnowledgeNode,
+    NodeEmbedding,
+    RequirementCounter,
+    System,
+)
 from mem_lake.knowledge.schema import (
     SchemaValidationError,
     validate_edge_type,
@@ -100,9 +108,20 @@ async def create_node(
             embed_input = build_embed_text(node_type, title, content, properties)
             content_vector_value = await embedding_client.embed_one(embed_input)
 
+    requirement_key = None
+    if node_type == "Requirement" and system_id is not None:
+        # 需求主键由服务端按 system 域分配可读序号（如 HIS-0001），作为需求节点唯一键；
+        # 旧 requirement_id 概念已废弃，落库前剔除，避免与系统主键并存造成歧义
+        properties = dict(properties)
+        properties.pop("requirement_id", None)
+        prefix = await _resolve_requirement_prefix(session, system_id)
+        seq = await _alloc_requirement_sequence(session, system_id)
+        requirement_key = f"{prefix}-{seq:04d}"
+
     node = KnowledgeNode(
         project_id=project_id,
         system_id=system_id,
+        requirement_key=requirement_key,
         type=node_type,
         title=title,
         content=content,
@@ -164,6 +183,40 @@ async def create_node(
     )
 
     return node
+
+
+async def _resolve_requirement_prefix(session: AsyncSession, system_id: uuid.UUID) -> str:
+    """根据 system 域解析需求主键前缀。
+
+    code 优先；否则由 name 派生（取 ASCII 字母数字，截断 6 位）；都没有则回退 SYS。
+    """
+    system = await session.get(System, system_id)
+    if system is None:
+        return "SYS"
+    if system.code:
+        code = str(system.code).strip().upper()
+        return code[:32] or "SYS"
+    if system.name:
+        cleaned = re.sub(r"[^A-Za-z0-9]", "", system.name)[:6].upper()
+        if cleaned:
+            return cleaned
+    return "SYS"
+
+
+async def _alloc_requirement_sequence(session: AsyncSession, system_id: uuid.UUID) -> int:
+    """原子递增并返回某 system 下需求序号（1 起）。"""
+    await session.execute(
+        pg_insert(RequirementCounter)
+        .values(system_id=system_id, last_value=0)
+        .on_conflict_do_nothing()
+    )
+    result = await session.execute(
+        sa_update(RequirementCounter)
+        .where(RequirementCounter.system_id == system_id)
+        .values(last_value=RequirementCounter.last_value + 1)
+        .returning(RequirementCounter.last_value)
+    )
+    return int(result.scalar_one())
 
 
 async def _store_facet_vectors(

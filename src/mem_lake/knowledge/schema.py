@@ -31,7 +31,7 @@ EDGE_TYPES: frozenset[str] = frozenset({
 
 # 各类节点的必填字段定义（基于 PDD 4.4）
 PROJECT_PROFILE_REQUIRED: set[str] = {"name", "description"}
-REQUIREMENT_REQUIRED: set[str] = {"requirement_id", "priority", "module"}
+REQUIREMENT_REQUIRED: set[str] = {"priority", "module"}
 CODE_SNIPPET_REQUIRED: set[str] = {"name", "type", "responsibility"}
 SOLUTION_REQUIRED: set[str] = {"approach", "version"}
 DESIGN_INTENT_REQUIRED: set[str] = {"rationale"}

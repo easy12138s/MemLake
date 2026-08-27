@@ -80,8 +80,8 @@ class TestCreateNode:
             .select_from(NodeEmbedding)
             .where(NodeEmbedding.node_id == node.id)
         )
-        # Requirement 含 content + requirement_id/priority/module/acceptance_criteria 4 属性均非空 = 5
-        assert facet_count == 5
+        # Requirement 含 content + priority/module/acceptance_criteria 3 属性均非空 = 4
+        assert facet_count == 4
 
         # 3. AGE 图节点存在
         rows = await graph_store.match_pattern(
@@ -1388,7 +1388,7 @@ class TestCreateNodeEdgeCases:
         """
         project_id = uuid.uuid4()
         special_props = {
-            "requirement_id": "REQ'; DROP TABLE--",
+            "external_ref": "REQ'; DROP TABLE--",
             "priority": "P0",
             "module": "auth\\n\"injection\"",
         }
@@ -1406,7 +1406,7 @@ class TestCreateNodeEdgeCases:
         )
 
         fetched = await get_node(db_session, node.id)
-        assert fetched.properties["requirement_id"] == "REQ'; DROP TABLE--"
+        assert fetched.properties["external_ref"] == "REQ'; DROP TABLE--"
         assert fetched.properties["module"] == "auth\\n\"injection\""
 
         # 验证 knowledge_node 表未被 DROP（注入未执行）
