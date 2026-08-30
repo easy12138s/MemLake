@@ -7,7 +7,7 @@
 3. review_reject：不写入正式存储、items 保留、状态转换、审计日志
 4. 冲突检测：标题相似、标签匹配、跨项目/跨类型隔离、阈值边界
 5. 查询场景：list_pending_batches、get_batch_detail、不存在批次抛错
-6. 边界场景：已审批批次重复操作、空批次、update action、edge from_id 不存在
+6. 边界场景：已审批批次重复操作、空批次、update action、edge from_ref 不存在
 
 事务回滚隔离：db_session fixture 结束 rollback，不影响其他测试。
 依赖真实 embedding 容器（localhost:8001）：conflict 检测需真实向量相似度对比。
@@ -128,7 +128,7 @@ class TestSubmitBatch:
     async def test_submit_batch_with_edge_item(
         self, db_session, sample_batch_payloads
     ):
-        """提交含 edge item 的批次：验证 payload 含 from_id/to_id。"""
+        """提交含 edge item 的批次：验证 payload 含 from_ref/to_ref。"""
         project_id = uuid.uuid4()
         from_id = uuid.uuid4()
         to_id = uuid.uuid4()
@@ -151,8 +151,8 @@ class TestSubmitBatch:
         edge_item = detail.items[0]
         assert edge_item.item_type == "edge"
         assert edge_item.entity_type == "conflicts_with"
-        assert edge_item.payload["from_id"] == str(from_id)
-        assert edge_item.payload["to_id"] == str(to_id)
+        assert edge_item.payload["from_ref"] == str(from_id)
+        assert edge_item.payload["to_ref"] == str(to_id)
 
     async def test_submit_batch_summary_mixed_items(
         self, db_session, sample_batch_payloads
@@ -311,8 +311,8 @@ class TestSubmitBatch:
                 "action": "create",
                 "entity_type": "invalid_edge",
                 "payload": {
-                    "from_id": str(uuid.uuid4()),
-                    "to_id": str(uuid.uuid4()),
+                    "from_ref": str(uuid.uuid4()),
+                    "to_ref": str(uuid.uuid4()),
                 },
             }
         ]
@@ -530,16 +530,16 @@ class TestReviewApprove:
         vector_searcher_mock,
         sample_batch_payloads,
     ):
-        """部分失败整体回滚：edge from_id 不存在抛 NodeNotFoundError，触发事务回滚。
+        """部分失败整体回滚：edge from_ref 不存在抛 NodeNotFoundError，触发事务回滚。
 
-        PDD 3.4 硬约束：edge item 的 from_id/to_id 必须存在，否则抛异常触发
+        PDD 3.4 硬约束：edge item 的 from_ref/to_ref 必须存在，否则抛异常触发
         事务回滚。AGE CREATE edge 在 MATCH 失败时静默跳过不抛错（Cypher 标准
         行为），因此 service 层必须显式校验节点存在性。
         """
         from mem_lake.knowledge.repository import NodeNotFoundError
 
         project_id = uuid.uuid4()
-        # from_id 与 to_id 都是不存在的 UUID（未写入 knowledge_node）
+        # from_ref 与 to_ref 都是不存在的 UUID（未写入 knowledge_node）
         items = sample_batch_payloads["update_requirement_relations"](
             uuid.uuid4(), uuid.uuid4()
         )
@@ -553,7 +553,7 @@ class TestReviewApprove:
             items=items,
         )
 
-        # 期望：review_approve 抛 NodeNotFoundError（from_id 节点不存在）
+        # 期望：review_approve 抛 NodeNotFoundError（from_ref 节点不存在）
         with pytest.raises(NodeNotFoundError):
             await review_approve(
                 db_session,
