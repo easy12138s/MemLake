@@ -10,18 +10,19 @@ PDD 6.1 工具表分组：
 - write_tools：写入类（产生审批批次）
   - publish_requirement, update_requirement_relations（PM）
   - submit_dev_artifacts（Dev）
+  - update_node（PM/Dev）
 - review_tools：审批类（Admin 专属）
-  - review_pending_list, review_batch_detail, review_approve, review_reject
+  - review_pending_list, review_batch_detail, review_approve, review_reject, review_auto_process
 - manage_tools：管理类（Admin 专属）
   - create_access_key, revoke_access_key, list_access_keys, update_access_key_scope,
-    rotate_access_key, set_access_key_mode, manage_project_profile
+    rotate_access_key, set_access_key_mode, manage_system, manage_project_profile
   - reindex_project_vectors, get_reindex_status（异步重建向量 + 进度查询）
-- search_tools：检索类（M6b 待实现）
+- search_tools：检索类
   - search_similar_requirements, search_code_snippets, analyze_impact_scope,
     check_requirement_conflicts, list_knowledge
 - query_tools：查询类（只读）
-  - get_role_skills（已实现，三角色共享）
-  - get_project_profile, get_requirement_context, query_audit_log（M6b 待实现）
+  - get_role_skills（三角色共享）
+  - get_project_profile, get_project_info, get_requirement_context, query_audit_log
 """
 
 from fastmcp import FastMCP
