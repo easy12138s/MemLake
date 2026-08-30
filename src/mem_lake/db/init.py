@@ -81,6 +81,30 @@ async def create_tables(session: AsyncSession) -> None:
         )
     )
 
+    # 需求主键 requirement_key + system.code（服务端分配可读主键；存量库升级兼容）。
+    # create_all 不会给已有表追加新列/约束，故显式补齐（与 deploy/init/002_requirement_key.sql
+    # 等价，且随每次启动幂等执行，覆盖既有 volume——该脚本不能依赖 docker-entrypoint 的
+    # 一次性初始化，它对存量库不生效）。
+    await session.execute(
+        text(
+            "ALTER TABLE knowledge_node "
+            "ADD COLUMN IF NOT EXISTS requirement_key VARCHAR(64)"
+        )
+    )
+    await session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_system_requirement_key "
+            "ON knowledge_node (system_id, requirement_key) "
+            "WHERE requirement_key IS NOT NULL"
+        )
+    )
+    await session.execute(
+        text(
+            "ALTER TABLE system "
+            "ADD COLUMN IF NOT EXISTS code VARCHAR(32) UNIQUE"
+        )
+    )
+
     # access_key.project_scope 语义升级为两级字典 {systems,projects}：
     # 存量库旧结构为扁平数组（历史数据直接舍弃，决策定稿），起库幂等把数组型统一重置为空字典。
     # admin 不受限由 role 判定，故数组型统一转空字典即可（幂等：仅 jsonb_typeof=array 的行命中一次）。
