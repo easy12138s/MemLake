@@ -29,17 +29,25 @@ EDGE_TYPES: frozenset[str] = frozenset({
     "references",
 })
 
-# 各类节点的必填字段定义（基于 PDD 4.4）
-PROJECT_PROFILE_REQUIRED: set[str] = {"name", "description"}
+# 各类节点的必填字段定义（与工具层 Field description 契约对齐）
+PROJECT_PROFILE_REQUIRED: set[str] = {"name", "description", "tech_stack", "architecture"}
 REQUIREMENT_REQUIRED: set[str] = {"priority", "module"}
-CODE_SNIPPET_REQUIRED: set[str] = {"name", "type", "responsibility"}
+CODE_SNIPPET_REQUIRED: set[str] = {"name", "type", "responsibility", "file_path"}
 SOLUTION_REQUIRED: set[str] = {"approach", "version"}
-DESIGN_INTENT_REQUIRED: set[str] = {"rationale"}
+DESIGN_INTENT_REQUIRED: set[str] = {"rationale", "trade_offs"}
 DECISION_REQUIRED: set[str] = {"decision_id", "decision"}
 PITFALL_REQUIRED: set[str] = {"symptom", "root_cause", "solution"}
 
-# Pitfall 严重级合法枚举（描述承诺 P0~P3，schema 层枚举校验）
-SEVERITY_ENUM: frozenset[str] = frozenset({"P0", "P1", "P2", "P3"})
+# 各类节点的可选字段白名单。properties 为封闭契约（对齐 JSON Schema
+# additionalProperties: false 惯例）：必填 ∪ 可选之外的未知字段一律拒绝，
+# 避免杂字段（含已废弃的 requirement_id 等）静默入库。
+PROJECT_PROFILE_OPTIONAL: set[str] = {"conventions", "team", "work_dir", "repo"}
+REQUIREMENT_OPTIONAL: set[str] = {"acceptance_criteria", "source_doc", "version", "external_id"}
+CODE_SNIPPET_OPTIONAL: set[str] = {"signature", "snippet", "language"}
+SOLUTION_OPTIONAL: set[str] = {"alternatives"}
+DESIGN_INTENT_OPTIONAL: set[str] = {"references"}
+DECISION_OPTIONAL: set[str] = set()
+PITFALL_OPTIONAL: set[str] = {"severity"}
 
 NODE_SCHEMA: dict[str, set[str]] = {
     "ProjectProfile": PROJECT_PROFILE_REQUIRED,
@@ -50,6 +58,20 @@ NODE_SCHEMA: dict[str, set[str]] = {
     "Decision": DECISION_REQUIRED,
     "Pitfall": PITFALL_REQUIRED,
 }
+
+# 每类节点的合法字段全集（必填 ∪ 可选）
+ALLOWED_FIELDS: dict[str, set[str]] = {
+    "ProjectProfile": PROJECT_PROFILE_REQUIRED | PROJECT_PROFILE_OPTIONAL,
+    "Requirement": REQUIREMENT_REQUIRED | REQUIREMENT_OPTIONAL,
+    "CodeSnippet": CODE_SNIPPET_REQUIRED | CODE_SNIPPET_OPTIONAL,
+    "Solution": SOLUTION_REQUIRED | SOLUTION_OPTIONAL,
+    "DesignIntent": DESIGN_INTENT_REQUIRED | DESIGN_INTENT_OPTIONAL,
+    "Decision": DECISION_REQUIRED | DECISION_OPTIONAL,
+    "Pitfall": PITFALL_REQUIRED | PITFALL_OPTIONAL,
+}
+
+# Pitfall 严重级合法枚举（描述承诺 P0~P3，schema 层枚举校验）
+SEVERITY_ENUM: frozenset[str] = frozenset({"P0", "P1", "P2", "P3"})
 
 
 class SchemaValidationError(Exception):
@@ -68,13 +90,15 @@ def validate_node_type(node_type: str) -> None:
 
 
 def validate_node(node_type: str, properties: dict) -> None:
-    """校验节点类型与 properties 必填字段。
+    """校验节点类型、properties 必填字段与封闭字段白名单。
 
     - 校验 node_type 在 NODE_TYPES 中
     - 校验 properties 包含该类型的所有必填字段
-    不合规抛 SchemaValidationError，含缺失字段列表。
+    - 校验 properties 不含白名单（必填 ∪ 可选）之外的未知字段
+    不合规抛 SchemaValidationError，错误信息含缺失/未知字段与合法字段列表。
 
-    用于 knowledge_node 表写入前的完整校验（repository.create_node/update_node）。
+    用于 knowledge_node 表写入前的完整校验（repository.create_node/update_node），
+    亦被审批提交时校验（approval._validate_item_payload）复用。
     图节点写入（age_store.add_node）只需 validate_node_type，避免冗余校验。
     """
     validate_node_type(node_type)
@@ -90,6 +114,14 @@ def validate_node(node_type: str, properties: dict) -> None:
         raise SchemaValidationError(
             f"节点 {node_type} 缺失必填字段: {sorted(missing)}，"
             f"必填字段: {sorted(required)}"
+        )
+
+    allowed = ALLOWED_FIELDS[node_type]
+    unknown = set(properties.keys()) - allowed
+    if unknown:
+        raise SchemaValidationError(
+            f"节点 {node_type} 含未知字段: {sorted(unknown)}，"
+            f"合法字段: {sorted(allowed)}"
         )
 
     # Pitfall severity 枚举校验（存在则须合法，避免非法严重级入库）

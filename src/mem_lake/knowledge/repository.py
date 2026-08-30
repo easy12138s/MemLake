@@ -111,9 +111,7 @@ async def create_node(
     requirement_key = None
     if node_type == "Requirement" and system_id is not None:
         # 需求主键由服务端按 system 域分配可读序号（如 HIS-0001），作为需求节点唯一键；
-        # 旧 requirement_id 概念已废弃，落库前剔除，避免与系统主键并存造成歧义
-        properties = dict(properties)
-        properties.pop("requirement_id", None)
+        # properties 契约（必填∪可选白名单）已在 schema.validate_node 收口
         prefix = await _resolve_requirement_prefix(session, system_id)
         seq = await _alloc_requirement_sequence(session, system_id)
         requirement_key = f"{prefix}-{seq:04d}"

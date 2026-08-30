@@ -242,7 +242,7 @@ async def review_approve(
          冲突检测：detect_conflicts(...)（统一三层实现，写入后检测并排除自身），
          累加 conflict_hint；回填 approval_item.target_id = node.id
        - node + update：调用 update_node
-       - edge + create：校验 from_id/to_id 存在，调用 add_edge
+       - edge + create：解析 from_ref/to_ref 并校验端点存在，调用 add_edge
     3. 合并所有 node 的 conflict_hint，写入 approval_batch.conflict_hint
     4. 更新 approval_batch.status = approved, reviewed_by, reviewed_at, review_comment
     5. 写审计日志
@@ -787,13 +787,12 @@ def _validate_item_payload(item: dict, idx: int) -> None:
         except SchemaValidationError as e:
             raise PayloadValidationError(f"item[{idx}] edge+create 校验失败: {e}") from e
 
-        # 校验 from_ref/to_ref 或 from_id/to_id 存在
-        # M6 支持 from_ref/to_ref 临时引用（PDD 5.3），兼容旧 from_id/to_id
-        has_from = "from_ref" in payload or "from_id" in payload
-        has_to = "to_ref" in payload or "to_id" in payload
+        # 校验 from_ref/to_ref 存在（支持批次内临时引用，PDD 5.3）
+        has_from = "from_ref" in payload
+        has_to = "to_ref" in payload
         if not has_from or not has_to:
             raise PayloadValidationError(
-                f"item[{idx}] edge+create payload 缺 from_ref/to_ref（或 from_id/to_id）"
+                f"item[{idx}] edge+create payload 缺 from_ref/to_ref"
             )
 
     # node + update / edge + update / delete：提交时不强校验，留待审批通过时校验
@@ -866,7 +865,7 @@ async def _execute_edge_create(
     1. 临时引用名（如 "requirement" / "LoginService"）：匹配同批次已 create 节点的
        payload.ref，反查 approval_item.target_id
     2. UUID 字符串（已有节点）：直接解析
-    3. 业务 ID（如 requirement_id）：当前不支持，需 Agent 先查到节点 UUID
+    3. 业务可读键（如 requirement_key）：当前不支持，需 Agent 先查到节点 UUID
 
     PDD 3.4 硬约束：解析失败抛 PayloadValidationError 触发事务回滚（保证原子性）。
     解析成功后，校验节点在 knowledge_node 表存在（避免 AGE 静默丢失边创建）。
@@ -875,8 +874,8 @@ async def _execute_edge_create(
     因此必须在应用层显式校验节点存在性。
     """
     payload = item.payload
-    from_ref = payload.get("from_ref") or payload.get("from_id")
-    to_ref = payload.get("to_ref") or payload.get("to_id")
+    from_ref = payload.get("from_ref")
+    to_ref = payload.get("to_ref")
 
     if not from_ref or not to_ref:
         raise PayloadValidationError(

@@ -149,11 +149,11 @@ def knowledge_helpers():
             "name": "TestProject",
             "description": "测试项目",
             "tech_stack": ["Python", "PostgreSQL"],
+            "architecture": "MCP 网关 + PostgreSQL 单实例",
         }
 
     def _requirement() -> dict:
         return {
-            "requirement_id": "REQ-2026-001",
             "priority": "P0",
             "module": "auth",
             "acceptance_criteria": ["账号密码登录"],
@@ -175,13 +175,15 @@ def knowledge_helpers():
         }
 
     def _design_intent() -> dict:
-        return {"rationale": "无状态、易扩展、适配微服务"}
+        return {
+            "rationale": "无状态、易扩展、适配微服务",
+            "trade_offs": "牺牲一次性会话存储，换取水平扩展能力",
+        }
 
     def _decision() -> dict:
         return {
             "decision_id": "DEC-001",
             "decision": "采用 JWT",
-            "context": "需要支持多服务部署",
         }
 
     def _pitfall() -> dict:
@@ -255,7 +257,7 @@ def sample_batch_payloads(knowledge_helpers):
 
     返回 dict 含三种批次类型的 items 列表（publish_requirement / submit_dev_artifacts /
     update_requirement_relations），调用方传入 submit_batch 的 items 参数。
-    模板内 project_id/from_id/to_id 由调用方在提交前填入实际值。
+    模板内 project_id/from_ref/to_ref 由调用方在提交前填入实际值。
     """
     req_props = knowledge_helpers["Requirement"]()
     code_props = knowledge_helpers["CodeSnippet"]()
@@ -284,8 +286,8 @@ def sample_batch_payloads(knowledge_helpers):
 
     def _submit_dev_artifacts(
         project_id: uuid.UUID,
-        from_id: uuid.UUID,
-        to_id: uuid.UUID,
+        from_ref: uuid.UUID,
+        to_ref: uuid.UUID,
         created_by: str = "ak_dev",
     ) -> list[dict]:
         """submit_dev_artifacts 批次模板：1 个 CodeSnippet + 1 个 Solution + 1 个 implements 边。"""
@@ -325,8 +327,8 @@ def sample_batch_payloads(knowledge_helpers):
                 "action": "create",
                 "entity_type": "implements",
                 "payload": {
-                    "from_id": str(from_id),
-                    "to_id": str(to_id),
+                    "from_ref": str(from_ref),
+                    "to_ref": str(to_ref),
                     "edge_type": "implements",
                     "properties": {"reason": "代码实现需求"},
                 },
@@ -334,7 +336,7 @@ def sample_batch_payloads(knowledge_helpers):
         ]
 
     def _update_requirement_relations(
-        from_id: uuid.UUID, to_id: uuid.UUID
+        from_ref: uuid.UUID, to_ref: uuid.UUID
     ) -> list[dict]:
         """update_requirement_relations 批次模板：1 个 conflicts_with 边。"""
         return [
@@ -343,8 +345,8 @@ def sample_batch_payloads(knowledge_helpers):
                 "action": "create",
                 "entity_type": "conflicts_with",
                 "payload": {
-                    "from_id": str(from_id),
-                    "to_id": str(to_id),
+                    "from_ref": str(from_ref),
+                    "to_ref": str(to_ref),
                     "edge_type": "conflicts_with",
                     "properties": {"reason": "需求间冲突"},
                 },

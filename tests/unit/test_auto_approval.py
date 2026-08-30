@@ -94,15 +94,15 @@ class TestMatchKeyAttrs:
 
     def test_requirement_no_key_fields_returns_empty(self):
         """Requirement 不再有业务关键标识字段（主键由服务端分配），_match_key_attrs 恒返回空 dict。"""
-        new = {"requirement_id": "REQ-001", "priority": "P0"}
-        existing = {"requirement_id": "REQ-001", "priority": "P1"}
+        new = {"priority": "P0", "module": "auth"}
+        existing = {"priority": "P1", "module": "auth"}
         result = _match_key_attrs(new, existing, "Requirement")
         assert result == {}
 
-    def test_requirement_different_id_still_no_key_fields(self):
-        """Requirement 即便 requirement_id 不同也返回空 dict（判重改由 L3 语义相似度负责）。"""
-        new = {"requirement_id": "REQ-001"}
-        existing = {"requirement_id": "REQ-002"}
+    def test_requirement_different_module_still_no_key_fields(self):
+        """Requirement 即便 module 不同也返回空 dict（判重由 L3 语义相似度负责）。"""
+        new = {"module": "auth"}
+        existing = {"module": "billing"}
         assert _match_key_attrs(new, existing, "Requirement") == {}
 
     def test_code_snippet_same_name_and_path(self):
@@ -145,7 +145,7 @@ class TestMatchKeyAttrs:
 
     def test_missing_key_attr_in_existing_empty_for_requirement(self):
         """Requirement 无关键标识字段 → 返回空 dict（不再按缺失判定不匹配）。"""
-        new = {"requirement_id": "REQ-001"}
+        new = {"priority": "P0", "module": "auth"}
         existing = {}
         assert _match_key_attrs(new, existing, "Requirement") == {}
 
@@ -183,7 +183,7 @@ class TestDetectConflictsV2:
             node_type="Requirement",
             title="测试需求",
             content="测试内容",
-            properties={"requirement_id": "REQ-001"},
+            properties={"priority": "P0", "module": "auth"},
             tags=[],
         )
         assert result["has_conflict"] is False
@@ -208,7 +208,7 @@ class TestDetectConflictsV2:
             node_type="Requirement",
             title="测试需求",
             content="测试内容",
-            properties={"requirement_id": "REQ-001"},
+            properties={"priority": "P0", "module": "auth"},
             tags=[],
         )
         assert result["has_conflict"] is False
@@ -233,7 +233,7 @@ class TestDetectConflictsV2:
             node_type="Requirement",
             title="测试",
             content="内容",
-            properties={"requirement_id": "REQ-001"},
+            properties={"priority": "P0", "module": "auth"},
             tags=[],
         )
         assert result["has_conflict"] is False
@@ -249,7 +249,7 @@ class TestDetectConflictsV2:
         vector_searcher.search = AsyncMock(return_value=[candidate])
 
         existing_node = MagicMock()
-        existing_node.properties = {"requirement_id": "REQ-002"}
+        existing_node.properties = {"priority": "P1", "module": "billing"}
 
         with patch(
             "mem_lake.approval.conflict.get_node_for_conflict",
@@ -262,7 +262,7 @@ class TestDetectConflictsV2:
                 node_type="Requirement",
                 title="测试需求",
                 content="测试内容",
-                properties={"requirement_id": "REQ-001"},
+                properties={"priority": "P0", "module": "auth"},
                 tags=[],
             )
         assert result["has_conflict"] is False
@@ -279,7 +279,7 @@ class TestDetectConflictsV2:
         vector_searcher.search = AsyncMock(return_value=[candidate])
 
         existing_node = MagicMock()
-        existing_node.properties = {"requirement_id": "REQ-001"}
+        existing_node.properties = {"priority": "P0", "module": "auth"}
 
         with patch(
             "mem_lake.approval.conflict.get_node_for_conflict",
@@ -292,7 +292,7 @@ class TestDetectConflictsV2:
                 node_type="Requirement",
                 title="测试需求",
                 content="测试内容",
-                properties={"requirement_id": "REQ-001"},
+                properties={"priority": "P0", "module": "auth"},
                 tags=[],
             )
         assert result["has_conflict"] is True
@@ -324,7 +324,7 @@ class TestDetectConflictsV2:
                 node_type="Requirement",
                 title="测试",
                 content="内容",
-                properties={"requirement_id": "REQ-001"},
+                properties={"priority": "P0", "module": "auth"},
                 tags=[],
             )
         assert result["has_conflict"] is False
@@ -347,9 +347,9 @@ class TestDetectConflictsV2:
 
         # 第一个候选相似度 ≥ 阈值（冲突），第二个 < 阈值（不冲突）
         node_a = MagicMock()
-        node_a.properties = {"requirement_id": "REQ-001"}
+        node_a.properties = {"priority": "P0", "module": "auth"}
         node_b = MagicMock()
-        node_b.properties = {"requirement_id": "REQ-999"}
+        node_b.properties = {"priority": "P2", "module": "report"}
 
         async def fake_get_node(session, node_id):
             if node_id == candidate_a.node_id:
@@ -367,7 +367,7 @@ class TestDetectConflictsV2:
                 node_type="Requirement",
                 title="测试",
                 content="内容",
-                properties={"requirement_id": "REQ-001"},
+                properties={"priority": "P0", "module": "auth"},
                 tags=[],
             )
         assert result["has_conflict"] is True
@@ -391,7 +391,7 @@ class TestDetectConflictsV2:
         )
 
         existing_node = MagicMock()
-        existing_node.properties = {"requirement_id": "REQ-001"}
+        existing_node.properties = {"priority": "P0", "module": "auth"}
 
         with patch(
             "mem_lake.approval.conflict.get_node_for_conflict",
@@ -404,7 +404,7 @@ class TestDetectConflictsV2:
                 node_type="Requirement",
                 title="测试需求",
                 content="测试内容",
-                properties={"requirement_id": "REQ-001"},
+                properties={"priority": "P0", "module": "auth"},
                 tags=[],
                 exclude_node_id=self_id,
             )
@@ -471,7 +471,7 @@ class TestAutoProcessBatch:
         session = AsyncMock()
 
         item = _make_node_item(
-            "Requirement", {"requirement_id": "REQ-001"}
+            "Requirement", {"priority": "P0", "module": "auth"}
         )
         batch = MagicMock()
         batch.id = uuid.uuid4()
@@ -484,7 +484,7 @@ class TestAutoProcessBatch:
                 {
                     "existing_node_id": str(uuid.uuid4()),
                     "similarity": 0.95,
-                    "matched_key_attrs": {"requirement_id": "REQ-001"},
+                    "matched_key_attrs": {},
                 }
             ],
             "candidates_examined": 3,
@@ -545,7 +545,7 @@ class TestAutoProcessBatch:
         """多节点全部无冲突 → 自动通过。"""
         session = AsyncMock()
 
-        item1 = _make_node_item("Requirement", {"requirement_id": "REQ-001"})
+        item1 = _make_node_item("Requirement", {"priority": "P0", "module": "auth"})
         item2 = _make_node_item("CodeSnippet", {"name": "Svc", "file_path": "a.py"})
         batch = MagicMock()
         batch.id = uuid.uuid4()

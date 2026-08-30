@@ -319,7 +319,6 @@ async def scenario_2_pm_publish(ctx: TestContext) -> ScenarioResult:
                         "错误码：401 未授权，403 禁止访问，429 限流。"
                     ),
                     "properties": {
-                        "requirement_id": "REQ-001",
                         "priority": "P1",
                         "module": "auth",
                         "acceptance_criteria": (
@@ -478,7 +477,6 @@ async def scenario_4_conflict_detection(ctx: TestContext) -> ScenarioResult:
                         "额外补充：支持 OAuth2 第三方登录。"
                     ),
                     "properties": {
-                        "requirement_id": "REQ-001",
                         "priority": "P1",
                         "module": "auth",
                         "acceptance_criteria": (
@@ -935,7 +933,6 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
                     "title": "用户登录功能",
                     "content": "实现基于JWT的用户登录认证功能...",
                     "properties": {
-                        "requirement_id": "REQ-001",
                         "priority": "P1",
                         "module": "auth",
                         "acceptance_criteria": "测试",

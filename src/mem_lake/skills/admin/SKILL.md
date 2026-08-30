@@ -478,7 +478,7 @@ manage_project_profile(
 
 5. **manage_project_profile 是直接写入**：不走审批流，不产生 batch_id，状态直接 approved。这是 admin 专属权限，PM/Dev 无权调用。
 
-6. **冲突检测的硬判定**：相同关键标识字段（如相同 requirement_id）一律判为重复冲突并升级人工审批，**不依赖内容相似度**（L0 硬判定）。若人类 admin 通过 `review_batch_detail` 确认确为重复，应手动 `review_reject` 并说明原因；若确认无冲突，可手动 `review_approve`。
+6. **冲突检测的硬判定**：相同关键标识字段（如代码片段的 name+file_path）一律判为重复冲突并升级人工审批，**不依赖内容相似度**（L0 硬判定；Requirement 无关键标识字段，判重依赖内容语义相似度）。若人类 admin 通过 `review_batch_detail` 确认确为重复，应手动 `review_reject` 并说明原因；若确认无冲突，可手动 `review_approve`。
 
 7. **rotate 轮换密钥**：`rotate_access_key` 返回的 `plaintext` 是新明文，仅返回一次，旧明文立即失效。用于密钥疑似泄露时主动作废，无需吊销重建（Key ID 不变）。
 

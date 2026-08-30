@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     EMBEDDING_PORT: int = 8001
 
     # ========== Rerank 精排 ==========
-    # bge-reranker-base（CrossEncoder）路径。空字符串=不启用精排（向下兼容）。
+    # bge-reranker-base（CrossEncoder）路径。空字符串=不启用精排。
     # 留空时 ENABLE_RERANK 即使为 True 也不生效，检索退回 RRF 原序。
     RERANK_MODEL_PATH: str = ""
     # 精排候选数（取 RRF 融合后前 N 个精排），越小延迟越低
@@ -54,10 +54,9 @@ class Settings(BaseSettings):
     BCRYPT_ROUNDS: int = 12
     APPROVAL_WARNING_DAYS: int = 7
     APPROVAL_TIMEOUT_DAYS: int = 30
-    # 冲突检测相似度阈值。2026-08-22 已按 Qwen3-Embedding-0.6B 实测标定确认
-    # （query-doc 模式：相关不同实体最高 0.807、同实体改写最低 0.912，
-    # 0.85 落在空隙内；标定记录见 scripts/calibrate_conflict_threshold.py docstring）。
-    # 换 embedding 模型后必须用该脚本重标。
+    # 冲突检测相似度阈值。0.85 落在相关(≥0.912)/不相关(≤0.807)空隙内
+    # （Qwen3-Embedding-0.6B query-doc 模式实测分布）。
+    # 换 embedding 模型后须用 scripts/calibrate_conflict_threshold.py 重标。
     CONFLICT_SIMILARITY_THRESHOLD: float = 0.85
 
     # ========== 宽松模式（免审批直接入库）==========
