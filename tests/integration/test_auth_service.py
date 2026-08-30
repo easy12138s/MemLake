@@ -380,8 +380,12 @@ class TestUpdateAccessKeyScope:
 
     async def test_update_grant_all_projects(self, db_session):
         """grant_all_projects 更新全部 Key（空 scope = 不受限）。"""
-        d1, _ = await create_access_key(db_session, role="dev", project_scope=_scope(uuid.uuid4()), created_by="admin_ak")
-        p1, _ = await create_access_key(db_session, role="pm", project_scope=_scope(uuid.uuid4()), created_by="admin_ak")
+        d1, _ = await create_access_key(
+            db_session, role="dev", project_scope=_scope(uuid.uuid4()), created_by="admin_ak"
+        )
+        p1, _ = await create_access_key(
+            db_session, role="pm", project_scope=_scope(uuid.uuid4()), created_by="admin_ak"
+        )
 
         updated = await update_access_key_scope(
             db_session, project_scope=[], grant_all_projects=True, actor="admin_ak"

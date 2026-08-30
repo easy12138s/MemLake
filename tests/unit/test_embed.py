@@ -1,6 +1,5 @@
 """build_embed_text / build_embed_facets 单元测试（P2 向量富集 + 32k 多向量）。"""
 
-import pytest
 
 from mem_lake.knowledge.embed import (
     EMBED_PROPERTY_FIELDS,

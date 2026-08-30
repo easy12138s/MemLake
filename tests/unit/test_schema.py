@@ -22,7 +22,6 @@ from mem_lake.knowledge.schema import (
     validate_node,
 )
 
-
 # ============ 节点类型校验 ============
 
 class TestValidateNode:
@@ -180,7 +179,7 @@ class TestValidateNode:
         validate_node("ProjectProfile", props)
         assert props == original
 
-    def test_all_node_types_in_NODE_TYPES(self):
+    def test_all_node_types_in_node_types(self):
         """NODE_TYPES 包含 PDD 定义的 7 种节点类型。"""
         expected = {
             "ProjectProfile",
@@ -320,7 +319,7 @@ class TestValidateEdgeType:
         with pytest.raises(SchemaValidationError, match="非法边类型"):
             validate_edge_type(invalid_type)
 
-    def test_all_edge_types_in_EDGE_TYPES(self):
+    def test_all_edge_types_in_edge_types(self):
         """EDGE_TYPES 包含 PDD 定义的 12 种边类型。"""
         assert len(EDGE_TYPES) == 12
         assert "implements" in EDGE_TYPES

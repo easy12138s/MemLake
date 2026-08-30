@@ -13,7 +13,8 @@ PDD 6.1 工具表分组：
 - review_tools：审批类（Admin 专属）
   - review_pending_list, review_batch_detail, review_approve, review_reject
 - manage_tools：管理类（Admin 专属）
-  - create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile
+  - create_access_key, revoke_access_key, list_access_keys, update_access_key_scope,
+    rotate_access_key, set_access_key_mode, manage_project_profile
   - reindex_project_vectors, get_reindex_status（异步重建向量 + 进度查询）
 - search_tools：检索类（M6b 待实现）
   - search_similar_requirements, search_code_snippets, analyze_impact_scope,
