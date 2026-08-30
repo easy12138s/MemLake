@@ -45,7 +45,6 @@ class TestConflictQueryTextConsistency:
         """detect_conflicts 无预计算向量时，embed 输入 = build_embed_text 输出。"""
         project_id = uuid.uuid4()
         vector_searcher = _make_vector_searcher([])
-        embedding_client = _make_embedding_client()
 
         title = "登录需求"
         content = "支持账号密码登录"

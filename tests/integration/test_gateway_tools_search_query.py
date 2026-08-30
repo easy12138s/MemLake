@@ -904,8 +904,8 @@ class TestGetRequirementContext:
         )
         await db_session.commit()
 
-        from mem_lake.search.graph import GraphSearcher
         from mem_lake.search.filters import FilterSpec
+        from mem_lake.search.graph import GraphSearcher
 
         searcher = GraphSearcher(graph_store)
         related = await searcher.context_traverse(

@@ -4,7 +4,8 @@
 manage_project_profile 为 PDD 3.4 + 8.5 要求的审批豁免入口（admin 直接写入 ProjectProfile 节点）。
 
 包含工具（PDD 6.1 Admin 工具表）：
-- create_access_key / revoke_access_key / list_access_keys / update_access_key_scope / rotate_access_key / set_access_key_mode：Access Key 的创建/吊销/查看/改范围/轮换/改审核模式（指定角色与项目范围）
+- create_access_key / revoke_access_key / list_access_keys / update_access_key_scope /
+  rotate_access_key / set_access_key_mode：Access Key 的创建/吊销/查看/改范围/轮换/改审核模式（指定角色与项目范围）
 - manage_project_profile：直接写入/更新 ProjectProfile 节点（不走审批流，状态 approved）
 
 设计要点：
@@ -27,11 +28,23 @@ from sqlalchemy import delete, select
 
 from mem_lake.auth.service import (
     create_access_key as svc_create_access_key,
+)
+from mem_lake.auth.service import (
     list_access_keys as svc_list_access_keys,
+)
+from mem_lake.auth.service import (
     revoke_access_key as svc_revoke_access_key,
+)
+from mem_lake.auth.service import (
     rotate_access_key as svc_rotate_access_key,
+)
+from mem_lake.auth.service import (
     update_access_key_mode as svc_update_access_key_mode,
+)
+from mem_lake.auth.service import (
     update_access_key_scope as svc_update_access_key_scope,
+)
+from mem_lake.auth.service import (
     update_access_key_systems,
 )
 from mem_lake.config import get_settings
@@ -387,7 +400,6 @@ def register_manage_tools(mcp: FastMCP) -> None:
     ) -> AccessKeyListOutput:
         """按角色/状态/审核模式查看 Access Key 列表。Admin 工具。"""
         try:
-            key_id_actor = get_current_key_id()
             async with transactional_session() as session:
                 keys = await svc_list_access_keys(
                     session, role=role, status=status_filter, lax_mode=lax_mode
@@ -496,7 +508,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
             default=False, description="一键将全部 Key 设置为指定模式"
         ),
     ) -> AccessKeyListOutput:
-        """设置/批量设置 Key 的审核模式（lax_mode）。定位方式同 update_access_key_scope（key_ids > role_filter > grant_all_projects）。
+        """设置/批量设置 Key 的审核模式（lax_mode）。定位方式同
+        update_access_key_scope（key_ids > role_filter > grant_all_projects）。
 
         Admin 工具。lax_mode=true 表示宽松（免审批直接入库）。全局开关
         LAX_MODE_ENABLED=false 时即使标记宽松也强制走审批。
