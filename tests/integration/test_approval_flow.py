@@ -1056,7 +1056,7 @@ class TestConflictDetection:
         knowledge_helpers,
         sample_batch_payloads,
     ):
-        """内容级重复（相同内容 + 相同 requirement_id）的两节点，conflict_hint 含 conflicting_nodes。"""
+        """内容级重复（相同内容与属性）的两节点，conflict_hint 含 conflicting_nodes。"""
         project_id = uuid.uuid4()
         system_id = uuid.uuid4()
 
@@ -1160,7 +1160,7 @@ class TestConflictDetection:
                     "content": "完全不同的内容，关于角色权限分配",
                     "properties": {
                         **knowledge_helpers["Requirement"](),
-                        "requirement_id": "REQ-2026-TAG-002",
+                        "module": "rbac",
                     },
                     "tags": ["auth", "rbac"],  # 与已有节点的 auth 标签有交集
                     "source": {"agent": "pm_agent", "tool": "publish_requirement"},
@@ -1694,12 +1694,13 @@ class TestExactKeyConflict:
     """Requirement 已无业务关键标识字段，判重纯靠 L3 内容语义相似度。
 
     覆盖：
-    - 相同 requirement_id（遗留属性）但内容不同且无 L3 相似候选 → 不判冲突
-    - 不同 requirement_id → 不判冲突
+    - 相同属性但内容不同且无 L3 相似候选 → 不判冲突
+    - 属性不同（module 区分）→ 不判冲突
+    - properties 含白名单外未知字段（含已废弃 requirement_id）→ schema 层拒绝
     - 内容相似（L3 ≥ 阈值）时 auto_process_batch 路由到 needs_human_review
     """
 
-    async def test_same_requirement_id_different_content_no_conflict(
+    async def test_same_props_different_content_no_conflict(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
         from mem_lake.approval.conflict import detect_conflicts
@@ -1723,7 +1724,7 @@ class TestExactKeyConflict:
             created_by="ak_pm",
         )
 
-        # requirement_id 已废弃、不再作为硬键；内容明显不同且无 L3 相似候选 → 不冲突
+        # 内容明显不同且无 L3 相似候选 → 不冲突
         vector_searcher = VectorSearcher(mock_embedding_client)
         vector_searcher.search = AsyncMock(return_value=[])
 
@@ -1741,7 +1742,7 @@ class TestExactKeyConflict:
         assert result["has_conflict"] is False
         assert result["conflicting_nodes"] == []
 
-    async def test_different_requirement_id_no_conflict(
+    async def test_different_module_no_conflict(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
         from mem_lake.approval.conflict import detect_conflicts
@@ -1750,7 +1751,6 @@ class TestExactKeyConflict:
 
         project_id = uuid.uuid4()
         props = knowledge_helpers["Requirement"]()
-        props["requirement_id"] = "REQ-2026-0818-1"
         await create_node(
             db_session,
             graph_store=graph_store,
@@ -1774,11 +1774,35 @@ class TestExactKeyConflict:
             node_type="Requirement",
             title="用户登录需求",
             content="系统需要支持账号密码登录与 JWT 令牌签发",
-            properties={"requirement_id": "REQ-2026-0818-2"},
+            properties={"priority": "P1", "module": "billing"},
             tags=[],
         )
 
         assert result["has_conflict"] is False
+
+    async def test_unknown_field_rejected_by_schema(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """封闭契约：properties 含白名单外未知字段（含已废弃 requirement_id）→ 拒绝写入。"""
+        from mem_lake.knowledge.repository import create_node
+        from mem_lake.knowledge.schema import SchemaValidationError
+
+        props = knowledge_helpers["Requirement"]()
+        props["requirement_id"] = "REQ-2026-0818-1"
+
+        with pytest.raises(SchemaValidationError, match="未知字段"):
+            await create_node(
+                db_session,
+                graph_store=graph_store,
+                embedding_client=mock_embedding_client,
+                project_id=uuid.uuid4(),
+                node_type="Requirement",
+                title="携带未知字段的需求",
+                content="不应通过 schema 封闭契约校验",
+                properties=props,
+                system_id=uuid.uuid4(),
+                created_by="ak_pm",
+            )
 
     async def test_auto_process_routes_to_human_review(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
@@ -1790,7 +1814,6 @@ class TestExactKeyConflict:
         project_id = uuid.uuid4()
         system_id = uuid.uuid4()
         props = knowledge_helpers["Requirement"]()
-        props["requirement_id"] = "REQ-2026-0818-1"
         await create_node(
             db_session,
             graph_store=graph_store,
@@ -1953,7 +1976,6 @@ class TestAutoProcessFloating:
 
         sys_id = uuid.uuid4()
         props = knowledge_helpers["Requirement"]()
-        props["requirement_id"] = "REQ-2026-FLOAT-1"
         items = [
             {
                 "item_type": "node",

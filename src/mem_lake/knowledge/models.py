@@ -154,10 +154,10 @@ class KnowledgeNode(Base):
             "requirement_key",
             name="uq_node_system_requirement_key",
         ),
-        # HNSW 向量索引（pgvector-python 官方方案，随 create_all 创建）
+        # HNSW 向量索引（pgvector-python 官方方案，由 create_all 按 __table_args__ 生成）
         # 适配 1024 维高维向量：m=32、ef_construction=400（业界建议 m≈32-48、ef_construction≈m*10-20）。
         # opclass 用 vector_ip_ops（内积）：向量均来自归一化 embedding 服务，内积 <#> 与余弦等价且更快，
-        # 与搜索层 search/vector.py 的 max_inner_product 调用对齐。存量库需重建索引，见 deploy/init/002_*.
+        # 与搜索层 search/vector.py 的 max_inner_product 调用对齐。
         Index(
             "idx_node_vector",
             "content_vector",
@@ -176,7 +176,7 @@ class NodeEmbedding(Base):
     检索时按 node_id 聚合取各 facet 与查询向量的最大余弦（maxsim），等价 ColBERT 式
     多向量召回，避免单向量语义稀释。
 
-    HNSW 索引随 create_all 创建；存量节点通过 reindex_project_vectors 后台任务回填 facets。
+    HNSW 索引随 create_all 创建；节点通过 reindex_project_vectors 后台任务重算 facets。
     """
 
     __tablename__ = "node_embedding"

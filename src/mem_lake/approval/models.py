@@ -98,8 +98,8 @@ class ApprovalItem(Base):
                       "created_by": "ak"}
     - node + update: {"node_id": "uuid", "title": "...", "content": "...",
                       "properties": {...}, "tags": [...]}
-    - edge + create: {"from_id": "uuid", "to_id": "uuid", "edge_type": "implements",
-                      "properties": {...}}
+    - edge + create: {"from_ref": "uuid或批次内ref", "to_ref": "uuid或批次内ref",
+                      "edge_type": "implements", "properties": {...}}
     """
 
     __tablename__ = "approval_item"

@@ -58,7 +58,8 @@ class EmbeddingClient:
         → {"embeddings": [[...]], "dimension": 1024}。
 
         prompt / prompt_name 为指令感知参数，仅查询侧（如 VectorSearcher）按需传入，
-        文档侧（落库节点）保持 None 以维持与历史向量的兼容。二者均为 None 时退化为默认编码。
+        文档侧（落库节点）不加 prompt（Qwen3 设计：doc 侧与 query 侧非对称）。
+        二者均为 None 时退化为默认编码。
         校验响应 dimension 与 config.EMBEDDING_DIMENSION 一致，不符抛 EmbeddingError。
 
         超过 MAX_TEXTS_PER_REQUEST 的输入自动分块（每块一次 HTTP），结果按原顺序合并；

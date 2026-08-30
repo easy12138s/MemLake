@@ -1,20 +1,20 @@
 """扩展安装与初始化：CREATE EXTENSION age/pgvector/zhparser、AGE 图创建、业务表建表、
-tsvector 触发器、RLS 策略。
+tsvector 触发器。
 
 职责边界：
 - init_database()：幂等存在性检查（fail-fast），不重复 CREATE EXTENSION。
   扩展与图的实体创建由 deploy/init/001_extensions.sql 在容器启动时完成，
   应用启动时调用验证它们就位，缺失则抛 RuntimeError 指引修复。
-- create_tables()：用 Base.metadata.create_all 幂等建业务表。
-  通过 import 各模块 models 触发 ORM 注册到 Base.metadata；
-  M2 注册 audit_log + access_key，M3 注册 knowledge_node。
-- init_knowledge_schema()：在 knowledge_node 表存在后，创建 tsvector 触发器与 RLS 策略。
+- create_tables()：用 Base.metadata.create_all 幂等建业务表（v1.0.0 全新安装-only，
+  schema 由 create_all 按 models.py 全量生成）。
+  通过 import 各模块 models 触发 ORM 注册到 Base.metadata。
+- init_knowledge_schema()：在 knowledge_node 表存在后，创建 tsvector 触发器。
   必须在 create_tables 之后调用。幂等设计：DROP IF EXISTS + CREATE。
 
-技术决策（网络搜索 PostgreSQL 17 官方文档）：
+技术决策：
 - tsvector 自动维护用内置触发器函数 tsvector_update_trigger(column, config, text_cols)
-- RLS 策略基于 current_setting('app.current_project_id', true) 实现项目隔离
-- 不 FORCE RLS（owner 可绕过），生产环境通过非 owner 用户连接受 RLS 约束
+- 项目隔离由应用层 validate_project_access + FilterSpec 实现（部署连接用户是表 owner，
+  RLS 不 FORCE 时天然绕过，故不创建 RLS 策略）
 """
 
 from sqlalchemy import text
@@ -26,7 +26,7 @@ REQUIRED_EXTENSIONS = ("age", "vector", "zhparser")
 
 
 async def create_tables(session: AsyncSession) -> None:
-    """幂等创建所有已注册的业务表。
+    """幂等创建所有已注册的业务表（v1.0.0 全新安装-only，schema 由 create_all 全量生成）。
 
     通过 import 各模块 models 触发 ORM 注册到 Base.metadata，再调用 create_all。
     create_all 对已存在的表跳过，幂等安全。
@@ -41,86 +41,6 @@ async def create_tables(session: AsyncSession) -> None:
 
     conn = await session.connection()
     await conn.run_sync(Base.metadata.create_all)
-
-    # create_all 不会给已有表追加新列，显式补齐 reindex_task.target_node_ids
-    # （审批异步嵌入场景使用；存量库升级兼容）。
-    await session.execute(
-        text(
-            "ALTER TABLE reindex_task "
-            "ADD COLUMN IF NOT EXISTS target_node_ids UUID[]"
-        )
-    )
-    # 悬浮 system 需求节点嵌入任务：project_id 可空（project_id 由 knowledge_node 隶属，
-    # 悬浮需求 project_id=NULL 依附 system，其嵌入任务无需归属具体项目）。
-    await session.execute(
-        text("ALTER TABLE reindex_task ALTER COLUMN project_id DROP NOT NULL")
-    )
-    # 显式补齐 access_key.lax_mode（宽松模式；存量库升级兼容）。
-    await session.execute(
-        text(
-            "ALTER TABLE access_key "
-            "ADD COLUMN IF NOT EXISTS lax_mode BOOLEAN NOT NULL DEFAULT false"
-        )
-    )
-
-    # ---- system 维度（PM 需求跨项目建模）----
-    # create_all 会创建 system / system_project 新表；knowledge_node 已有表需显式加列：
-    # 1) 加 system_id 列（Requirement 归属 system）
-    # 2) project_id 可空（悬浮需求）
-    # 3) 组合索引（system 高频过滤维度）
-    await session.execute(
-        text("ALTER TABLE knowledge_node ADD COLUMN IF NOT EXISTS system_id UUID")
-    )
-    await session.execute(
-        text("ALTER TABLE knowledge_node ALTER COLUMN project_id DROP NOT NULL")
-    )
-    await session.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS idx_node_system_type_status "
-            "ON knowledge_node (system_id, type, status)"
-        )
-    )
-
-    # 需求主键 requirement_key + system.code（服务端分配可读主键；存量库升级兼容）。
-    # create_all 不会给已有表追加新列/约束，故显式补齐（与 deploy/init/002_requirement_key.sql
-    # 等价，且随每次启动幂等执行，覆盖既有 volume——该脚本不能依赖 docker-entrypoint 的
-    # 一次性初始化，它对存量库不生效）。
-    await session.execute(
-        text(
-            "ALTER TABLE knowledge_node "
-            "ADD COLUMN IF NOT EXISTS requirement_key VARCHAR(64)"
-        )
-    )
-    await session.execute(
-        text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_system_requirement_key "
-            "ON knowledge_node (system_id, requirement_key) "
-            "WHERE requirement_key IS NOT NULL"
-        )
-    )
-    await session.execute(
-        text(
-            "ALTER TABLE system "
-            "ADD COLUMN IF NOT EXISTS code VARCHAR(32) UNIQUE"
-        )
-    )
-
-    # access_key.project_scope 语义升级为两级字典 {systems,projects}：
-    # 存量库旧结构为扁平数组（历史数据直接舍弃，决策定稿），起库幂等把数组型统一重置为空字典。
-    # admin 不受限由 role 判定，故数组型统一转空字典即可（幂等：仅 jsonb_typeof=array 的行命中一次）。
-    await session.execute(
-        text(
-            "UPDATE access_key SET project_scope = '{\"systems\":[],\"projects\":[]}'::jsonb "
-            "WHERE jsonb_typeof(project_scope) = 'array'"
-        )
-    )
-
-    # 悬浮 system 需求批次：approval_batch.project_id 可空
-    await session.execute(
-        text(
-            "ALTER TABLE approval_batch ALTER COLUMN project_id DROP NOT NULL"
-        )
-    )
 
 
 async def check_extensions(session: AsyncSession) -> dict[str, bool]:
@@ -162,10 +82,8 @@ async def init_knowledge_schema(session: AsyncSession) -> None:
 
     幂等：DROP TRIGGER IF EXISTS + CREATE TRIGGER。
 
-    注：项目隔离原本规划用 RLS 策略，但部署连接用户（memlake）是表 owner，
-    RLS 不 FORCE 时 owner 天然绕过，策略实际未生效（AUDIT §2.5）。项目隔离
-    由应用层 validate_project_access + FilterSpec（project_id 过滤）实现，
-    不再创建 RLS 策略。
+    注：项目隔离由应用层 validate_project_access + FilterSpec（project_id 过滤）
+    实现，不创建 RLS 策略（部署连接用户是表 owner，RLS 不 FORCE 时天然绕过）。
     """
     # tsvector 触发器（PG 内置函数，自动维护 content_tsv）。
     # 内置 tsvector_update_trigger 支持多列：tsvector_update_trigger(tsv, 'cfg', col1, col2)
