@@ -52,8 +52,8 @@ async def resolve_system(
         if sys_obj is not None:
             return sys_obj
     raise ValueError(
-        "system 未命中（name=%r code=%r）——请用 --system-name 或 --system-code 指定，"
-        "或先用 manage_system 创建并设置 code" % (name, code)
+        f"system 未命中（name={name!r} code={code!r}）——请用 --system-name 或 "
+        "--system-code 指定，或先用 manage_system 创建并设置 code"
     )
 
 
