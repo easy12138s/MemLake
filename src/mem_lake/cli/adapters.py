@@ -65,6 +65,8 @@ _ADAPTERS: dict[str, type[MarkdownHtmlAdapter] | type[AxureCleanedAdapter]] = {
     "axure": AxureCleanedAdapter,
 }
 
+ADAPTERS = _ADAPTERS
+
 
 def get_adapter(name: str) -> MarkdownHtmlAdapter | AxureCleanedAdapter:
     """按名称取适配器实例；未知名抛 ValueError。"""
