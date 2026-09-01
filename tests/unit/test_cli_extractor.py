@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mem_lake.cli.adapters import MarkdownHtmlAdapter
+from mem_lake.cli.adapters import AxureCleanedAdapter, MarkdownHtmlAdapter, get_adapter
 from mem_lake.cli.extractor import RequirementAdapter, extract_directory
 
 
@@ -89,3 +89,13 @@ def test_extract_directory_excludes_top_and_nested_index(req_tree: Path) -> None
     (req_tree / "HIS" / "index.html").write_text("<html><body>nav</body></html>", encoding="utf-8")
     parsed = extract_directory(req_tree, adapter=MarkdownHtmlAdapter())
     assert not any(p.title.endswith("index.html") for p in parsed)
+
+
+def test_get_adapter_registry():
+    """注册表可通过名称取到对应适配器；未知名抛 ValueError。"""
+    assert isinstance(get_adapter("markdown"), MarkdownHtmlAdapter)
+    assert isinstance(get_adapter("axure"), AxureCleanedAdapter)
+    import pytest as _p
+
+    with _p.raises(ValueError):
+        get_adapter("nope")
