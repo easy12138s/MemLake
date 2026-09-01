@@ -26,6 +26,8 @@ dependencies = [
     # 可观测性
     "prometheus-client>=0.20.0",
     "structlog>=24.0.0",
+    # 需求文档解析（HTML→Markdown；基础包已含 HtmlConverter）
+    "markitdown>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +45,7 @@ dev = [
 
 [project.scripts]
 memlake-bootstrap-admin = "mem_lake.cli:run"
+memlake-import-requirements = "mem_lake.cli.import_requirements:run"
 
 [build-system]
 requires = ["hatchling"]
