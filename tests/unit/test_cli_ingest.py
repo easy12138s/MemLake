@@ -8,10 +8,19 @@ ingest_requirement/find_requirement_by_source 的真实调用以集成测试
 import uuid
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.cli.extractor import ParsedRequirement
-from mem_lake.cli.ingest import run_import
+from mem_lake.cli.ingest import resolve_system, run_import
 from mem_lake.knowledge.models import KnowledgeNode
+
+
+class _FakeResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
 
 
 def _parsed(title: str) -> ParsedRequirement:
@@ -80,6 +89,70 @@ async def test_run_import_dry_run_does_not_ingest():
     )
     assert calls == []
     assert {"a.html", "b.html"} == {p.title for p in summary.pending}
+
+
+@pytest.mark.asyncio
+async def test_resolve_system_missing_raises(monkeypatch):
+    """name/code 均未命中时抛 ValueError。"""
+    src = iter([_FakeResult(None), _FakeResult(None)])
+
+    async def fake_execute(stmt):
+        return next(src)
+
+    session = AsyncSession.__new__(AsyncSession)
+    monkeypatch.setattr(session, "execute", fake_execute)
+    with pytest.raises(ValueError):
+        await resolve_system(session, name="NOPE", code="NOPE")
+
+
+@pytest.mark.asyncio
+async def test_resolve_system_found(monkeypatch):
+    """按 code 命中 System。"""
+    from mem_lake.knowledge.models import System
+
+    sys_obj = System(name="HIS", code="HIS")
+    src = iter([_FakeResult(sys_obj)])
+
+    async def fake_execute(stmt):
+        return next(src)
+
+    session = AsyncSession.__new__(AsyncSession)
+    monkeypatch.setattr(session, "execute", fake_execute)
+    got = await resolve_system(session, code="HIS")
+    assert got is sys_obj
+
+
+@pytest.mark.asyncio
+async def test_resolve_system_by_name(monkeypatch):
+    """未传 code、只按 name 也能解析（DB system code 为 NULL 的场景）。"""
+    from mem_lake.knowledge.models import System
+
+    sys_obj = System(name="中方诊药云系统", code=None)
+
+    async def fake_execute(stmt):
+        return _FakeResult(sys_obj)
+
+    session = AsyncSession.__new__(AsyncSession)
+    monkeypatch.setattr(session, "execute", fake_execute)
+    got = await resolve_system(session, name="中方诊药云系统")
+    assert got is sys_obj
+
+
+@pytest.mark.asyncio
+async def test_resolve_system_falls_back_to_code(monkeypatch):
+    """name 未命中时回退 code。"""
+    from mem_lake.knowledge.models import System
+
+    sys_obj = System(name="HIS", code="HIS")
+    src = iter([_FakeResult(None), _FakeResult(sys_obj)])
+
+    async def fake_execute(stmt):
+        return next(src)
+
+    session = AsyncSession.__new__(AsyncSession)
+    monkeypatch.setattr(session, "execute", fake_execute)
+    got = await resolve_system(session, code="HIS", name="NOPE")
+    assert got is sys_obj
 
 
 # ============================================================================

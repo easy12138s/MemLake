@@ -32,22 +32,35 @@ class ImportSummary:
     pending: list[ParsedRequirement] = field(default_factory=list)
 
 
-async def resolve_system(session: AsyncSession, system_code: str) -> System:
-    """按 code 解析 System，未命中抛 ValueError（fail-fast）。"""
-    sys_obj = (
-        await session.execute(select(System).where(System.code == system_code))
-    ).scalar_one_or_none()
-    if sys_obj is None:
-        raise ValueError(
-            f"system 不存在: {system_code!r}（请先用 manage_system 创建并设置 code）"
-        )
-    return sys_obj
+async def resolve_system(
+    session: AsyncSession, *, code: str | None = None, name: str | None = None
+) -> System:
+    """按 code 或 name 解析 System。name 优先，次之 code；均未命中抛 ValueError。
+
+    DB 存量 system 的 code 可能为 NULL（如『中方诊药云系统』），此时用 name 匹配。
+    """
+    if name is not None:
+        sys_obj = (
+            await session.execute(select(System).where(System.name == name))
+        ).scalar_one_or_none()
+        if sys_obj is not None:
+            return sys_obj
+    if code is not None:
+        sys_obj = (
+            await session.execute(select(System).where(System.code == code))
+        ).scalar_one_or_none()
+        if sys_obj is not None:
+            return sys_obj
+    raise ValueError(
+        "system 未命中（name=%r code=%r）——请用 --system-name 或 --system-code 指定，"
+        "或先用 manage_system 创建并设置 code" % (name, code)
+    )
 
 
 async def find_requirement_by_source(
     session: AsyncSession,
     *,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     system_id: uuid.UUID,
     source_doc: str,
 ) -> KnowledgeNode | None:
@@ -73,7 +86,7 @@ async def ingest_requirement(
     *,
     graph_store: Any,
     embedding_client: Any,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     system_id: uuid.UUID,
     parsed: ParsedRequirement,
     priority: str,
@@ -139,7 +152,7 @@ async def run_import(
     *,
     graph_store: Any = None,
     embedding_client: Any = None,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     system_id: uuid.UUID,
     system_code: str | None,
     parsed_list: list[ParsedRequirement],
