@@ -57,7 +57,7 @@ async def main(argv: list[str] | None = None) -> int:
         return 2
 
     async with AsyncSessionLocal() as session:
-        system = await resolve_system(session, args.system_code)
+        system = await resolve_system(session, code=args.system_code)
         system_id = system.id
 
         parsed_list = extract_directory(args.folder)
