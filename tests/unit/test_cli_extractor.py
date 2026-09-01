@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from mem_lake.cli.extractor import extract_directory
+from mem_lake.cli.adapters import MarkdownHtmlAdapter
+from mem_lake.cli.extractor import RequirementAdapter, extract_directory
 
 
 @pytest.fixture
@@ -61,3 +62,30 @@ def test_empty_directory_returns_empty(tmp_path: Path) -> None:
 def test_missing_directory_raises(tmp_path: Path) -> None:
     with pytest.raises(NotADirectoryError):
         extract_directory(tmp_path / "nope")
+
+
+def test_requirement_adapter_is_protocol():
+    """RequirementAdapter 是运行时协议，可被实例 class 满足。"""
+    assert isinstance(getattr(RequirementAdapter, "_is_protocol", True), bool)
+    assert isinstance(MarkdownHtmlAdapter(), RequirementAdapter)
+
+
+def test_markdown_adapter_accepts_html_not_index(req_tree: Path) -> None:
+    """markdown 适配器接受 .html/.htm；index.html 被排除。"""
+    a = MarkdownHtmlAdapter()
+    assert a.accepts(req_tree / "HIS" / "auth" / "login.html")
+    assert not a.accepts(req_tree / "HIS" / "index.html")
+    assert not a.accepts(req_tree / "HIS" / "readme.txt")
+
+
+def test_extract_directory_uses_adapter(req_tree: Path) -> None:
+    """extract_directory 默认用 markdown 适配器；title 含 posix 相对路径。"""
+    parsed = extract_directory(req_tree)
+    assert {p.title for p in parsed} == {"HIS/auth/login.html", "HIS/billing/invoice.html"}
+
+
+def test_extract_directory_excludes_top_and_nested_index(req_tree: Path) -> None:
+    """显式注入适配器后 index.html 仍被排除（自上而下层级都应排除）。"""
+    (req_tree / "HIS" / "index.html").write_text("<html><body>nav</body></html>", encoding="utf-8")
+    parsed = extract_directory(req_tree, adapter=MarkdownHtmlAdapter())
+    assert not any(p.title.endswith("index.html") for p in parsed)
