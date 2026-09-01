@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 import uuid
 
 from mem_lake.cli.adapters import ADAPTERS, get_adapter
@@ -114,9 +115,16 @@ async def main(argv: list[str] | None = None) -> int:
     return 1 if summary.failed else 0
 
 
-def run(argv: list[str] | None = None) -> None:
+def _run(argv: list[str] | None = None) -> None:
+    # Windows 默认 ProactorEventLoop 不兼容 psycopg async → 切换为 SelectorEventLoop
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     raise SystemExit(asyncio.run(main(argv)))
 
 
+def run(argv: list[str] | None = None) -> None:
+    _run(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    _run()
