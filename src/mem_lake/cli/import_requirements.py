@@ -41,7 +41,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--adapter",
         default="markdown",
         choices=sorted(ADAPTERS),
-        help=f"解析适配器（{sorted(ADAPTERS)}；默认 markdown，向后兼容）",
+        help="解析适配器（%s；默认 markdown，向后兼容）" % ", ".join(sorted(ADAPTERS)),
     )
     parser.add_argument("--priority", default="P3", help="默认优先级（默认 P3）")
     parser.add_argument("--module", default="导入", help="默认模块（默认 '导入'）")

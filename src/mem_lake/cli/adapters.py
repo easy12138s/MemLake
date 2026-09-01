@@ -60,20 +60,18 @@ class AxureCleanedAdapter:
         return self._BLANK_RE.sub("\n", text).strip()
 
 
-_ADAPTERS: dict[str, type[MarkdownHtmlAdapter] | type[AxureCleanedAdapter]] = {
+ADAPTERS: dict[str, type[MarkdownHtmlAdapter] | type[AxureCleanedAdapter]] = {
     "markdown": MarkdownHtmlAdapter,
     "axure": AxureCleanedAdapter,
 }
-
-ADAPTERS = _ADAPTERS
 
 
 def get_adapter(name: str) -> MarkdownHtmlAdapter | AxureCleanedAdapter:
     """按名称取适配器实例；未知名抛 ValueError。"""
     try:
-        cls = _ADAPTERS[name]
+        cls = ADAPTERS[name]
     except KeyError:
         raise ValueError(
-            f"未知 adapter: {name!r}（可选: {sorted(_ADAPTERS)}）"
+            f"未知 adapter: {name!r}（可选: {sorted(ADAPTERS)}）"
         ) from None
     return cls()
