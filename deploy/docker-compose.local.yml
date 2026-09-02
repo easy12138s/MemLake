@@ -17,3 +17,12 @@ services:
       args:
         DOWNLOAD_MODEL: "true"
         DOWNLOAD_RERANK_MODEL: "true"
+
+# 本机需求文档挂载（可选叠加层）：
+# 宿主机 Axure 导出目录 → 容器 /data/reqs（容器重建不丢，免去手工 docker cp）。
+# 真实路径经环境变量 REQS_HOST_DIR 注入（写入 deploy/.env，该文件不入库）。
+# 使用：docker-compose -f docker-compose.yml -f docker-compose.local.yml up -d mem-lake
+# 正式导入：memlake-import-requirements /data/reqs --system-code <code> --adapter axure
+  mem-lake:
+    volumes:
+      - "${REQS_HOST_DIR:?请在 deploy/.env 中设置 REQS_HOST_DIR=需求文档目录}:/data/reqs:ro"

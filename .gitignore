@@ -43,3 +43,6 @@ deploy/backups/
 # OS
 .DS_Store
 Thumbs.db
+
+# 工作区 Agent 记忆/配置（本地私有，不入库）
+.workbuddy/
