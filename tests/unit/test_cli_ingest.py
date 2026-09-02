@@ -171,7 +171,8 @@ async def test_ingest_requirement_create_then_skip_then_force_update(
     from mem_lake.cli.ingest import ingest_requirement
     from mem_lake.knowledge.models import System
 
-    system = System(name="HIS", code="HIS")
+    code = f"HIS-{uuid.uuid4().hex[:8]}"
+    system = System(name=code, code=code)
     db_session.add(system)
     await db_session.flush()
 
