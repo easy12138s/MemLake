@@ -84,7 +84,7 @@ docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 |------|------|------|
 | postgres | 5432 | PostgreSQL 17 + AGE + pgvector + zhparser，数据持久化在 `pg_data` 卷 |
 | embedding | 8001 | Qwen3-Embedding-0.6B 向量化服务，mem-lake 通过 HTTP 调用 |
-| mem-lake | 8000 | MCP 网关，23 个工具 + RBAC + 限流 |
+| mem-lake | 8000 | MCP 网关，29 个工具 + RBAC + 限流 |
 
 启动顺序：postgres healthy → embedding healthy → mem-lake。默认 compose 会发布 5432/8001 端口，生产环境请通过防火墙限制或移除对应 `ports` 映射，仅对外放行 8000。
 
@@ -143,7 +143,9 @@ git pull
 docker compose up -d --build
 ```
 
-Schema 变更：tsvector 触发器由应用启动时 `init_knowledge_schema()` 幂等重建，无需手动迁移；**新增表列**需按 `db/init.py` 中 `reindex_task.target_node_ids` 的先例手工补 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
+Schema 说明：业务表 schema 由应用启动时 `create_tables()` 按 models 定义经 `create_all` 全量生成（全新安装-only），tsvector 触发器由 `init_knowledge_schema()` 幂等重建，均无需手动迁移。
+
+v1.0.0 不支持原地升级。旧部署如需保留数据迁移到 v1.0.0：用 `deploy/backup.sh` 备份 → 按发行版全新重建（`docker compose down -v` → `up -d --build`）→ 用 `deploy/restore.sh` 恢复；恢复的旧数据须符合 v1.0.0 契约（节点 properties 不得含 `requirement_id` 等白名单外字段、`project_scope` 须为 `{systems,projects}` 字典结构）。
 
 ### 数据库状态查询
 

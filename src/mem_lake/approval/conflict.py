@@ -11,7 +11,7 @@
    完全一致，保证 query-doc 相似度在"内容相同"时达到高位
 2. 内容级 embedding 比标题级 embedding 更精准（标题噪声大、信号弱、偏主题相关）
 3. 关键属性比对是区分"同一实体"与"相关但不同实体"的硬判据
-   （不同 requirement_id 的需求是不同实体，即使标题完全相同）
+   （如不同 name+file_path 的代码片段是不同实体，即使标题完全相同）
  4. 内容级阈值（CONFLICT_SIMILARITY_THRESHOLD，默认 0.85）随嵌入模型变化需重新标定，
 5. 标签共享只说明主题相关，不代表内容重复，不参与冲突判定
 """
@@ -93,7 +93,7 @@ async def detect_conflicts(
                     "existing_node_title": "...",
                     "existing_node_type": "Requirement",
                     "similarity": 0.95,
-                    "matched_key_attrs": {"requirement_id": "REQ-001"},
+                    "matched_key_attrs": {"name": "LoginService"},
                     "conflict_type": "duplicate"
                 }
             ],
@@ -160,7 +160,7 @@ async def detect_conflicts(
         )
 
     # L0 硬判定：同项目同类型关键标识字段完全相同 → 直接判冲突
-    # （与向量召回无关，捕获「相同 requirement_id 但内容差异大」的漏检）
+    # （与向量召回无关，捕获「关键标识相同但内容差异大」的漏检）
     exact_conflicts = await _detect_exact_key_conflicts(
         session,
         project_id=project_id,
@@ -195,8 +195,8 @@ async def _detect_exact_key_conflicts(
 ) -> list[dict]:
     """L0 硬判定：同项目同类型下关键标识字段完全相同即判冲突（不依赖向量相似度）。
 
-    修复原三层检测只在向量相似度 ≥ 阈值时才比对关键属性，导致
-    「requirement_id 相同但内容/标题差异大」的重复节点漏检。
+    捕获三层检测只在向量相似度 ≥ 阈值时才比对关键属性时，
+    「关键标识相同但内容/标题差异大」的重复节点漏检。
     """
     key_fields = KEY_IDENTITY_FIELDS.get(node_type, [])
     if not key_fields:

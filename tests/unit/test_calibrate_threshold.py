@@ -31,11 +31,21 @@ def test_cosine_same_and_orthogonal():
 
 
 def test_is_duplicate_pair_by_key_field():
-    a_props = {"requirement_id": "REQ-001", "priority": "P1"}
-    b_props = {"requirement_id": "REQ-001", "priority": "P2"}  # 关键标识相同
-    c_props = {"requirement_id": "REQ-002"}  # 关键标识不同
-    assert _is_duplicate_pair("Requirement", a_props, "A", "Requirement", b_props, "B", 40)
-    assert not _is_duplicate_pair("Requirement", a_props, "A", "Requirement", c_props, "B", 40)
+    """Solution 单关键标识字段 approach：相同 → 重复；不同 → 不重复。"""
+    a_props = {"approach": "JWT 鉴权", "version": "1.0"}
+    b_props = {"approach": "JWT 鉴权", "version": "2.0"}  # 关键标识相同
+    c_props = {"approach": "Session 鉴权"}  # 关键标识不同
+    assert _is_duplicate_pair("Solution", a_props, "A", "Solution", b_props, "B", 40)
+    assert not _is_duplicate_pair("Solution", a_props, "A", "Solution", c_props, "B", 40)
+
+
+def test_is_duplicate_pair_requirement_no_key_fields():
+    """Requirement 无关键标识字段（主键由服务端分配）→ 属性不同不构成判重依据。"""
+    a_props = {"priority": "P0", "module": "auth"}
+    b_props = {"priority": "P1", "module": "auth"}
+    assert not _is_duplicate_pair("Requirement", a_props, "标题A", "Requirement", b_props, "标题B", 40)
+    # 标题归一相同仍视为疑似重复（与检测器同口径）
+    assert _is_duplicate_pair("Requirement", a_props, "同一标题", "Requirement", b_props, "同一标题", 40)
 
 
 def test_is_duplicate_pair_requires_all_key_fields():
@@ -59,26 +69,26 @@ def test_is_duplicate_pair_by_title():
 
 
 def test_is_duplicate_pair_diff_type():
-    assert not _is_duplicate_pair("Requirement", {"requirement_id": "R1"}, "T",
+    assert not _is_duplicate_pair("Requirement", {"priority": "P0"}, "T",
                                   "CodeSnippet", {"name": "x"}, "T", 40)
 
 
 def test_analyze_distribution_separates_dups():
     """疑似重复对余弦应稳定高、一般不重复对应低一些，且能给出建议区间。"""
-    # 构造一组成对近重复（同 key 字段 + 同向向量）与一组一般不同的节点
+    # 构造一组成对近重复（同标题 + 同向向量）与一组一般不同的节点
     nodes = []
-    # 5 对近重复：requirement_id 相同，向量几乎相同
+    # 5 对近重复：标题归一相同，向量几乎相同
     for pid in range(5):
         vec_a = _unit_vector(pid)
         vec_b = [x * 0.999 for x in vec_a]  # 近重复
         nodes.append({"type": "Requirement", "title": f"需求{pid}",
-                      "properties": {"requirement_id": f"REQ-{pid}"}, "vector": vec_a})
-        nodes.append({"type": "Requirement", "title": f"需求{pid}副本",
-                      "properties": {"requirement_id": f"REQ-{pid}"}, "vector": vec_b})
+                      "properties": {"priority": "P0", "module": "auth"}, "vector": vec_a})
+        nodes.append({"type": "Requirement", "title": f"需求{pid}",
+                      "properties": {"priority": "P1", "module": "auth"}, "vector": vec_b})
     # 混入若干一般独立节点
     for i in range(5):
         nodes.append({"type": "Requirement", "title": f"独立{i}",
-                      "properties": {"requirement_id": f"IND-{i}"}, "vector": _unit_vector(i + 100)})
+                      "properties": {"priority": "P2", "module": "report"}, "vector": _unit_vector(i + 100)})
 
     result = analyze_distribution(nodes, pairs=200_000, seed=1)
     assert result["mode"] == "doc-doc"
@@ -97,11 +107,11 @@ def test_analyze_distribution_separates_dups():
 def test_analyze_distribution_cross_type_pairs_excluded():
     """跨类型对不参与统计（运行时 L1 按 node_type 过滤）。"""
     nodes = [
-        {"type": "Requirement", "title": "A", "properties": {"requirement_id": "R1"},
+        {"type": "Requirement", "title": "A", "properties": {"priority": "P0"},
          "vector": _unit_vector(1)},
         {"type": "CodeSnippet", "title": "A", "properties": {},
          "vector": _unit_vector(1)},  # 与节点 0 向量相同但类型不同
-        {"type": "Requirement", "title": "B", "properties": {"requirement_id": "R2"},
+        {"type": "Requirement", "title": "B", "properties": {"priority": "P1"},
          "vector": _unit_vector(2)},
     ]
     result = analyze_distribution(nodes, pairs=100, seed=1)
@@ -113,31 +123,31 @@ def test_analyze_distribution_query_mode():
     """query-doc 模式：相似度取双向最大，query 向量与 nodes 对齐、None 跳过。"""
     nodes = []
     qvecs = []
-    # 5 对近重复：同 requirement_id，双方 doc 向量与 query 向量均近似同向
+    # 5 对近重复：同标题，双方 doc 向量与 query 向量均近似同向
     # （模拟"i 的 query 编码能召回 j 的落库向量"的运行时条件）
     for pid in range(5):
         base = _unit_vector(pid)
         nodes.append({"type": "Requirement", "title": f"需求{pid}",
-                      "properties": {"requirement_id": f"REQ-{pid}"}, "vector": base})
+                      "properties": {"priority": "P0", "module": "auth"}, "vector": base})
         qvecs.append([x * 0.98 for x in base])
-        nodes.append({"type": "Requirement", "title": f"需求{pid}副本",
-                      "properties": {"requirement_id": f"REQ-{pid}"}, "vector": [x * 0.999 for x in base]})
+        nodes.append({"type": "Requirement", "title": f"需求{pid}",
+                      "properties": {"priority": "P1", "module": "auth"}, "vector": [x * 0.999 for x in base]})
         qvecs.append([x * 0.98 * 0.999 for x in base])
     # 独立节点 + 一个无 query 向量的节点（应被跳过）
     for i in range(5):
         vec = _unit_vector(i + 100)
         nodes.append({"type": "Requirement", "title": f"独立{i}",
-                      "properties": {"requirement_id": f"IND-{i}"}, "vector": vec})
+                      "properties": {"priority": "P2", "module": "report"}, "vector": vec})
         qvecs.append(vec)
     nodes.append({"type": "Requirement", "title": "无查询向量",
-                  "properties": {"requirement_id": "NA"}, "vector": _unit_vector(999)})
+                  "properties": {"priority": "P3", "module": "misc"}, "vector": _unit_vector(999)})
     qvecs.append(None)
 
     result = analyze_distribution(nodes, pairs=200_000, seed=1, query_vectors=qvecs)
     assert result["mode"] == "query-doc"
     assert result["total_nodes"] == 15  # 跳过无 query 向量节点
     assert result["dup_samples"] > 0
-    # 近重复对（同 requirement_id）的 query-doc 分数应显著高于一般对
+    # 近重复对（同标题）的 query-doc 分数应显著高于一般对
     assert result["dup_distribution"]["p50"] > result["nondup_distribution"]["p50"]
     assert result["suggested_threshold"] is not None
 

@@ -36,7 +36,7 @@ class TestBuildPublishItems:
         requirement = RequirementInput(
             title="用户登录",
             content="实现 JWT 登录",
-            properties={"requirement_id": "REQ-001", "priority": "P0"},
+            properties={"priority": "P0", "module": "auth"},
             tags=["auth"],
         )
         items = _build_publish_items(project_id, requirement, None, "ak_test", uuid.uuid4())
@@ -55,7 +55,7 @@ class TestBuildPublishItems:
         requirement = RequirementInput(
             title="新需求",
             content="替代旧需求",
-            properties={"requirement_id": "REQ-002", "priority": "P1"},
+            properties={"priority": "P1", "module": "auth"},
         )
         related = RelatedInput(supersedes=["REQ-001", "REQ-000"])
         items = _build_publish_items(project_id, requirement, related, "ak", uuid.uuid4())
@@ -75,7 +75,7 @@ class TestBuildPublishItems:
         requirement = RequirementInput(
             title="需求A",
             content="关联需求B",
-            properties={"requirement_id": "REQ-A", "priority": "P2"},
+            properties={"priority": "P2", "module": "auth"},
         )
         related = RelatedInput(relates_to=["REQ-B"])
         items = _build_publish_items(project_id, requirement, related, "ak", uuid.uuid4())
@@ -90,7 +90,7 @@ class TestBuildPublishItems:
         requirement = RequirementInput(
             title="需求",
             content="内容",
-            properties={"requirement_id": "REQ-X", "priority": "P1"},
+            properties={"priority": "P1", "module": "auth"},
         )
         related = RelatedInput(
             supersedes=["REQ-OLD1", "REQ-OLD2"],
@@ -529,7 +529,7 @@ class TestStrictInputModels:
             RequirementInput(
                 title="t",
                 content="c",
-                properties={"requirement_id": "R1", "priority": "P0", "module": "m"},
+                properties={"priority": "P0", "module": "m"},
                 related={"supersedes": ["R0"]},  # 未知字段
             )
 

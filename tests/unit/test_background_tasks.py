@@ -12,9 +12,9 @@
 
 import datetime
 import uuid
+from unittest.mock import AsyncMock
 
 from sqlalchemy import select
-from unittest.mock import AsyncMock
 
 from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.gateway import background_tasks
@@ -23,13 +23,13 @@ from mem_lake.gateway.background_tasks import (
     TASK_STATUS_FAILED,
     TASK_STATUS_PENDING,
     TASK_STATUS_RUNNING,
+    _reindex_worker,
     create_task_record,
     find_running_task,
     get_task_record,
     reconcile_orphan_tasks,
-    start_reindex_task,
     start_embed_nodes_task,
-    _reindex_worker,
+    start_reindex_task,
 )
 from mem_lake.gateway.models import ReindexTask
 from mem_lake.knowledge.models import KnowledgeNode

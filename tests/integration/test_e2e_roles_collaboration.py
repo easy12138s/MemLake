@@ -261,7 +261,6 @@ class TestRolesCollaboration:
                             "接口：POST /api/login, POST /api/refresh, POST /api/logout。"
                         ),
                         "properties": {
-                            "requirement_id": "REQ-001",
                             "priority": "P1",
                             "module": "auth",
                             "acceptance_criteria": "正确登录成功，错误密码返回401",
@@ -316,7 +315,6 @@ class TestRolesCollaboration:
                             "额外补充：支持 OAuth2 第三方登录。"
                         ),
                         "properties": {
-                            "requirement_id": "REQ-001",
                             "priority": "P1",
                             "module": "auth",
                             "acceptance_criteria": "正确登录成功，错误密码返回401",
@@ -526,7 +524,6 @@ class TestRolesCollaboration:
                     "title": "幂等测试需求",
                     "content": "验证同 operation_id 重复提交返回相同 batch_id",
                     "properties": {
-                        "requirement_id": f"REQ-IDEM-{uuid.uuid4().hex[:6].upper()}",
                         "priority": "P2",
                         "module": "auth",
                         "acceptance_criteria": "a",

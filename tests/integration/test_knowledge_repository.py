@@ -157,7 +157,7 @@ class TestCreateNode:
                 node_type="Requirement",
                 title="R",
                 content="C",
-                properties={"requirement_id": "REQ-001"},  # 缺 priority/module
+                properties={"module": "auth"},  # 缺 priority
                 created_by="ak",
                 system_id=uuid.uuid4(),
             )
@@ -422,7 +422,7 @@ class TestUpdateNode:
                 graph_store=graph_store,
                 embedding_client=mock_embedding_client,
                 node_id=node.id,
-                properties={"requirement_id": "REQ-002", "module": "auth"},
+                properties={"module": "auth"},  # 缺 priority
                 actor="ak",
             )
 

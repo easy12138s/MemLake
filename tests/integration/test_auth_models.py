@@ -48,7 +48,7 @@ async def test_access_key_crud(db_session):
         id=key_id,
         key_hash=key_hash,
         role="pm",
-        project_scope=["proj-001"],
+        project_scope={"systems": [], "projects": ["proj-001"]},
     )
     db_session.add(ak)
     await db_session.flush()
@@ -57,7 +57,7 @@ async def test_access_key_crud(db_session):
     fetched = result.scalar_one()
     assert fetched.role == "pm"
     assert fetched.status == "active"
-    assert fetched.project_scope == ["proj-001"]
+    assert fetched.project_scope == {"systems": [], "projects": ["proj-001"]}
     assert fetched.revoked_at is None
     # 验证明文与存储的 hash 匹配
     assert verify_access_key(plaintext, fetched.key_hash) is True

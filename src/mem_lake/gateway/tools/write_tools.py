@@ -100,11 +100,11 @@ class RelatedInput(StrictInputModel):
 
     supersedes: list[str] = Field(
         default=[],
-        description="被替代的旧需求 requirement_id 列表（自动构造 supersedes 边）",
+        description="被替代的旧需求节点 ID 列表（自动构造 supersedes 边）",
     )
     relates_to: list[str] = Field(
         default=[],
-        description="关联需求 requirement_id 列表（自动构造 relates_to 边）",
+        description="关联需求节点 ID 列表（自动构造 relates_to 边）",
     )
 
 
@@ -184,10 +184,10 @@ class ArtifactRelationInput(StrictInputModel):
     """产物间关系（含临时引用）。"""
 
     from_ref: str = Field(
-        description="源引用（ref 名 / requirement_id / UUID 字符串）"
+        description="源引用（ref 名 / UUID 字符串）"
     )
     to_ref: str = Field(
-        description="目标引用（ref 名 / requirement_id / UUID 字符串）"
+        description="目标引用（ref 名 / UUID 字符串）"
     )
     relation_type: str = Field(
         description=(
@@ -590,11 +590,11 @@ def register_write_tools(mcp: FastMCP) -> None:
 async def _validate_requirement_refs(
     project_id: uuid.UUID | None, ref_ids: list[str], label: str
 ) -> None:
-    """提交前校验引用的 requirement_id 存在、类型为 Requirement、且对调用者可见。
+    """提交前校验引用的 Requirement 节点存在、类型正确、且对调用者可见。
 
     用于 publish_requirement 的 related 与 update_requirement_relations 的
-    from_id/to_id。此前缺该校验，错误引用延迟到审批通过时 _execute_edge_create
-    的 get_node 才失败（AUDIT §2.15）。提交时拦截，审批体验更好。
+    from_id/to_id（均为节点 UUID）。提交时拦截错误引用（否则延迟到审批通过时
+    _execute_edge_create 的 get_node 才失败），审批体验更好。
     决策（同 system 即可引用）：引用的需求须对当前调用者可见（is_requirement_visible）。
     """
     if not ref_ids:

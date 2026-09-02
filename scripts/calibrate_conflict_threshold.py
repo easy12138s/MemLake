@@ -54,7 +54,7 @@ from typing import Any
 
 # 与 approval/conflict.py 保持一致的关键标识字段（用于"疑似重复对"判定）
 KEY_IDENTITY_FIELDS: dict[str, list[str]] = {
-    "Requirement": ["requirement_id"],
+    "Requirement": [],  # 需求主键由服务端分配（requirement_key），不依赖业务属性判重
     "CodeSnippet": ["name", "file_path"],
     "Solution": ["approach"],
     "DesignIntent": ["rationale"],
@@ -151,7 +151,7 @@ def embed_queries(
 # 容器内无包上下文，故内联复制；改动需两处同步）
 _EMBED_PROPERTY_FIELDS: dict[str, list[str]] = {
     "ProjectProfile": ["name", "description", "tech_stack", "architecture", "work_dir", "repo"],
-    "Requirement": ["requirement_id", "priority", "module", "acceptance_criteria"],
+    "Requirement": ["priority", "module", "acceptance_criteria"],
     "CodeSnippet": ["name", "type", "responsibility", "file_path", "language"],
     "Solution": ["approach", "version", "alternatives"],
     "DesignIntent": ["rationale", "trade_offs", "references"],
