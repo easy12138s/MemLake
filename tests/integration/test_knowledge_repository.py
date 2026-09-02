@@ -1388,7 +1388,7 @@ class TestCreateNodeEdgeCases:
         """
         project_id = uuid.uuid4()
         special_props = {
-            "external_ref": "REQ'; DROP TABLE--",
+            "external_id": "REQ'; DROP TABLE--",
             "priority": "P0",
             "module": "auth\\n\"injection\"",
         }
@@ -1406,7 +1406,7 @@ class TestCreateNodeEdgeCases:
         )
 
         fetched = await get_node(db_session, node.id)
-        assert fetched.properties["external_ref"] == "REQ'; DROP TABLE--"
+        assert fetched.properties["external_id"] == "REQ'; DROP TABLE--"
         assert fetched.properties["module"] == "auth\\n\"injection\""
 
         # 验证 knowledge_node 表未被 DROP（注入未执行）

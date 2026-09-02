@@ -47,7 +47,8 @@ def _requirement(title: str, requirement_key: str | None = None) -> KnowledgeNod
 
 @pytest.mark.asyncio
 async def test_batch_insert_batches_embeds_and_creates(db_session, graph_store):
-    system = System(name="HIS", code="HIS")
+    code = f"HIS-{uuid.uuid4().hex[:8]}"
+    system = System(name=code, code=code)
     db_session.add(system)
     await db_session.flush()
 
@@ -111,7 +112,8 @@ async def test_batch_insert_batches_embeds_and_creates(db_session, graph_store):
 
 @pytest.mark.asyncio
 async def test_batch_insert_requirement_key_sequence(db_session, graph_store):
-    system = System(name="HIS", code="HIS")
+    code = f"HIS-{uuid.uuid4().hex[:8]}"
+    system = System(name=code, code=code)
     db_session.add(system)
     await db_session.flush()
 
@@ -144,7 +146,7 @@ async def test_batch_insert_requirement_key_sequence(db_session, graph_store):
         .all()
     )
     keys = sorted(r.requirement_key for r in reqs)
-    assert keys == ["HIS-0001", "HIS-0002"]
+    assert keys == [f"{code.upper()}-0001", f"{code.upper()}-0002"]
 
     counter = await db_session.get(RequirementCounter, system.id)
     assert counter is not None
