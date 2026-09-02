@@ -659,6 +659,116 @@ async def batch_regenerate_vectors(
     return len(nodes)
 
 
+async def batch_insert_requirements(
+    session: AsyncSession,
+    *,
+    graph_store: GraphStore,
+    embedding_client: EmbeddingClient | None,
+    nodes: list[KnowledgeNode],
+    actor: str,
+    allocate_requirement_key: bool = False,
+    system_id: uuid.UUID | None = None,
+    prefix: str | None = None,
+) -> dict[str, int]:
+    """批量创建 Requirement 节点（创建路径，不 commit，由调用方事务控制）。
+
+    镜像 batch_regenerate_vectors 的批量 embed 模式，但面向创建：
+    - 可选为每节点原子分配可读需求主键（HIS-0001）
+    - 主向量（content）与全部节点的所有 facet 文本分别一次批量 embed
+    - session.add_all + flush 落 PG，写 NodeEmbedding facet 行，同步 AGE 图
+      节点与审计日志
+    - 返回 {"created": len(nodes)}
+    """
+    if not nodes:
+        return {"created": 0}
+
+    if allocate_requirement_key:
+        if system_id is None:
+            raise ValueError("allocate_requirement_key=True 时 system_id 必填")
+        if prefix is None:
+            prefix = await _resolve_requirement_prefix(session, system_id)
+        for node in nodes:
+            seq = await _alloc_requirement_sequence(session, system_id)
+            node.requirement_key = f"{prefix}-{seq:04d}"
+
+    # 主向量（content_vector）：一次批量 embed 全部节点文本
+    texts = [
+        build_embed_text(n.type, n.title, n.content, n.properties) for n in nodes
+    ]
+    vectors = (
+        await embedding_client.embed(texts)
+        if embedding_client
+        else [None] * len(nodes)
+    )
+    for node, vec in zip(nodes, vectors):
+        node.content_vector = vec
+
+    # 多向量 facet（32k 适配 D）：汇集所有节点所有 facet 文本，一次批量 embed。
+    # facet 文本按 node_index 归组，node_id 需在 flush 后解析。
+    all_facet_texts: list[str] = []
+    node_facet_meta: list[tuple[int, str]] = []  # (node_index, facet_name)
+    for node_index, n in enumerate(nodes):
+        facets = build_embed_facets(n.type, n.title, n.content, n.properties)
+        for fname, ftext in facets.items():
+            all_facet_texts.append(ftext)
+            node_facet_meta.append((node_index, fname))
+    facet_embeddings = (
+        await embedding_client.embed(all_facet_texts)
+        if (embedding_client and all_facet_texts)
+        else []
+    )
+
+    session.add_all(nodes)
+    await session.flush()  # 触发 server_default 生成 id 与 created_at
+
+    # 写 facet 行（节点 id 就绪后）
+    if facet_embeddings:
+        for facet_idx, (node_index, fname) in enumerate(node_facet_meta):
+            session.add(
+                NodeEmbedding(
+                    node_id=nodes[node_index].id,
+                    facet=fname,
+                    content_vector=facet_embeddings[facet_idx],
+                )
+            )
+
+    # AGE 图节点 + 审计日志
+    for node in nodes:
+        graph_props: dict[str, Any] = {
+            "id": str(node.id),
+            "title": node.title,
+        }
+        if node.project_id is not None:
+            graph_props["project_id"] = str(node.project_id)
+        if node.system_id is not None:
+            graph_props["system_id"] = str(node.system_id)
+        await graph_store.add_node(
+            session,
+            node_id=node.id,
+            label=node.type,
+            properties=graph_props,
+        )
+        await write_audit_log(
+            session,
+            actor=actor,
+            action="write",
+            target_type="node",
+            target_id=node.id,
+            project_id=node.project_id,
+            detail={
+                "node_type": node.type,
+                "title": node.title,
+                "version": 1,
+                "vector_generated": node.content_vector is not None,
+                "system_id": str(node.system_id) if node.system_id else None,
+            },
+        )
+
+    await session.flush()
+
+    return {"created": len(nodes)}
+
+
 async def get_distinct_tags(
     session: AsyncSession,
     *,
