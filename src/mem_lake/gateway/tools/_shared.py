@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_context
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,8 +21,13 @@ from mem_lake.approval.service import (
     BatchStatusError,
     IdempotencyConflictError,
     PayloadValidationError,
+    submit_batch_with_mode,
 )
-from mem_lake.gateway.dependencies import get_current_key_id
+from mem_lake.gateway.dependencies import (
+    get_current_key_id,
+    get_current_lax_mode,
+    transactional_session,
+)
 from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
 
@@ -295,7 +301,6 @@ def build_edge_item(
             "payload": {
                 "from_ref": str,
                 "to_ref": str,
-                "edge_type": str,
                 "properties": dict,
             }
         }
@@ -304,6 +309,8 @@ def build_edge_item(
         - 优先匹配同批次已创建节点的 ref（通过 approval_item.payload.ref 反查 target_id）
         - 其次匹配 UUID 字符串（已有节点）
         - 解析失败抛 PayloadValidationError
+        边类型只存于 entity_type（审批执行侧 _execute_edge_create 从此读取），
+        payload 不重复携带。
     """
     if not from_ref or not to_ref:
         raise PayloadValidationError(
@@ -316,7 +323,6 @@ def build_edge_item(
         "payload": {
             "from_ref": str(from_ref),
             "to_ref": str(to_ref),
-            "edge_type": edge_type,
             "properties": properties or {},
         },
     }
@@ -433,3 +439,71 @@ async def _safe_enqueue_embed(
             project_id,
             len(node_ids),
         )
+
+
+# ============================================================================
+# 写工具提交批次公共流程（4 个写工具共享：宽松模式资源解析 + 提交 + 出参收尾）
+# ============================================================================
+
+
+def _lax_lifespan_resources() -> tuple[Any, Any, Any]:
+    """宽松模式下从 lifespan context 取图谱/嵌入/检索依赖。
+
+    返回 (graph_store, embedding_client, vector_searcher)；strict 模式无需调用。
+    """
+    ctx = get_context()
+    lifespan_ctx = ctx.lifespan_context
+    return (
+        lifespan_ctx.graph_store,
+        lifespan_ctx.embedding_client,
+        lifespan_ctx.vector_searcher,
+    )
+
+
+async def submit_write_batch(
+    *,
+    project_id: uuid.UUID | None,
+    batch_type: str,
+    submitter_role: str,
+    items: list[dict[str, Any]],
+    operation_id: str | None,
+) -> WriteToolOutput:
+    """写工具统一提交流程：开事务 → 按模式提交批次 → 宽松模式收尾入队补向量。
+
+    收敛 4 个写工具（publish_requirement / update_requirement_relations /
+    submit_dev_artifacts / update_node）的重复提交块；get_current_lax_mode
+    单次调用内只取一次。
+    """
+    lax = get_current_lax_mode()
+    async with transactional_session() as session:
+        graph_store = embedding_client = vector_searcher = None
+        if lax:
+            graph_store, embedding_client, vector_searcher = (
+                _lax_lifespan_resources()
+            )
+        batch, decision = await submit_batch_with_mode(
+            session,
+            project_id=project_id,
+            batch_type=batch_type,
+            submitted_by=get_current_key_id(),
+            submitter_role=submitter_role,
+            items=items,
+            operation_id=operation_id,
+            lax_mode=lax,
+            graph_store=graph_store,
+            embedding_client=embedding_client,
+            vector_searcher=vector_searcher,
+        )
+
+    # 宽松模式提交后收尾：已自动审批时异步入队补向量，并构造出参。
+    # strict 模式（lax=False）不触发入队，仅构造包含 decision=None 的出参。
+    created = [
+        it.target_id
+        for it in (batch.items or [])
+        if it.item_type == "node"
+        and it.action == "create"
+        and it.target_id is not None
+    ]
+    if lax and decision == "auto_approved" and created and project_id is not None:
+        await _safe_enqueue_embed(project_id, created)
+    return WriteToolOutput.from_batch(batch, decision=decision)

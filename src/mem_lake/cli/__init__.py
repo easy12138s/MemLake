@@ -35,12 +35,5 @@ def run() -> None:
     asyncio.run(main())
 
 
-def run_import_requirements(argv: list[str] | None = None) -> None:
-    """转发到 import_requirements.run（供 console script / python -m 分发）。"""
-    from mem_lake.cli.import_requirements import run as _import_run
-
-    _import_run(argv)
-
-
 if __name__ == "__main__":
     run()

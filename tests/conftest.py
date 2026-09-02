@@ -359,3 +359,39 @@ def sample_batch_payloads(knowledge_helpers):
         "update_requirement_relations": _update_requirement_relations,
     }
 
+
+# ============ 测试专用辅助（替代已删除的生产接口，代码瘦身 D3/D4）============
+#
+# 用法：from conftest import match_pattern, mark_node_archived
+# （tests/ 无 __init__.py，pytest prepend 模式下 tests/ 在 sys.path 上）
+
+
+async def match_pattern(store, session, pattern: str, params: dict | None = None) -> list[dict]:
+    """测试专用：直跑 Cypher 验证图状态/清理图数据（替代已删除的 store.match_pattern）。
+
+    图查询三件套（find_path/subgraph/match_pattern）已从生产代码删除（D4：全链零调用）；
+    集成测试仍需原始 Cypher 通道做图状态断言与数据清理，故保留本 helper，
+    复用 store 底层 _exec_cypher/_parse_agtype，语义与原实现一致。
+    """
+    rows = await store._exec_cypher(session, pattern, params)
+    result: list[dict] = []
+    for row in rows:
+        parsed = store._parse_agtype(row)
+        if parsed is not None:
+            result.append(parsed)
+    return result
+
+
+async def mark_node_archived(session, node_id) -> None:
+    """测试夹具：直接 ORM 写 is_deleted/status（替代已删除的 repository.archive_node）。
+
+    归档写入点已从生产代码移除（D3：无入口半成品），存量 archived 过滤逻辑保留。
+    测试需要归档态数据时直接落状态；不写审计日志、不动 AGE 图、不清 facet 向量。
+    """
+    from mem_lake.knowledge.models import KnowledgeNode
+
+    node = await session.get(KnowledgeNode, node_id)
+    node.is_deleted = True
+    node.status = "archived"
+    await session.flush()
+

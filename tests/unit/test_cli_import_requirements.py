@@ -1,4 +1,4 @@
-"""import_requirements CLI 单测：--batch-size、dry-run、force 警告、main 调度。
+"""import_requirements CLI 单测：--batch-size、dry-run、main 调度。
 
 不依赖 DB / embedding / graph_store；用 monkeypatch 隔离。
 """
@@ -28,7 +28,6 @@ def test_parse_args_defaults():
     assert args.adapter == "markdown"
     assert args.priority == "P3"
     assert args.module == "导入"
-    assert args.force is False
     assert args.dry_run is False
     assert args.batch_size == 50
 
@@ -38,9 +37,8 @@ def test_parse_args_batch_size():
     assert args.batch_size == 10
 
 
-def test_parse_args_force_and_dry_run():
-    args = _parse_args(["f", "--force", "--dry-run"])
-    assert args.force is True
+def test_parse_args_dry_run():
+    args = _parse_args(["f", "--dry-run"])
     assert args.dry_run is True
 
 
@@ -133,34 +131,6 @@ async def test_main_real_import_calls_batch(tmp_path):
     assert call_kwargs["system"] is fake_system
     mock_emb.assert_called_once()
     mock_graph.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_main_force_prints_warning(tmp_path):
-    """--force 在批量路径下打印警告但不报错。"""
-    fake_system = _FakeSystem()
-    mock_session = AsyncMock()
-    mock_summary = MagicMock()
-    mock_summary.failed = []
-    mock_summary.created = []
-    mock_summary.skipped = []
-
-    with (
-        patch("mem_lake.cli.import_requirements.AsyncSessionLocal") as mock_local,
-        patch("mem_lake.cli.import_requirements.resolve_system", new_callable=AsyncMock) as mock_resolve,
-        patch("mem_lake.cli.import_requirements.run_import_batch", new_callable=AsyncMock) as mock_batch,
-        patch("mem_lake.cli.import_requirements.get_embedding_client"),
-        patch("mem_lake.cli.import_requirements.get_graph_store"),
-    ):
-        mock_local.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_local.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_resolve.return_value = fake_system
-        mock_batch.return_value = mock_summary
-
-        rc = await main([str(tmp_path), "--system-name", "HIS", "--force"])
-
-    assert rc == 0
-    mock_batch.assert_awaited_once()
 
 
 @pytest.mark.asyncio

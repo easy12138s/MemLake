@@ -13,6 +13,7 @@
 
 import uuid
 
+from conftest import mark_node_archived, match_pattern
 from mem_lake.knowledge.repository import create_node
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.fusion import hybrid_search
@@ -90,7 +91,8 @@ async def _cleanup_project_data(session, graph_store, project_id):
         sa_text("DELETE FROM knowledge_node WHERE project_id = :pid"),
         {"pid": str(project_id)},
     )
-    await graph_store.match_pattern(
+    await match_pattern(
+        graph_store,
         session,
         "MATCH (n {project_id: $pid}) DETACH DELETE n",
         {"pid": str(project_id)},
@@ -217,13 +219,11 @@ class TestVectorSearch:
         self, db_session, graph_store, vector_searcher, knowledge_helpers
     ):
         """软删除节点不在结果中（FilterSpec.exclude_deleted=True 默认）。"""
-        from mem_lake.knowledge.repository import archive_node
-
         pid, requirement, code, pitfall = await _seed_three_nodes(
             db_session, graph_store, vector_searcher._embedding_client, knowledge_helpers
         )
         # 归档 requirement
-        await archive_node(db_session, graph_store=graph_store, node_id=requirement.id, actor="ak")
+        await mark_node_archived(db_session, requirement.id)
 
         filters = FilterSpec(project_id=pid)
         results = await vector_searcher.search(
@@ -468,33 +468,6 @@ class TestGraphSearch:
         assert b.id in result_ids
         assert c.id not in result_ids  # c 是 b 的 realized_by 邻居，不是 a 的 implements 邻居
 
-    async def test_graph_subgraph(
-        self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
-    ):
-        """subgraph 返回节点与边。"""
-        pid, a, b, c, d = await self._seed_graph_chain(
-            db_session, graph_store, mock_embedding_client, knowledge_helpers
-        )
-
-        sub = await graph_searcher.subgraph(db_session, [a.id, b.id])
-
-        assert "nodes" in sub
-        assert "edges" in sub
-
-    async def test_graph_find_path(
-        self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
-    ):
-        """find_path 返回 a→b→c 的路径。"""
-        pid, a, b, c, d = await self._seed_graph_chain(
-            db_session, graph_store, mock_embedding_client, knowledge_helpers
-        )
-
-        paths = await graph_searcher.find_path(
-            db_session, from_id=a.id, to_id=c.id, max_depth=5
-        )
-
-        assert len(paths) >= 1
-
     async def test_graph_impact_analysis(
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
@@ -527,15 +500,11 @@ class TestGraphSearch:
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
         """归档节点不出现在影响分析结果中（审计 §2.4：图投影保留但按 PG 状态过滤）。"""
-        from mem_lake.knowledge.repository import archive_node
-
         pid, a, b, c, d = await self._seed_graph_chain(
             db_session, graph_store, mock_embedding_client, knowledge_helpers
         )
         # 归档方案 c（软删除：is_deleted=True + status=archived，图投影默认保留）
-        await archive_node(
-            db_session, graph_store=graph_store, node_id=c.id, actor="ak"
-        )
+        await mark_node_archived(db_session, c.id)
 
         result = await graph_searcher.impact_analysis(
             db_session, requirement_id=a.id
@@ -552,14 +521,10 @@ class TestGraphSearch:
         self, db_session, graph_store, graph_searcher, mock_embedding_client, knowledge_helpers
     ):
         """需求本身归档：返回全空结果（requirement=None）。"""
-        from mem_lake.knowledge.repository import archive_node
-
         pid, a, b, c, d = await self._seed_graph_chain(
             db_session, graph_store, mock_embedding_client, knowledge_helpers
         )
-        await archive_node(
-            db_session, graph_store=graph_store, node_id=a.id, actor="ak"
-        )
+        await mark_node_archived(db_session, a.id)
 
         result = await graph_searcher.impact_analysis(
             db_session, requirement_id=a.id
@@ -825,12 +790,10 @@ class TestSearchEdgeCases:
         self, db_session, graph_store, vector_searcher, knowledge_helpers
     ):
         """默认 FilterSpec 排除归档节点（status='archived'）。"""
-        from mem_lake.knowledge.repository import archive_node
-
         pid, requirement, code, pitfall = await _seed_three_nodes(
             db_session, graph_store, vector_searcher._embedding_client, knowledge_helpers
         )
-        await archive_node(db_session, graph_store=graph_store, node_id=pitfall.id, actor="ak")
+        await mark_node_archived(db_session, pitfall.id)
 
         # 默认 filters 含 status='approved'，pitfall 已归档（status='archived'）应被排除
         filters = FilterSpec(project_id=pid)

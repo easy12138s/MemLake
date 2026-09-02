@@ -6,7 +6,7 @@
 - 节点写入前调用 schema.validate_node 校验类型与必填字段，不合规抛 SchemaValidationError。
 - 边写入前调用 schema.validate_edge_type 校验类型。
 - 向量生成委托给 EmbeddingClient，向量延迟生成策略由调用方决定（直接 approved 场景同步生成；
-  审批流场景审批通过时再调用 regenerate_vector）。
+  审批流场景 generate_vector=False 延迟生成，由 reindex worker 后续补写）。
 - 图操作委托给 GraphStore 抽象，AGEGraphStore 为 v1.0 实现。
 - 审计写入委托给 audit.service.write_audit_log，与业务操作同事务。
 - RLS 上下文（project_id/actor）由调用方在事务前注入（auth/rls.py）。
@@ -48,6 +48,33 @@ class NodeNotFoundError(Exception):
     """节点不存在或已软删除时抛出。"""
 
 
+def _graph_props(node: KnowledgeNode) -> dict[str, Any]:
+    """构造 AGE 图节点属性：id/title 必带，project_id/system_id 非空才带。
+
+    create_node 与 batch_insert_requirements 共用（图节点仅存过滤/展示所需字段）。
+    """
+    props: dict[str, Any] = {
+        "id": str(node.id),
+        "title": node.title,
+    }
+    if node.project_id is not None:
+        props["project_id"] = str(node.project_id)
+    if node.system_id is not None:
+        props["system_id"] = str(node.system_id)
+    return props
+
+
+def _node_write_audit_detail(node: KnowledgeNode) -> dict[str, Any]:
+    """构造节点创建审计 detail（create_node 与 batch_insert_requirements 共用）。"""
+    return {
+        "node_type": node.type,
+        "title": node.title,
+        "version": 1,
+        "vector_generated": node.content_vector is not None,
+        "system_id": str(node.system_id) if node.system_id else None,
+    }
+
+
 async def create_node(
     session: AsyncSession,
     *,
@@ -63,7 +90,6 @@ async def create_node(
     created_by: str,
     system_id: uuid.UUID | None = None,
     generate_vector: bool = True,
-    content_vector: list[float] | None = None,
 ) -> KnowledgeNode:
     """创建知识节点（PG 表 + AGE 图节点 + 审计日志，事务性共写）。
 
@@ -96,17 +122,13 @@ async def create_node(
 
     content_vector_value: list[float] | None = None
     if generate_vector:
-        if content_vector is not None:
-            # 复用调用方批量预计算的向量（审批批量 embed 场景）
-            content_vector_value = content_vector
-        elif embedding_client is None:
+        if embedding_client is None:
             raise ValueError(
-                "generate_vector=True 且未提供 content_vector 时必须提供 embedding_client"
+                "generate_vector=True 时必须提供 embedding_client"
             )
-        else:
-            # 拼接标题、正文与关键属性作为向量化输入（属性富集提升语义召回）
-            embed_input = build_embed_text(node_type, title, content, properties)
-            content_vector_value = await embedding_client.embed_one(embed_input)
+        # 拼接标题、正文与关键属性作为向量化输入（属性富集提升语义召回）
+        embed_input = build_embed_text(node_type, title, content, properties)
+        content_vector_value = await embedding_client.embed_one(embed_input)
 
     requirement_key = None
     if node_type == "Requirement" and system_id is not None:
@@ -135,8 +157,8 @@ async def create_node(
     await session.flush()  # 触发 server_default 生成 id 与 created_at
 
     # 多向量 facet 写入（32k 适配 D）：与 content_vector 同条件（generate_vector 且
-    # 有 embedding_client 才 embed）。批量预计算向量场景（content_vector 直传、
-    # embedding_client 为 None）或 generate_vector=False 时跳过，由 reindex worker 后续补写。
+    # 有 embedding_client 才 embed）。generate_vector=False 时跳过，
+    # 由 reindex worker 后续补写。
     if generate_vector and embedding_client is not None:
         await _store_facet_vectors(
             session,
@@ -149,19 +171,11 @@ async def create_node(
         )
 
     # AGE 图节点：携带 id/project_id/title 供图查询过滤（system_id 可选）
-    graph_props: dict[str, Any] = {
-        "id": str(node.id),
-        "title": title,
-    }
-    if project_id is not None:
-        graph_props["project_id"] = str(project_id)
-    if system_id is not None:
-        graph_props["system_id"] = str(system_id)
     await graph_store.add_node(
         session,
         node_id=node.id,
         label=node_type,
-        properties=graph_props,
+        properties=_graph_props(node),
     )
 
     await write_audit_log(
@@ -171,13 +185,7 @@ async def create_node(
         target_type="node",
         target_id=node.id,
         project_id=project_id,
-        detail={
-            "node_type": node_type,
-            "title": title,
-            "version": 1,
-            "vector_generated": content_vector_value is not None,
-            "system_id": str(system_id) if system_id else None,
-        },
+        detail=_node_write_audit_detail(node),
     )
 
     return node
@@ -251,13 +259,6 @@ async def _store_facet_vectors(
             )
         )
     return len(facets)
-
-
-async def _delete_facet_vectors(session: AsyncSession, *, node_id: uuid.UUID) -> None:
-    """删除节点的全部 facet 向量行（归档兜底）。不 commit。"""
-    await session.execute(
-        delete(NodeEmbedding).where(NodeEmbedding.node_id == node_id)
-    )
 
 
 async def get_node(
@@ -401,54 +402,6 @@ async def update_node(
     return node
 
 
-async def archive_node(
-    session: AsyncSession,
-    *,
-    graph_store: GraphStore,
-    node_id: uuid.UUID,
-    actor: str,
-    delete_from_graph: bool = False,
-) -> KnowledgeNode:
-    """归档节点（软删除：is_deleted=True + status=archived）。
-
-    - 默认不删除 AGE 图节点（保留图遍历历史，archived 状态由查询过滤）
-    - delete_from_graph=True 时调用 graph_store.delete_node 同步删除图节点与关联边
-    - 已归档节点幂等（重复归档不报错）
-
-    不存在抛 NodeNotFoundError。不 commit。
-    """
-    node = await get_node(session, node_id, include_deleted=True)
-
-    if node.is_deleted and node.status == "archived":
-        # 幂等：已归档直接返回
-        return node
-
-    node.is_deleted = True
-    node.status = "archived"
-    # 归档节点不再参与检索（检索层过滤 is_deleted），同时清掉 facet 向量避免存储膨胀
-    await _delete_facet_vectors(session, node_id=node.id)
-    await session.flush()
-
-    if delete_from_graph:
-        await graph_store.delete_node(session, node_id)
-
-    await write_audit_log(
-        session,
-        actor=actor,
-        action="archive",
-        target_type="node",
-        target_id=node.id,
-        project_id=node.project_id,
-        detail={
-            "node_type": node.type,
-            "title": node.title,
-            "delete_from_graph": delete_from_graph,
-        },
-    )
-
-    return node
-
-
 async def add_edge(
     session: AsyncSession,
     *,
@@ -491,45 +444,6 @@ async def add_edge(
             "to_id": str(to_id),
         },
     )
-
-
-async def regenerate_vector(
-    session: AsyncSession,
-    *,
-    embedding_client: EmbeddingClient,
-    node_id: uuid.UUID,
-    actor: str,
-) -> KnowledgeNode:
-    """重新生成节点向量（独立调用入口，供审批通过场景使用）。
-
-    不存在抛 NodeNotFoundError。不 commit。
-    """
-    node = await get_node(session, node_id)
-    embed_input = build_embed_text(node.type, node.title, node.content, node.properties)
-    node.content_vector = await embedding_client.embed_one(embed_input)
-    # 同步多向量 facet（32k 适配 D）
-    await _store_facet_vectors(
-        session,
-        node_id=node.id,
-        node_type=node.type,
-        title=node.title,
-        content=node.content,
-        properties=node.properties,
-        embedding_client=embedding_client,
-    )
-    await session.flush()
-
-    await write_audit_log(
-        session,
-        actor=actor,
-        action="update",
-        target_type="node",
-        target_id=node.id,
-        project_id=node.project_id,
-        detail={"vector_regenerated": True, "trigger": "manual"},
-    )
-
-    return node
 
 
 async def list_nodes_by_project(
@@ -609,14 +523,12 @@ async def batch_regenerate_vectors(
     embeddings = await embedding_client.embed(texts)
     # 多向量 facet（32k 适配 D）：汇集所有节点所有 facet 文本，一次批量 embed
     all_facet_texts: list[str] = []
-    node_facet_counts: list[int] = []
-    node_facet_meta: list[tuple[uuid.UUID, str, str, dict]] = []
+    node_facet_meta: list[tuple[uuid.UUID, str]] = []  # (node_id, facet_name)
     for n in nodes:
         facets = build_embed_facets(n.type, n.title, n.content, n.properties)
-        node_facet_counts.append(len(facets))
         for fname, ftext in facets.items():
             all_facet_texts.append(ftext)
-            node_facet_meta.append((n.id, fname, n.type, n.properties))
+            node_facet_meta.append((n.id, fname))
     facet_embeddings = (
         await embedding_client.embed(all_facet_texts) if all_facet_texts else []
     )
@@ -630,18 +542,14 @@ async def batch_regenerate_vectors(
     await session.execute(
         delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(node_ids))
     )
-    facet_idx = 0
-    for n, count in zip(nodes, node_facet_counts):
-        for _ in range(count):
-            fid, fname, _, _ = node_facet_meta[facet_idx]
-            session.add(
-                NodeEmbedding(
-                    node_id=fid,
-                    facet=fname,
-                    content_vector=facet_embeddings[facet_idx],
-                )
+    for (node_id, fname), vec in zip(node_facet_meta, facet_embeddings):
+        session.add(
+            NodeEmbedding(
+                node_id=node_id,
+                facet=fname,
+                content_vector=vec,
             )
-            facet_idx += 1
+        )
 
     for node in nodes:
         await write_audit_log(
@@ -666,7 +574,6 @@ async def batch_insert_requirements(
     actor: str,
     allocate_requirement_key: bool = False,
     system_id: uuid.UUID | None = None,
-    prefix: str | None = None,
 ) -> dict[str, int]:
     """批量创建 Requirement 节点（创建路径，不 commit，由调用方事务控制）。
 
@@ -683,8 +590,7 @@ async def batch_insert_requirements(
     if allocate_requirement_key:
         if system_id is None:
             raise ValueError("allocate_requirement_key=True 时 system_id 必填")
-        if prefix is None:
-            prefix = await _resolve_requirement_prefix(session, system_id)
+        prefix = await _resolve_requirement_prefix(session, system_id)
         for node in nodes:
             seq = await _alloc_requirement_sequence(session, system_id)
             node.requirement_key = f"{prefix}-{seq:04d}"
@@ -732,19 +638,11 @@ async def batch_insert_requirements(
 
     # AGE 图节点 + 审计日志
     for node in nodes:
-        graph_props: dict[str, Any] = {
-            "id": str(node.id),
-            "title": node.title,
-        }
-        if node.project_id is not None:
-            graph_props["project_id"] = str(node.project_id)
-        if node.system_id is not None:
-            graph_props["system_id"] = str(node.system_id)
         await graph_store.add_node(
             session,
             node_id=node.id,
             label=node.type,
-            properties=graph_props,
+            properties=_graph_props(node),
         )
         await write_audit_log(
             session,
@@ -753,13 +651,7 @@ async def batch_insert_requirements(
             target_type="node",
             target_id=node.id,
             project_id=node.project_id,
-            detail={
-                "node_type": node.type,
-                "title": node.title,
-                "version": 1,
-                "vector_generated": node.content_vector is not None,
-                "system_id": str(node.system_id) if node.system_id else None,
-            },
+            detail=_node_write_audit_detail(node),
         )
 
     await session.flush()

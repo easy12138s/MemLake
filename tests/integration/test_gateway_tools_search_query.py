@@ -17,6 +17,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from conftest import match_pattern
 from mem_lake.audit.service import query_audit_logs
 from mem_lake.gateway.tools.query_tools import (
     _get_project_info_core,
@@ -48,7 +49,8 @@ async def _cleanup_project_data(session, graph_store, project_id):
         sa_text("DELETE FROM knowledge_node WHERE project_id = :pid"),
         {"pid": str(project_id)},
     )
-    await graph_store.match_pattern(
+    await match_pattern(
+        graph_store,
         session,
         "MATCH (n {project_id: $pid}) DETACH DELETE n",
         {"pid": str(project_id)},

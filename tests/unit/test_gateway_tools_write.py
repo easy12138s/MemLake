@@ -64,7 +64,7 @@ class TestBuildPublishItems:
         assert len(items) == 3
         assert items[0]["item_type"] == "node"
         assert items[1]["item_type"] == "edge"
-        assert items[1]["payload"]["edge_type"] == "supersedes"
+        assert items[1]["entity_type"] == "supersedes"
         assert items[1]["payload"]["from_ref"] == "requirement"
         assert items[1]["payload"]["to_ref"] == "REQ-001"
         assert items[2]["payload"]["to_ref"] == "REQ-000"
@@ -81,7 +81,7 @@ class TestBuildPublishItems:
         items = _build_publish_items(project_id, requirement, related, "ak", uuid.uuid4())
 
         assert len(items) == 2
-        assert items[1]["payload"]["edge_type"] == "relates_to"
+        assert items[1]["entity_type"] == "relates_to"
         assert items[1]["payload"]["to_ref"] == "REQ-B"
 
     def test_with_both_relations(self):
@@ -100,7 +100,7 @@ class TestBuildPublishItems:
 
         # 1 node + 2 supersedes + 3 relates_to
         assert len(items) == 6
-        edge_types = [item["payload"]["edge_type"] for item in items[1:]]
+        edge_types = [item["entity_type"] for item in items[1:]]
         assert edge_types.count("supersedes") == 2
         assert edge_types.count("relates_to") == 3
 
@@ -160,7 +160,7 @@ class TestBuildDevItems:
         assert items[0]["payload"]["created_by"] == "ak_dev"
 
         assert items[1]["item_type"] == "edge"
-        assert items[1]["payload"]["edge_type"] == "implements"
+        assert items[1]["entity_type"] == "implements"
         assert items[1]["payload"]["from_ref"] == str(requirement_id)
         assert items[1]["payload"]["to_ref"] == "LoginService"
 
@@ -268,7 +268,7 @@ class TestBuildDevItems:
 
         # 1 node + 1 auto implements + 2 explicit relations
         assert len(items) == 4
-        edge_types = [item["payload"]["edge_type"] for item in items if item["item_type"] == "edge"]
+        edge_types = [item["entity_type"] for item in items if item["item_type"] == "edge"]
         assert edge_types.count("implements") == 1
         assert edge_types.count("realized_by") == 1
         assert edge_types.count("described_by") == 1
@@ -424,11 +424,11 @@ class TestBuildDevItemsFreeStanding:
         node_refs = {i["payload"]["ref"] for i in items if i["item_type"] == "node"}
         assert node_refs == {"Code1", "Sol1", "Intent1", "Pit1"}
         edges = [i for i in items if i["item_type"] == "edge"]
-        assert all(e["payload"]["edge_type"] == "references" for e in edges)
+        assert all(e["entity_type"] == "references" for e in edges)
         assert all(e["payload"]["from_ref"] == str(profile_id) for e in edges)
         assert {e["payload"]["to_ref"] for e in edges} == node_refs
         # 游离提交不得生成 implements 边
-        assert not any(e["payload"]["edge_type"] == "implements" for e in edges)
+        assert not any(e["entity_type"] == "implements" for e in edges)
 
     def test_free_standing_no_profile_no_edges(self):
         """requirement_id=None 且 profile_id=None：仅 4 node，无任意边。"""
@@ -456,9 +456,9 @@ class TestBuildDevItemsFreeStanding:
         )
         # 4 nodes + 1 implements (仅 CodeSnippet)
         assert len(items) == 5
-        edge_types = [i["payload"]["edge_type"] for i in items if i["item_type"] == "edge"]
+        edge_types = [i["entity_type"] for i in items if i["item_type"] == "edge"]
         assert edge_types.count("implements") == 1
-        impl = next(i for i in items if i["item_type"] == "edge" and i["payload"]["edge_type"] == "implements")
+        impl = next(i for i in items if i["item_type"] == "edge" and i["entity_type"] == "implements")
         assert impl["payload"]["from_ref"] == str(req_id)
         assert impl["payload"]["to_ref"] == "Code1"
 

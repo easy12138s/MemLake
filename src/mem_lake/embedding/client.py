@@ -131,8 +131,6 @@ class EmbeddingClient:
                 f"Embedding 服务返回非 200: status={resp.status_code} body={resp.text[:200]}"
             )
 
-        raise EmbeddingError("Embedding 服务重试耗尽")
-
     async def embed_one(
         self,
         text: str,
