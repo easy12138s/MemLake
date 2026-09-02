@@ -243,6 +243,26 @@ async def _embed_specific_nodes(
     )
 
 
+def _spawn_worker(
+    project_id: uuid.UUID | None,
+    task_id: uuid.UUID,
+    actor: str,
+    batch_size: int,
+    embedding_client,  # EmbeddingClient
+) -> asyncio.Task:
+    """创建 _reindex_worker 后台协程并挂到 ACTIVE_TASKS。
+
+    统一三处调用点（start_embed_nodes_task / start_reindex_task /
+    reconcile_orphan_tasks）的 create_task + 防 GC + done_callback 模式。
+    """
+    task = asyncio.create_task(
+        _reindex_worker(project_id, task_id, actor, batch_size, embedding_client)
+    )
+    ACTIVE_TASKS.add(task)
+    task.add_done_callback(ACTIVE_TASKS.discard)
+    return task
+
+
 async def start_embed_nodes_task(
     project_id: uuid.UUID | None,
     node_ids: list[uuid.UUID],
@@ -263,11 +283,7 @@ async def start_embed_nodes_task(
         project_id, actor, target_node_ids=list(node_ids)
     )
     embedding_client = get_embedding_client()
-    task = asyncio.create_task(
-        _reindex_worker(project_id, task_id, actor, size, embedding_client)
-    )
-    ACTIVE_TASKS.add(task)
-    task.add_done_callback(ACTIVE_TASKS.discard)
+    _spawn_worker(project_id, task_id, actor, size, embedding_client)
     logger.info(
         "embed-nodes task %s started: project=%s node_count=%d",
         task_id,
@@ -284,11 +300,7 @@ async def start_reindex_task(
     size = batch_size or DEFAULT_BATCH_SIZE
     task_id = await create_task_record(project_id, actor)
     embedding_client = get_embedding_client()
-    task = asyncio.create_task(
-        _reindex_worker(project_id, task_id, actor, size, embedding_client)
-    )
-    ACTIVE_TASKS.add(task)
-    task.add_done_callback(ACTIVE_TASKS.discard)
+    _spawn_worker(project_id, task_id, actor, size, embedding_client)
     logger.info(
         "reindex task %s started: project=%s batch_size=%d", task_id, project_id, size
     )

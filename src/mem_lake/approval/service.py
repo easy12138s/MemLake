@@ -222,6 +222,33 @@ async def _create_batch(
     return batch
 
 
+async def _build_conflict_query_vectors(
+    embedding_client: EmbeddingClient,
+    create_items: list,
+) -> list[list[float]]:
+    """批量构造冲突检测查询向量（review_approve / auto_process_batch 共用）。
+
+    所有 node+create 项的查询文本一次性 embed（prompt_name="query"，与
+    VectorSearcher.search 语义一致），避免每项各 embed 一次。查询文本用
+    build_embed_text，与 conflict.detect_conflicts 内部构造一致。
+    返回顺序与 create_items 一致；create_items 为空时返回 []。
+    """
+    if not create_items:
+        return []
+    return await embedding_client.embed(
+        [
+            build_embed_text(
+                it.entity_type,
+                it.payload["title"],
+                it.payload["content"],
+                it.payload.get("properties", {}),
+            )
+            for it in create_items
+        ],
+        prompt_name="query",
+    )
+
+
 async def review_approve(
     session: AsyncSession,
     *,
@@ -490,27 +517,16 @@ async def auto_process_batch(
         )
 
     # 2. 遍历 node+create 项执行三层冲突检测
-    # 批量化：所有查询文本一次性 embed（prompt_name="query"），再逐条用预计算向量比对。
-    # 查询文本用 build_embed_text，与 conflict.detect_conflicts 内部构造一致。
+    # 批量化（_build_conflict_query_vectors）：所有查询文本一次性 embed，
+    # 再逐条用预计算向量比对。
     create_items = [
         it
         for it in batch.items
         if it.item_type == "node" and it.action == "create"
     ]
-    conflict_query_vectors: list[list[float]] = []
-    if create_items:
-        conflict_query_vectors = await embedding_client.embed(
-            [
-                build_embed_text(
-                    it.entity_type,
-                    it.payload["title"],
-                    it.payload["content"],
-                    it.payload.get("properties", {}),
-                )
-                for it in create_items
-            ],
-            prompt_name="query",
-        )
+    conflict_query_vectors = await _build_conflict_query_vectors(
+        embedding_client, create_items
+    )
 
     all_conflicts: list[dict] = []
     candidates_total = 0

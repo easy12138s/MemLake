@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 
+from conftest import match_pattern
 from mem_lake.approval.service import (
     BATCH_TYPES,
     STATUS_APPROVED,
@@ -513,8 +514,8 @@ class TestReviewApprove:
         )
 
         # 验证 AGE 图中存在 conflicts_with 边
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (a)-[r:conflicts_with]->(b) "
             "WHERE a.id = $from_id AND b.id = $to_id "
             "RETURN r",
@@ -1625,8 +1626,8 @@ class TestApprovalEndToEnd:
         assert detail_after.items[0].target_id == nodes[0].id
 
         # AGE 图节点存在
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (n:Requirement {id: $nid}) RETURN n",
             {"nid": str(nodes[0].id)},
         )

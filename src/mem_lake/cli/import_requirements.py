@@ -3,15 +3,15 @@
 容器内运行（连 Postgres/AGE/embedding）：
     docker exec -it deploy-mem-lake-1 memlake-import-requirements /data/reqs \
         --system-code HIS [--project <project-id>] [--adapter markdown] \
-        [--priority P3] [--module 导入] [--force] [--dry-run] [--batch-size 50]
+        [--priority P3] [--module 导入] [--dry-run] [--batch-size 50]
 
 不传 --project 表示导入为悬浮式 Requirement（project_id=None）。
 --adapter 支持 markdown（默认）/ axure（Axure HTML 清洗）。
 --system-code / --system-name 至少其一；name 优先（DB 存量 system 常 code 为 NULL）。
 
-流程：解析参数 → 开 DB session → resolve system（fail-fast）→ run_import_batch
-（每 batch_size 切片 commit，--dry-run 只解析不出清单不写库；--force 无效，幂等去重）→
-打印汇总；有失败则非零退出码。
+流程：解析参数 → 开 DB session → resolve system（fail-fast）→ extract_directory 解析
+→ run_import_batch（传入已解析结果避免双重解析；每 batch_size 切片 commit，
+--dry-run 只打印清单不写库；幂等去重，已存在跳过）→ 打印汇总；有失败则非零退出码。
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--priority", default="P3", help="默认优先级（默认 P3）")
     parser.add_argument("--module", default="导入", help="默认模块（默认 '导入'）")
     parser.add_argument("--batch-size", type=int, default=50, help="每批提交的节点数（默认 50）")
-    parser.add_argument("--force", action="store_true", help="source_doc 已存在时用 update 覆盖")
     parser.add_argument("--dry-run", action="store_true", help="只解析并打印待导入清单，不写库")
     return parser.parse_args(argv)
 
@@ -83,9 +82,6 @@ async def main(argv: list[str] | None = None) -> int:
             print("未写库（dry-run）。")
             return 0
 
-        if args.force:
-            print("[警告] --force 在批量路径下无效（幂等去重，已存在将跳过）")
-
         embedding_client = get_embedding_client()
         graph_store = get_graph_store()
 
@@ -101,6 +97,7 @@ async def main(argv: list[str] | None = None) -> int:
             graph_store=graph_store,
             created_by="cli-import",
             batch_size=args.batch_size,
+            parsed=parsed_list,
         )
 
     print(
@@ -114,16 +111,13 @@ async def main(argv: list[str] | None = None) -> int:
     return 1 if summary.failed else 0
 
 
-def _run(argv: list[str] | None = None) -> None:
+def run(argv: list[str] | None = None) -> None:
+    """console_scripts 入口（memlake-import-requirements）。"""
     # Windows 默认 ProactorEventLoop 不兼容 psycopg async → 切换为 SelectorEventLoop
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     raise SystemExit(asyncio.run(main(argv)))
 
 
-def run(argv: list[str] | None = None) -> None:
-    _run(argv)
-
-
 if __name__ == "__main__":
-    _run()
+    run()

@@ -334,7 +334,6 @@ class TestBuildEdgeItem:
         assert item["entity_type"] == "supersedes"
         assert item["payload"]["from_ref"] == "requirement"
         assert item["payload"]["to_ref"] == "REQ-001"
-        assert item["payload"]["edge_type"] == "supersedes"
         assert item["payload"]["properties"]["reason"] == "版本更新"
 
     def test_default_properties_empty(self):

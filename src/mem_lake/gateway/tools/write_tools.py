@@ -14,7 +14,7 @@ Access Key 为宽松模式（lax_mode=true 且全局 LAX_MODE_ENABLED 开启）�
 设计要点：
 - 工具参数采用 flat params 模式，复杂嵌套用 Pydantic 模型
 - 临时引用（ref）在工具层保留为字符串，审批通过时由 approval 层解析为节点 ID
-- 工具层不写业务逻辑，仅参数解析 + items 构造 + 转发 submit_batch_with_mode
+- 工具层不写业务逻辑，仅参数解析 + items 构造 + 转发 submit_write_batch（_shared）
 - 角色 RBAC 由中间件层控制，本文件不区分角色
 """
 
@@ -23,32 +23,28 @@ import uuid
 from typing import Any
 
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_context
 from pydantic import Field
 
 from mem_lake.approval.service import (
     PayloadValidationError,
-    submit_batch_with_mode,
 )
 from mem_lake.gateway.access import is_requirement_visible
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
-    get_current_lax_mode,
     get_current_project_scope,
     get_current_role,
     get_current_system_scope,
     get_readonly_session,
-    transactional_session,
     validate_project_access,
 )
 from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     StrictInputModel,
     WriteToolOutput,
-    _safe_enqueue_embed,
     build_edge_item,
     build_node_item,
     build_update_node_item,
+    submit_write_batch,
     to_tool_error,
 )
 from mem_lake.knowledge.repository import (
@@ -217,39 +213,6 @@ class ArtifactsInput(StrictInputModel):
 # ============================================================================
 
 
-def _lax_lifespan_resources() -> tuple[Any, Any, Any]:
-    """宽松模式下从 lifespan context 取图谱/嵌入/检索依赖。
-
-    返回 (graph_store, embedding_client, vector_searcher)；strict 模式无需调用。
-    """
-    ctx = get_context()
-    lifespan_ctx = ctx.lifespan_context
-    return (
-        lifespan_ctx.graph_store,
-        lifespan_ctx.embedding_client,
-        lifespan_ctx.vector_searcher,
-    )
-
-
-async def _finalize_lax_output(
-    *, lax: bool, decision: str | None, batch, project_id: uuid.UUID
-) -> WriteToolOutput:
-    """宽松模式提交后收尾：已自动审批时异步入队补向量，并构造出参。
-
-    strict 模式（lax=False）不触发入队，仅构造包含 decision=None 的出参。
-    """
-    created = [
-        it.target_id
-        for it in (batch.items or [])
-        if it.item_type == "node"
-        and it.action == "create"
-        and it.target_id is not None
-    ]
-    if lax and decision == "auto_approved" and created and project_id is not None:
-        await _safe_enqueue_embed(project_id, created)
-    return WriteToolOutput.from_batch(batch, decision=decision)
-
-
 def register_write_tools(mcp: FastMCP) -> None:
     """注册写入类工具到 FastMCP 实例。"""
 
@@ -298,30 +261,12 @@ def register_write_tools(mcp: FastMCP) -> None:
                 project_id, requirement, related, key_id, system_id
             )
 
-            async with transactional_session() as session:
-                graph_store = embedding_client = vector_searcher = None
-                if get_current_lax_mode():
-                    graph_store, embedding_client, vector_searcher = (
-                        _lax_lifespan_resources()
-                    )
-                batch, decision = await submit_batch_with_mode(
-                    session,
-                    project_id=project_id,
-                    batch_type="publish_requirement",
-                    submitted_by=key_id,
-                    submitter_role="pm",
-                    items=items,
-                    operation_id=operation_id,
-                    lax_mode=get_current_lax_mode(),
-                    graph_store=graph_store,
-                    embedding_client=embedding_client,
-                    vector_searcher=vector_searcher,
-                )
-            return await _finalize_lax_output(
-                lax=get_current_lax_mode(),
-                decision=decision,
-                batch=batch,
+            return await submit_write_batch(
                 project_id=project_id,
+                batch_type="publish_requirement",
+                submitter_role="pm",
+                items=items,
+                operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
@@ -367,31 +312,12 @@ def register_write_tools(mcp: FastMCP) -> None:
                 for r in relations
             ]
 
-            key_id = get_current_key_id()
-            async with transactional_session() as session:
-                graph_store = embedding_client = vector_searcher = None
-                if get_current_lax_mode():
-                    graph_store, embedding_client, vector_searcher = (
-                        _lax_lifespan_resources()
-                    )
-                batch, decision = await submit_batch_with_mode(
-                    session,
-                    project_id=project_id,
-                    batch_type="update_requirement_relations",
-                    submitted_by=key_id,
-                    submitter_role="pm",
-                    items=items,
-                    operation_id=operation_id,
-                    lax_mode=get_current_lax_mode(),
-                    graph_store=graph_store,
-                    embedding_client=embedding_client,
-                    vector_searcher=vector_searcher,
-                )
-            return await _finalize_lax_output(
-                lax=get_current_lax_mode(),
-                decision=decision,
-                batch=batch,
+            return await submit_write_batch(
                 project_id=project_id,
+                batch_type="update_requirement_relations",
+                submitter_role="pm",
+                items=items,
+                operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
@@ -462,30 +388,12 @@ def register_write_tools(mcp: FastMCP) -> None:
             if not items:
                 raise PayloadValidationError("artifacts 和 relations 不能同时为空")
 
-            async with transactional_session() as session:
-                graph_store = embedding_client = vector_searcher = None
-                if get_current_lax_mode():
-                    graph_store, embedding_client, vector_searcher = (
-                        _lax_lifespan_resources()
-                    )
-                batch, decision = await submit_batch_with_mode(
-                    session,
-                    project_id=project_id,
-                    batch_type="submit_dev_artifacts",
-                    submitted_by=key_id,
-                    submitter_role="dev",
-                    items=items,
-                    operation_id=operation_id,
-                    lax_mode=get_current_lax_mode(),
-                    graph_store=graph_store,
-                    embedding_client=embedding_client,
-                    vector_searcher=vector_searcher,
-                )
-            return await _finalize_lax_output(
-                lax=get_current_lax_mode(),
-                decision=decision,
-                batch=batch,
+            return await submit_write_batch(
                 project_id=project_id,
+                batch_type="submit_dev_artifacts",
+                submitter_role="dev",
+                items=items,
+                operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)
@@ -553,30 +461,12 @@ def register_write_tools(mcp: FastMCP) -> None:
                     tags=tags,
                 )
             ]
-            async with transactional_session() as session:
-                graph_store = embedding_client = vector_searcher = None
-                if get_current_lax_mode():
-                    graph_store, embedding_client, vector_searcher = (
-                        _lax_lifespan_resources()
-                    )
-                batch, decision = await submit_batch_with_mode(
-                    session,
-                    project_id=project_id,
-                    batch_type="update_node",
-                    submitted_by=key_id,
-                    submitter_role=get_current_role(),
-                    items=items,
-                    operation_id=operation_id,
-                    lax_mode=get_current_lax_mode(),
-                    graph_store=graph_store,
-                    embedding_client=embedding_client,
-                    vector_searcher=vector_searcher,
-                )
-            return await _finalize_lax_output(
-                lax=get_current_lax_mode(),
-                decision=decision,
-                batch=batch,
+            return await submit_write_batch(
                 project_id=project_id,
+                batch_type="update_node",
+                submitter_role=get_current_role(),
+                items=items,
+                operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e)

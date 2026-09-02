@@ -1,4 +1,4 @@
-"""GraphStore 抽象接口：add_node、add_edge、neighbors、find_path、match_pattern、subgraph、delete_node。
+"""GraphStore 抽象接口：add_node、add_edge、neighbors、sync_node_title、delete_node。
 
 对齐 PDD 10.2 GraphStore 抽象层。定义图操作原语，AGEGraphStore 为 v1.0 实现，
 未来可替换为 Neo4j 等其他图后端，业务代码无感。
@@ -6,7 +6,6 @@
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,33 +72,6 @@ class GraphStore(ABC):
         depth: int = 1,
     ) -> list[dict]:
         """邻居遍历。返回邻居节点 dict 列表。edge_type=None 表示不限类型。"""
-
-    @abstractmethod
-    async def find_path(
-        self,
-        session: AsyncSession,
-        from_id: uuid.UUID,
-        to_id: uuid.UUID,
-        max_depth: int = 5,
-    ) -> list[list[dict]]:
-        """路径查询。返回路径列表，每条路径为节点 dict 列表。无路径返回空。"""
-
-    @abstractmethod
-    async def match_pattern(
-        self,
-        session: AsyncSession,
-        pattern: str,
-        params: dict | None = None,
-    ) -> list[dict]:
-        """图模式匹配。pattern 为 Cypher MATCH 子句（受信任调用方构造）。"""
-
-    @abstractmethod
-    async def subgraph(
-        self,
-        session: AsyncSession,
-        node_ids: list[uuid.UUID],
-    ) -> dict[str, Any]:
-        """子图提取。返回 {"nodes": [...], "edges": [...]}。"""
 
     @abstractmethod
     async def delete_node(

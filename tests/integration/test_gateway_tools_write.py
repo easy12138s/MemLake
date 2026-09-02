@@ -16,6 +16,7 @@ import uuid
 import pytest
 from fastmcp.server.auth import AccessToken
 
+from conftest import match_pattern
 from mem_lake.approval.service import (
     BatchNotFoundError,
     PayloadValidationError,
@@ -855,8 +856,8 @@ class TestFreeStandingArtifacts:
         assert node.type == "Pitfall"
 
         # 自动生成 ProjectProfile --references--> Pitfall 边
-        edges = await graph_store.match_pattern(
-            db_session,
+        edges = await match_pattern(
+            graph_store, db_session,
             "MATCH (p:ProjectProfile)-[r:references]->(a) "
             "WHERE p.id = $pid AND a.id = $aid RETURN r",
             {"pid": str(profile_id), "aid": str(artifact_id)},
@@ -887,8 +888,8 @@ class TestFreeStandingArtifacts:
         assert node.type == "Pitfall"
 
         # 无任何 references 边指向该产物
-        edges = await graph_store.match_pattern(
-            db_session,
+        edges = await match_pattern(
+            graph_store, db_session,
             "MATCH (p:ProjectProfile)-[r:references]->(a) "
             "WHERE a.id = $aid RETURN r",
             {"aid": str(artifact_id)},

@@ -4,19 +4,22 @@
 1. add_node + neighbors 自查询验证
 2. add_edge + neighbors 跨节点遍历
 3. neighbors 1跳/多跳/带 edge_type 过滤
-4. find_path 连通/不连通
-5. subgraph 提取
-6. delete_node（DETACH DELETE）+ 关联边一并删除
-7. 边界：不存在的节点 neighbors 返回空、find_path 返回空、subgraph 空列表
-8. 非法 label/edge_type 抛 SchemaValidationError
+4. delete_node（DETACH DELETE）+ 关联边一并删除
+5. 边界：不存在的节点 neighbors 返回空
+6. 非法 label/edge_type 抛 SchemaValidationError
 
 事务回滚隔离，AGE DML 操作随事务回滚。
+
+注：图查询三件套（find_path/subgraph/match_pattern）已从生产代码删除
+（代码瘦身 D4：全链零调用），其专属用例一并移除；图状态断言改用
+conftest.match_pattern 测试专用 helper。
 """
 
 import uuid
 
 import pytest
 
+from conftest import match_pattern
 from mem_lake.knowledge.age_store import AGEGraphStore
 from mem_lake.knowledge.graph_store import EdgeTargetNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -54,8 +57,8 @@ class TestAddNode:
         )
 
         # 用 match_pattern 验证节点存在
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (n:Requirement {id: $nid}) RETURN n",
             {"nid": str(node_id)},
         )
@@ -98,8 +101,8 @@ class TestAddNode:
             )
 
         # 验证 7 个节点都写入
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (n) WHERE n.project_id = $pid RETURN count(n) AS cnt",
             {"pid": str(project_id)},
         )
@@ -209,8 +212,8 @@ class TestAddEdge:
             )
 
         # 验证边数（match_pattern 统计）
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH ()-[r]->() WHERE r.created_by = $actor RETURN count(r) AS cnt",
             {"actor": "tester"},
         )
@@ -295,94 +298,6 @@ class TestNeighbors:
         assert neighbors == []
 
 
-# ============ find_path ============
-
-class TestFindPath:
-    """find_path 测试。"""
-
-    async def test_find_path_connected(self, db_session, store):
-        """连通节点间返回路径。"""
-        project_id = uuid.uuid4()
-        a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-        for nid, label in [(a, "Requirement"), (b, "CodeSnippet"), (c, "Solution")]:
-            await store.add_node(db_session, nid, label, _props(nid, project_id))
-
-        await store.add_edge(db_session, a, b, "implements", {})
-        await store.add_edge(db_session, b, c, "realized_by", {})
-
-        paths = await store.find_path(db_session, a, c, max_depth=5)
-        assert len(paths) >= 1
-        # 路径应含 a, b, c 三个节点
-        path_ids = [v["properties"]["id"] for v in paths[0]]
-        assert str(a) in path_ids
-        assert str(c) in path_ids
-
-    async def test_find_path_not_connected(self, db_session, store):
-        """不连通节点返回空列表。"""
-        project_id = uuid.uuid4()
-        a, b = uuid.uuid4(), uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-        await store.add_node(db_session, b, "Pitfall", _props(b, project_id))
-        # 不添加任何边
-
-        paths = await store.find_path(db_session, a, b, max_depth=3)
-        assert paths == []
-
-    async def test_find_path_nonexistent_node(self, db_session, store):
-        """不存在的节点查询路径返回空。"""
-        fake_a = uuid.uuid4()
-        fake_b = uuid.uuid4()
-        paths = await store.find_path(db_session, fake_a, fake_b, max_depth=3)
-        assert paths == []
-
-    async def test_find_path_max_depth_limit(self, db_session, store):
-        """max_depth=1 时无法找到 2 跳路径。"""
-        project_id = uuid.uuid4()
-        a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-        for nid, label in [(a, "Requirement"), (b, "CodeSnippet"), (c, "Solution")]:
-            await store.add_node(db_session, nid, label, _props(nid, project_id))
-
-        await store.add_edge(db_session, a, b, "implements", {})
-        await store.add_edge(db_session, b, c, "realized_by", {})
-
-        # max_depth=1 无法找到 a→c（2 跳）
-        paths = await store.find_path(db_session, a, c, max_depth=1)
-        assert paths == []
-
-
-# ============ subgraph ============
-
-class TestSubgraph:
-    """subgraph 提取测试。"""
-
-    async def test_subgraph_basic(self, db_session, store):
-        """提取节点子图，返回 nodes 与 edges。"""
-        project_id = uuid.uuid4()
-        a, b = uuid.uuid4(), uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-        await store.add_node(db_session, b, "CodeSnippet", _props(b, project_id))
-        await store.add_edge(db_session, a, b, "implements", {})
-
-        sub = await store.subgraph(db_session, [a, b])
-        # 返回结构含 nodes 与 edges 键
-        assert "nodes" in sub
-        assert "edges" in sub
-        # nodes 非空（具体格式由 agtype 解解决定）
-        assert len(sub["nodes"]) >= 1
-
-    async def test_subgraph_empty_node_ids(self, db_session, store):
-        """空 node_ids 返回空子图。"""
-        sub = await store.subgraph(db_session, [])
-        assert sub == {"nodes": [], "edges": []}
-
-    async def test_subgraph_nonexistent_ids(self, db_session, store):
-        """不存在的 node_ids 返回空子图。"""
-        fake = uuid.uuid4()
-        sub = await store.subgraph(db_session, [fake])
-        # 不存在的节点应返回空 nodes
-        assert sub["nodes"] == [] or len(sub["nodes"]) == 0
-
-
 # ============ delete_node ============
 
 class TestDeleteNode:
@@ -400,16 +315,16 @@ class TestDeleteNode:
         await store.delete_node(db_session, a)
 
         # a 不再存在
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (n {id: $nid}) RETURN n",
             {"nid": str(a)},
         )
         assert len(rows) == 0
 
         # b 仍存在
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (n {id: $nid}) RETURN n",
             {"nid": str(b)},
         )
@@ -429,8 +344,8 @@ class TestDeleteNode:
 
         await store.delete_node(db_session, a)
 
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (n {id: $nid}) RETURN n",
             {"nid": str(a)},
         )
@@ -500,87 +415,6 @@ class TestNeighborsEdgeCases:
         assert str(a) in ids
 
 
-class TestFindPathEdgeCases:
-    """find_path 边界场景。"""
-
-    async def test_find_path_same_node(self, db_session, store):
-        """from_id == to_id 时返回单节点路径（长度 0）。"""
-        project_id = uuid.uuid4()
-        a = uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-
-        paths = await store.find_path(db_session, a, a, max_depth=3)
-        # AGE 对 from==to 的变长路径 [*1..N] 不返回 0 长度路径（最少 1 跳）
-        # 因此无路径返回空列表
-        assert paths == []
-
-    async def test_find_path_directed_vs_undirected(self, db_session, store):
-        """-[*1..N]-（无向）可双向遍历：a→b 后 find_path(b, a) 也能找到。"""
-        project_id = uuid.uuid4()
-        a, b = uuid.uuid4(), uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-        await store.add_node(db_session, b, "CodeSnippet", _props(b, project_id))
-        await store.add_edge(db_session, a, b, "implements", {})
-
-        # 反向查询（无向遍历）
-        paths = await store.find_path(db_session, b, a, max_depth=3)
-        assert len(paths) >= 1
-        path_ids = [v["properties"]["id"] for v in paths[0]]
-        assert str(a) in path_ids
-        assert str(b) in path_ids
-
-
-class TestSubgraphEdgeCases:
-    """subgraph 边界场景：孤立节点、edges 验证、多节点。"""
-
-    async def test_subgraph_with_isolated_nodes(self, db_session, store):
-        """孤立节点（无边）也被收集到 nodes，edges 为空。"""
-        project_id = uuid.uuid4()
-        a, b = uuid.uuid4(), uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-        await store.add_node(db_session, b, "CodeSnippet", _props(b, project_id))
-        # 不添加任何边
-
-        sub = await store.subgraph(db_session, [a, b])
-        assert len(sub["nodes"]) == 2
-        node_ids = {n["properties"]["id"] for n in sub["nodes"]}
-        assert str(a) in node_ids
-        assert str(b) in node_ids
-        # 无边
-        assert sub["edges"] == [] or len(sub["edges"]) == 0
-
-    async def test_subgraph_returns_edges(self, db_session, store):
-        """子图返回的 edges 含边类型与属性。"""
-        project_id = uuid.uuid4()
-        a, b = uuid.uuid4(), uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-        await store.add_node(db_session, b, "CodeSnippet", _props(b, project_id))
-        await store.add_edge(
-            db_session, a, b, "implements", {"reason": "需求由代码实现"}
-        )
-
-        sub = await store.subgraph(db_session, [a, b])
-        # nodes 含两个节点
-        assert len(sub["nodes"]) == 2
-        # edges 含至少 1 条边
-        assert len(sub["edges"]) >= 1
-        edge = sub["edges"][0]
-        assert edge["label"] == "implements"
-
-    async def test_subgraph_three_nodes_chain(self, db_session, store):
-        """3 节点链式子图：a→b→c，返回 3 节点 + 2 边。"""
-        project_id = uuid.uuid4()
-        a, b, c = (uuid.uuid4() for _ in range(3))
-        for nid, label in [(a, "Requirement"), (b, "CodeSnippet"), (c, "Solution")]:
-            await store.add_node(db_session, nid, label, _props(nid, project_id))
-        await store.add_edge(db_session, a, b, "implements", {})
-        await store.add_edge(db_session, b, c, "realized_by", {})
-
-        sub = await store.subgraph(db_session, [a, b, c])
-        assert len(sub["nodes"]) == 3
-        assert len(sub["edges"]) >= 2
-
-
 class TestAddEdgeEdgeCases:
     """add_edge 边界场景：自环、不存在节点、Unicode 属性。"""
 
@@ -595,8 +429,8 @@ class TestAddEdgeEdgeCases:
         )
 
         # 自环边可查
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (n {id: $nid})-[r:relates_to]->(n) RETURN r",
             {"nid": str(a)},
         )
@@ -617,8 +451,8 @@ class TestAddEdgeEdgeCases:
             db_session, from_id=a, to_id=b, edge_type="implements", properties=unicode_props
         )
 
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (a {id: $from_id})-[r:implements]->(b {id: $to_id}) RETURN r",
             {"from_id": str(a), "to_id": str(b)},
         )
@@ -659,8 +493,8 @@ class TestSyncNodeTitle:
 
         await store.sync_node_title(db_session, node_id, "新标题")
 
-        rows = await store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            store, db_session,
             "MATCH (n {id: $nid}) RETURN n",
             {"nid": str(node_id)},
         )

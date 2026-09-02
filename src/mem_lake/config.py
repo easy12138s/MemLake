@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     MCP_PUBLIC_URL: str = "http://localhost:8000/mcp"
 
     # ========== Embedding 服务 ==========
-    EMBEDDING_MODEL_PATH: str = "./models/Qwen3-Embedding-0.6B"
     EMBEDDING_DIMENSION: int = 1024
     EMBEDDING_DEVICE: str = "cpu"
     EMBEDDING_HOST: str = "localhost"

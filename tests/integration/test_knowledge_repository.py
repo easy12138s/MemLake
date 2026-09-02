@@ -4,26 +4,28 @@
 1. create_node：mock embedding + real embedding + 无向量模式 + 校验失败
 2. get_node：正常/不存在/软删除/include_deleted
 3. update_node：title/content/properties 变更 + 版本递增 + 向量重生成 + 无变更幂等
-4. archive_node：归档/幂等/delete_from_graph/不存在
-5. add_edge：创建/properties 注入/非法类型
-6. list_nodes_by_project：过滤/分页/排除软删除
-7. 事务性共写：节点+边+审计在同一事务，部分失败整体回滚
+4. add_edge：创建/properties 注入/非法类型
+5. list_nodes_by_project：过滤/分页/排除软删除
+6. 事务性共写：节点+边+审计在同一事务，部分失败整体回滚
 
 事务回滚隔离，db_session fixture 结束 rollback，不影响其他测试。
+
+注：archive_node / regenerate_vector 独立函数已从生产代码删除（代码瘦身 D2/D3），
+其专属用例一并移除；归档态数据改由 conftest.mark_node_archived 夹具直接 ORM 写入，
+图状态断言改用 conftest.match_pattern 测试专用 helper。
 """
 
 import uuid
 
 import pytest
 
+from conftest import mark_node_archived, match_pattern
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     add_edge,
-    archive_node,
     create_node,
     get_node,
     list_nodes_by_project,
-    regenerate_vector,
     update_node,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -84,8 +86,8 @@ class TestCreateNode:
         assert facet_count == 4
 
         # 3. AGE 图节点存在
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (n:Requirement {id: $nid}) RETURN n",
             {"nid": str(node.id)},
         )
@@ -118,8 +120,8 @@ class TestCreateNode:
         )
         assert node.content_vector is None
         # 图节点仍写入
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (n:Decision {id: $nid}) RETURN n",
             {"nid": str(node.id)},
         )
@@ -283,12 +285,7 @@ class TestGetNode:
             created_by="ak",
             system_id=uuid.uuid4(),
         )
-        await archive_node(
-            db_session,
-            graph_store=graph_store,
-            node_id=node.id,
-            actor="ak",
-        )
+        await mark_node_archived(db_session, node.id)
 
         with pytest.raises(NodeNotFoundError):
             await get_node(db_session, node.id)
@@ -310,12 +307,7 @@ class TestGetNode:
             created_by="ak",
             system_id=uuid.uuid4(),
         )
-        await archive_node(
-            db_session,
-            graph_store=graph_store,
-            node_id=node.id,
-            actor="ak",
-        )
+        await mark_node_archived(db_session, node.id)
 
         fetched = await get_node(db_session, node.id, include_deleted=True)
         assert fetched.id == node.id
@@ -549,114 +541,6 @@ class TestUpdateNode:
         assert updated.content_vector == original_vector
 
 
-# ============ archive_node ============
-
-class TestArchiveNode:
-    """archive_node 归档测试。"""
-
-    async def test_archive_sets_status_and_deleted_flag(
-        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
-    ):
-        """归档后 is_deleted=True + status=archived + 审计日志。"""
-        project_id = uuid.uuid4()
-        node = await create_node(
-            db_session,
-            graph_store=graph_store,
-            embedding_client=mock_embedding_client,
-            project_id=project_id,
-            node_type="Requirement",
-            title="R",
-            content="C",
-            properties=knowledge_helpers["Requirement"](),
-            created_by="ak",
-            system_id=uuid.uuid4(),
-        )
-
-        archived = await archive_node(
-            db_session,
-            graph_store=graph_store,
-            node_id=node.id,
-            actor="ak_admin",
-        )
-        assert archived.is_deleted is True
-        assert archived.status == "archived"
-
-        # 验证审计日志
-        from mem_lake.audit.service import query_audit_logs
-
-        logs = await query_audit_logs(db_session, actor="ak_admin", action="archive")
-        assert len(logs) >= 1
-        assert logs[0].target_id == node.id
-
-    async def test_archive_idempotent(
-        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
-    ):
-        """重复归档幂等，不抛异常，不重复写审计日志。"""
-        project_id = uuid.uuid4()
-        node = await create_node(
-            db_session,
-            graph_store=graph_store,
-            embedding_client=mock_embedding_client,
-            project_id=project_id,
-            node_type="Requirement",
-            title="R",
-            content="C",
-            properties=knowledge_helpers["Requirement"](),
-            created_by="ak",
-            system_id=uuid.uuid4(),
-        )
-
-        await archive_node(
-            db_session, graph_store=graph_store, node_id=node.id, actor="ak"
-        )
-        # 第二次归档
-        archived = await archive_node(
-            db_session, graph_store=graph_store, node_id=node.id, actor="ak"
-        )
-        assert archived.status == "archived"
-
-    async def test_archive_with_delete_from_graph(
-        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
-    ):
-        """delete_from_graph=True 时同步删除 AGE 图节点。"""
-        project_id = uuid.uuid4()
-        node = await create_node(
-            db_session,
-            graph_store=graph_store,
-            embedding_client=mock_embedding_client,
-            project_id=project_id,
-            node_type="Requirement",
-            title="R",
-            content="C",
-            properties=knowledge_helpers["Requirement"](),
-            created_by="ak",
-            system_id=uuid.uuid4(),
-        )
-
-        await archive_node(
-            db_session,
-            graph_store=graph_store,
-            node_id=node.id,
-            actor="ak",
-            delete_from_graph=True,
-        )
-
-        # AGE 图节点应被删除
-        rows = await graph_store.match_pattern(
-            db_session,
-            "MATCH (n {id: $nid}) RETURN n",
-            {"nid": str(node.id)},
-        )
-        assert len(rows) == 0
-
-    async def test_archive_nonexistent_node_raises(self, db_session, graph_store):
-        """归档不存在的节点抛 NodeNotFoundError。"""
-        with pytest.raises(NodeNotFoundError):
-            await archive_node(
-                db_session, graph_store=graph_store, node_id=uuid.uuid4(), actor="ak"
-            )
-
-
 # ============ add_edge ============
 
 class TestAddEdge:
@@ -702,8 +586,8 @@ class TestAddEdge:
         )
 
         # AGE 图边可查
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (a {id: $from_id})-[r:implements]->(b {id: $to_id}) RETURN r",
             {"from_id": str(req.id), "to_id": str(code.id)},
         )
@@ -755,8 +639,8 @@ class TestAddEdge:
             actor="ak_pm",
         )
 
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH ()-[r:relates_to]->() RETURN r",
             {},
         )
@@ -875,7 +759,7 @@ class TestListNodesByProject:
             project_id=pid, node_type="Requirement", title="R", content="C",
             properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
-        await archive_node(db_session, graph_store=graph_store, node_id=node.id, actor="ak")
+        await mark_node_archived(db_session, node.id)
 
         # 默认查询不返回 archived
         nodes = await list_nodes_by_project(db_session, project_id=pid)
@@ -1000,56 +884,6 @@ class TestTransactionalCoweite:
         # 这验证了 repository 不主动 commit，事务边界由调用方控制
 
 
-# ============ regenerate_vector ============
-
-class TestRegenerateVector:
-    """regenerate_vector 独立调用入口测试。"""
-
-    async def test_regenerate_vector_with_mock(
-        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
-    ):
-        """手动重生成向量：向量字段更新 + 审计日志。"""
-        project_id = uuid.uuid4()
-        # 创建时不生成向量
-        node = await create_node(
-            db_session,
-            graph_store=graph_store,
-            embedding_client=None,
-            project_id=project_id,
-            node_type="Requirement",
-            title="R",
-            content="C",
-            properties=knowledge_helpers["Requirement"](),
-            created_by="ak",
-            generate_vector=False,
-            system_id=uuid.uuid4(),
-        )
-        assert node.content_vector is None
-
-        # 手动重生成
-        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.5] * 1024
-        updated = await regenerate_vector(
-            db_session,
-            embedding_client=mock_embedding_client,
-            node_id=node.id,
-            actor="ak",
-        )
-        assert updated.content_vector is not None
-        assert updated.content_vector[0] == 0.5
-
-    async def test_regenerate_vector_nonexistent_raises(
-        self, db_session, mock_embedding_client
-    ):
-        """不存在的节点重生成向量抛 NodeNotFoundError。"""
-        with pytest.raises(NodeNotFoundError):
-            await regenerate_vector(
-                db_session,
-                embedding_client=mock_embedding_client,
-                node_id=uuid.uuid4(),
-                actor="ak",
-            )
-
-
 # ============ 边界场景补充 ============
 
 class TestUpdateNodeEdgeCases:
@@ -1110,9 +944,7 @@ class TestUpdateNodeEdgeCases:
             created_by="ak",
             system_id=uuid.uuid4(),
         )
-        await archive_node(
-            db_session, graph_store=graph_store, node_id=node.id, actor="ak"
-        )
+        await mark_node_archived(db_session, node.id)
 
         with pytest.raises(NodeNotFoundError):
             await update_node(
@@ -1239,8 +1071,8 @@ class TestAddEdgeEdgeCases:
         )
 
         # 边可查
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (a {id: $from_id})-[r:realized_by]->(b {id: $to_id}) RETURN r",
             {"from_id": str(code.id), "to_id": str(solution.id)},
         )
@@ -1276,8 +1108,8 @@ class TestAddEdgeEdgeCases:
             actor="ak",
         )
 
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (n {id: $nid})-[r:relates_to]->(n) RETURN r",
             {"nid": str(node.id)},
         )
@@ -1308,8 +1140,8 @@ class TestListNodesEdgeCases:
             project_id=pid, node_type="Requirement", title="R3", content="C",
             properties=knowledge_helpers["Requirement"](), created_by="ak", system_id=uuid.uuid4(),
         )
-        await archive_node(db_session, graph_store=graph_store, node_id=n2.id, actor="ak")
-        await archive_node(db_session, graph_store=graph_store, node_id=n3.id, actor="ak")
+        await mark_node_archived(db_session, n2.id)
+        await mark_node_archived(db_session, n3.id)
 
         # status="archived" 仅返回 2 个归档节点
         archived = await list_nodes_by_project(db_session, project_id=pid, status="archived")
@@ -1518,8 +1350,8 @@ class TestTransactionalIntegrity:
         )
 
         # 两条边都存在
-        rows = await graph_store.match_pattern(
-            db_session,
+        rows = await match_pattern(
+            graph_store, db_session,
             "MATCH (a {id: $from_id})-[r]->(b {id: $to_id}) RETURN r",
             {"from_id": str(req.id), "to_id": str(code.id)},
         )

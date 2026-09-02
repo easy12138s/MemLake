@@ -1,7 +1,7 @@
-"""图遍历检索：AGE Cypher 多跳遍历、子图提取、路径查询、影响范围分析。
+"""图遍历检索：AGE Cypher 多跳遍历、需求上下文遍历、影响范围分析。
 
 对齐 PDD 3.3 图引擎：负责"需求 R1 实现涉及哪些代码、设计意图"等关系遍历场景。
-AGE 图遍历原语（neighbors/find_path/subgraph）在 M3 已实现并验证，M4 封装为检索接口。
+AGE 图遍历原语（neighbors）在 M3 已实现并验证，M4 封装为检索接口。
 
 图遍历作为独立检索路径（PDD 3.3）：
 - 不参与 RRF 融合（向量/全文融合基于文本相似度，图遍历基于关系结构，二者维度不同）
@@ -15,6 +15,7 @@ AGE 图遍历原语（neighbors/find_path/subgraph）在 M3 已实现并验证�
 """
 
 import uuid
+from typing import Any, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,12 +26,35 @@ from mem_lake.search.filters import FilterSpec, compile_sqlalchemy
 from mem_lake.search.fusion import SearchResult, _truncate
 
 
+def _extract_node_id(agtype_dict: Any) -> uuid.UUID | None:
+    """从单个 agtype 节点 dict 提取节点 UUID；缺失/非法 id 返回 None（跳过）。"""
+    if not isinstance(agtype_dict, dict):
+        return None
+    nid_str = (agtype_dict.get("properties") or {}).get("id")
+    if not nid_str:
+        return None
+    try:
+        return uuid.UUID(str(nid_str))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _extract_node_ids(agtype_dicts: Iterable[Any]) -> list[uuid.UUID]:
+    """从 agtype 节点 dict 列表批量提取 UUID（跳过非法项）。"""
+    ids: list[uuid.UUID] = []
+    for d in agtype_dicts:
+        nid = _extract_node_id(d)
+        if nid is not None:
+            ids.append(nid)
+    return ids
+
+
 class GraphSearcher:
     """图遍历检索器。
 
     构造接收 GraphStore 实现（AGEGraphStore）。
     traverse 方法基于 neighbors 多跳遍历，返回 SearchResult 列表（score=None，无相似度概念）。
-    subgraph/find_path/impact_analysis 提供更丰富的图查询接口。
+    context_traverse/impact_analysis 提供更丰富的图查询接口。
     """
 
     def __init__(self, graph_store: GraphStore) -> None:
@@ -70,16 +94,7 @@ class GraphSearcher:
             return []
 
         # 2. 提取邻居节点 ID（agtype dict 结构：{"properties": {"id": "uuid-str"}, ...}）
-        neighbor_ids: list[uuid.UUID] = []
-        for nd in neighbor_dicts:
-            if isinstance(nd, dict):
-                props = nd.get("properties") or {}
-                nid_str = props.get("id")
-                if nid_str:
-                    try:
-                        neighbor_ids.append(uuid.UUID(str(nid_str)))
-                    except (ValueError, AttributeError):
-                        continue  # 跳过非法 ID
+        neighbor_ids = _extract_node_ids(neighbor_dicts)
 
         if not neighbor_ids:
             return []
@@ -134,13 +149,8 @@ class GraphSearcher:
         id_to_ctx: dict[uuid.UUID, dict] = {}
         neighbor_ids: list[uuid.UUID] = []
         for nc in neighbor_ctxs:
-            props = (nc.get("node") or {}).get("properties", {}) or {}
-            nid_str = props.get("id")
-            if not nid_str:
-                continue
-            try:
-                nid = uuid.UUID(str(nid_str))
-            except (ValueError, AttributeError):
+            nid = _extract_node_id(nc.get("node"))
+            if nid is None:
                 continue
             if nid not in id_to_ctx:
                 id_to_ctx[nid] = {
@@ -176,32 +186,6 @@ class GraphSearcher:
                 )
             )
         return search_results
-
-    async def subgraph(
-        self,
-        session: AsyncSession,
-        node_ids: list[uuid.UUID],
-    ) -> dict:
-        """子图提取。
-
-        调用 GraphStore.subgraph 返回 {"nodes": [...], "edges": [...]} 结构（M3 已实现）。
-        直接透传，不在 PG 表补充内容（调用方按需调 get_node 获取完整内容）。
-        """
-        return await self._graph_store.subgraph(session, node_ids)
-
-    async def find_path(
-        self,
-        session: AsyncSession,
-        from_id: uuid.UUID,
-        to_id: uuid.UUID,
-        max_depth: int = 5,
-    ) -> list[list[dict]]:
-        """路径查询。
-
-        调用 GraphStore.find_path 返回路径列表（M3 已实现）。
-        每条路径为节点 dict 列表，无路径返回空列表。
-        """
-        return await self._graph_store.find_path(session, from_id, to_id, max_depth)
 
     async def impact_analysis(
         self,
@@ -274,15 +258,8 @@ class GraphSearcher:
         seen_sol_ids: set[str] = set()
 
         for code_dict in code_dicts:
-            if not isinstance(code_dict, dict):
-                continue
-            code_props = code_dict.get("properties") or {}
-            code_id_str = code_props.get("id")
-            if not code_id_str:
-                continue
-            try:
-                code_id = uuid.UUID(str(code_id_str))
-            except (ValueError, AttributeError):
+            code_id = _extract_node_id(code_dict)
+            if code_id is None:
                 continue
 
             # 3a. 依赖链遍历（depth=max_depth）
@@ -308,20 +285,8 @@ class GraphSearcher:
                         all_solutions.append(sol)
 
         # 4. PG 过滤 codes/dependencies/solutions（archived 图投影保留但按状态过滤）
-        def _extract_ids(dicts: list[dict]) -> list[uuid.UUID]:
-            ids: list[uuid.UUID] = []
-            for nd in dicts:
-                if isinstance(nd, dict):
-                    nid_str = (nd.get("properties") or {}).get("id")
-                    if nid_str:
-                        try:
-                            ids.append(uuid.UUID(str(nid_str)))
-                        except (ValueError, AttributeError):
-                            continue
-            return ids
-
         approved_ids = await self._query_approved_ids(
-            session, _extract_ids([*code_dicts, *all_dependencies, *all_solutions])
+            session, _extract_node_ids([*code_dicts, *all_dependencies, *all_solutions])
         )
 
         def _filter_approved(dicts: list[dict]) -> list[dict]:
@@ -341,12 +306,8 @@ class GraphSearcher:
         all_intents: list[dict] = []
         seen_intent_ids: set[str] = set()
         for sol in solutions:
-            sol_id = (sol.get("properties") or {}).get("id")
-            if not sol_id:
-                continue
-            try:
-                sol_uuid = uuid.UUID(str(sol_id))
-            except (ValueError, AttributeError):
+            sol_uuid = _extract_node_id(sol)
+            if sol_uuid is None:
                 continue
             intent_dicts = await self._graph_store.neighbors(
                 session, sol_uuid, edge_type="embodies", depth=1
@@ -359,7 +320,7 @@ class GraphSearcher:
                         all_intents.append(intent)
 
         intent_approved_ids = await self._query_approved_ids(
-            session, _extract_ids(all_intents)
+            session, _extract_node_ids(all_intents)
         )
         design_intents = [
             d
