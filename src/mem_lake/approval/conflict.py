@@ -164,6 +164,7 @@ async def detect_conflicts(
     exact_conflicts = await _detect_exact_key_conflicts(
         session,
         project_id=project_id,
+        system_id=system_id,
         node_type=node_type,
         properties=properties,
         exclude_node_id=exclude_node_id,
@@ -188,15 +189,21 @@ async def detect_conflicts(
 async def _detect_exact_key_conflicts(
     session: AsyncSession,
     *,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    system_id: uuid.UUID | None = None,
     node_type: str,
     properties: dict,
     exclude_node_id: uuid.UUID | None = None,
 ) -> list[dict]:
-    """L0 硬判定：同项目同类型下关键标识字段完全相同即判冲突（不依赖向量相似度）。
+    """L0 硬判定：候选域内同类型下关键标识字段完全相同即判冲突（不依赖向量相似度）。
 
     捕获三层检测只在向量相似度 ≥ 阈值时才比对关键属性时，
     「关键标识相同但内容/标题差异大」的重复节点漏检。
+
+    候选域口径与 L1 向量召回（FilterSpec/compile_sqlalchemy）一致：
+    project_id/system_id 非 None 时各自过滤，None 时不过滤该维度。
+    悬浮需求（project_id=None）按 system_id 收口候选域，
+    与同 system 下已入项目节点之间的硬冲突同样会被检出。
     """
     key_fields = KEY_IDENTITY_FIELDS.get(node_type, [])
     if not key_fields:
@@ -207,11 +214,14 @@ async def _detect_exact_key_conflicts(
         return []
 
     conditions = [
-        KnowledgeNode.project_id == project_id,
         KnowledgeNode.type == node_type,
         KnowledgeNode.status == "approved",
         KnowledgeNode.is_deleted.is_(False),
     ]
+    if project_id is not None:
+        conditions.append(KnowledgeNode.project_id == project_id)
+    if system_id is not None:
+        conditions.append(KnowledgeNode.system_id == system_id)
     for field in key_fields:
         conditions.append(KnowledgeNode.properties[field].astext == str(properties[field]))
 

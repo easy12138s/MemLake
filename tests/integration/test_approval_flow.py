@@ -1781,6 +1781,76 @@ class TestExactKeyConflict:
 
         assert result["has_conflict"] is False
 
+    async def test_floating_l0_detects_project_node_same_system(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """L0 候选域与 L1（FilterSpec）对齐：悬浮节点（project_id=None）按 system_id 收口，
+        与同 system 下已入项目节点关键标识完全相同 → 硬冲突检出。
+
+        原缺口：L0 仅按 project_id 过滤（悬浮节点只在悬浮域内匹配），
+        悬浮提交与已入项目节点的关键标识硬冲突被漏检。
+        """
+        from mem_lake.approval.conflict import detect_conflicts
+        from mem_lake.knowledge.repository import create_node
+        from mem_lake.search.vector import VectorSearcher
+
+        system_id = uuid.uuid4()
+        code_props = knowledge_helpers["CodeSnippet"]()
+
+        # 已入项目的 approved 节点（project 附加，同 system）
+        await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=uuid.uuid4(),
+            node_type="CodeSnippet",
+            title="LoginService 实现",
+            content="登录鉴权实现，内容与悬浮提交差异很大，确保 L3 不触发",
+            properties=code_props,
+            system_id=system_id,
+            created_by="ak_dev",
+        )
+
+        # 悬浮提交：向量召回置空（L1/L3 无候选），仅靠 L0 硬判定
+        vector_searcher = VectorSearcher(mock_embedding_client)
+        vector_searcher.search = AsyncMock(return_value=[])
+
+        result = await detect_conflicts(
+            db_session,
+            vector_searcher=vector_searcher,
+            project_id=None,
+            system_id=system_id,
+            node_type="CodeSnippet",
+            title="LoginService（悬浮提交）",
+            content="与已有实现完全不同的表述，确保 L3 不触发",
+            properties=code_props,
+            tags=[],
+        )
+
+        assert result["has_conflict"] is True
+        assert len(result["conflicting_nodes"]) == 1
+        conflict = result["conflicting_nodes"][0]
+        assert conflict["conflict_type"] == "duplicate"
+        assert conflict["similarity"] is None  # L0 命中，非向量相似
+        assert conflict["matched_key_attrs"] == {
+            "name": "LoginService",
+            "file_path": "src/auth/login.py",
+        }
+
+        # 跨 system 不在候选域内 → 无冲突
+        result_cross = await detect_conflicts(
+            db_session,
+            vector_searcher=vector_searcher,
+            project_id=None,
+            system_id=uuid.uuid4(),
+            node_type="CodeSnippet",
+            title="LoginService（悬浮提交）",
+            content="与已有实现完全不同的表述，确保 L3 不触发",
+            properties=code_props,
+            tags=[],
+        )
+        assert result_cross["has_conflict"] is False
+
     async def test_unknown_field_rejected_by_schema(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
