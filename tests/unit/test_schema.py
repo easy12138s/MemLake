@@ -4,23 +4,23 @@
 - 各节点类型的合法 properties 通过校验
 - 非法节点类型抛 SchemaValidationError
 - 缺失必填字段抛 SchemaValidationError
+- 封闭契约：白名单外未知字段拒绝、白名单内可选字段通过
 - 边类型校验（合法/非法）
 - properties 非 dict 类型
 - 空字典、空字符串边界
-- 额外字段（非必填）允许
 - 校验不修改输入
 """
 
 import pytest
 
 from mem_lake.knowledge.schema import (
+    ALLOWED_FIELDS,
     EDGE_TYPES,
     NODE_TYPES,
     SchemaValidationError,
     validate_edge_type,
     validate_node,
 )
-
 
 # ============ 节点类型校验 ============
 
@@ -32,15 +32,25 @@ class TestValidateNode:
         [
             (
                 "ProjectProfile",
-                {"name": "Mem Lake", "description": "记忆基础设施"},
+                {
+                    "name": "Mem Lake",
+                    "description": "记忆基础设施",
+                    "tech_stack": ["Python", "PostgreSQL"],
+                    "architecture": "MCP 网关 + 单实例 PostgreSQL",
+                },
             ),
             (
                 "Requirement",
-                {"requirement_id": "REQ-001", "priority": "P0", "module": "auth"},
+                {"priority": "P0", "module": "auth"},
             ),
             (
                 "CodeSnippet",
-                {"name": "LoginService", "type": "class", "responsibility": "登录"},
+                {
+                    "name": "LoginService",
+                    "type": "class",
+                    "responsibility": "登录",
+                    "file_path": "src/auth/login.py",
+                },
             ),
             (
                 "Solution",
@@ -48,7 +58,7 @@ class TestValidateNode:
             ),
             (
                 "DesignIntent",
-                {"rationale": "无状态易扩展"},
+                {"rationale": "无状态易扩展", "trade_offs": "牺牲会话存储换扩展性"},
             ),
             (
                 "Decision",
@@ -84,14 +94,18 @@ class TestValidateNode:
         [
             ("ProjectProfile", "name"),
             ("ProjectProfile", "description"),
+            ("ProjectProfile", "tech_stack"),
+            ("ProjectProfile", "architecture"),
             ("Requirement", "priority"),
             ("Requirement", "module"),
             ("CodeSnippet", "name"),
             ("CodeSnippet", "type"),
             ("CodeSnippet", "responsibility"),
+            ("CodeSnippet", "file_path"),
             ("Solution", "approach"),
             ("Solution", "version"),
             ("DesignIntent", "rationale"),
+            ("DesignIntent", "trade_offs"),
             ("Decision", "decision_id"),
             ("Decision", "decision"),
             ("Pitfall", "symptom"),
@@ -153,24 +167,19 @@ class TestValidateNode:
         with pytest.raises(SchemaValidationError, match="缺失必填字段"):
             validate_node("Requirement", {})
 
-    def test_extra_fields_allowed(self):
-        """properties 含非必填的额外字段，校验通过。"""
-        props = {
-            "name": "Mem Lake",
-            "description": "记忆基础设施",
-            "tech_stack": ["Python"],
-            "team": {"pm": ["zhang"]},
-        }
-        validate_node("ProjectProfile", props)
-
     def test_input_not_mutated(self):
         """校验不修改输入 properties。"""
-        props = {"name": "Mem Lake", "description": "x"}
+        props = {
+            "name": "Mem Lake",
+            "description": "x",
+            "tech_stack": ["Python"],
+            "architecture": "单体",
+        }
         original = dict(props)
         validate_node("ProjectProfile", props)
         assert props == original
 
-    def test_all_node_types_in_NODE_TYPES(self):
+    def test_all_node_types_in_node_types(self):
         """NODE_TYPES 包含 PDD 定义的 7 种节点类型。"""
         expected = {
             "ProjectProfile",
@@ -185,11 +194,15 @@ class TestValidateNode:
 
     @staticmethod
     def _full_props(node_type: str) -> dict:
-        """返回指定类型的完整合法 properties。"""
+        """返回指定类型的完整合法 properties（必填字段齐备）。"""
         full = {
-            "ProjectProfile": {"name": "x", "description": "y"},
+            "ProjectProfile": {
+                "name": "x",
+                "description": "y",
+                "tech_stack": ["Python"],
+                "architecture": "单体",
+            },
             "Requirement": {
-                "requirement_id": "REQ-001",
                 "priority": "P0",
                 "module": "auth",
             },
@@ -197,13 +210,78 @@ class TestValidateNode:
                 "name": "S",
                 "type": "class",
                 "responsibility": "r",
+                "file_path": "src/s.py",
             },
             "Solution": {"approach": "a", "version": "1"},
-            "DesignIntent": {"rationale": "r"},
+            "DesignIntent": {"rationale": "r", "trade_offs": "t"},
             "Decision": {"decision_id": "D1", "decision": "d"},
             "Pitfall": {"symptom": "s", "root_cause": "rc", "solution": "sol"},
         }
         return dict(full[node_type])
+
+
+# ============ 封闭契约（未知字段拒绝 + 白名单内可选字段通过） ============
+
+# 各类型白名单内的全部可选字段（与 schema.py xxx_OPTIONAL 对齐）
+_ALL_OPTIONAL_FIELDS: dict[str, set[str]] = {
+    "ProjectProfile": {"conventions", "team", "work_dir", "repo"},
+    "Requirement": {"acceptance_criteria", "source_doc", "version", "external_id"},
+    "CodeSnippet": {"signature", "snippet", "language"},
+    "Solution": {"alternatives"},
+    "DesignIntent": {"references"},
+    "Decision": set(),
+    "Pitfall": {"severity"},
+}
+
+
+class TestClosedContract:
+    """封闭契约：必填 ∪ 可选白名单之外的未知字段一律拒绝。"""
+
+    @pytest.mark.parametrize("node_type", sorted(NODE_TYPES))
+    def test_unknown_field_rejected(self, node_type):
+        """各类型含白名单外未知字段抛错，错误信息含未知字段名与合法字段列表。"""
+        props = TestValidateNode._full_props(node_type)
+        props["unknown_field"] = "x"
+        with pytest.raises(SchemaValidationError) as exc_info:
+            validate_node(node_type, props)
+        msg = str(exc_info.value)
+        assert "未知字段" in msg
+        assert "unknown_field" in msg
+        # 错误信息列出该类型全部合法字段
+        for field in ALLOWED_FIELDS[node_type]:
+            assert field in msg
+
+    def test_deprecated_requirement_id_rejected(self):
+        """已废弃的 requirement_id 属未知字段，显式拒绝。"""
+        with pytest.raises(SchemaValidationError, match="requirement_id"):
+            validate_node(
+                "Requirement",
+                {"priority": "P0", "module": "auth", "requirement_id": "REQ-001"},
+            )
+
+    @pytest.mark.parametrize("node_type", sorted(NODE_TYPES))
+    def test_all_optional_fields_pass(self, node_type):
+        """白名单内全部可选字段（有值）与必填字段齐备时通过。"""
+        props = TestValidateNode._full_props(node_type)
+        for field in _ALL_OPTIONAL_FIELDS[node_type]:
+            # severity 有枚举校验，取合法值
+            props[field] = "P1" if field == "severity" else "v"
+        validate_node(node_type, props)  # 不抛即通过
+
+    @pytest.mark.parametrize("node_type", sorted(NODE_TYPES))
+    def test_allowed_fields_consistent(self, node_type):
+        """ALLOWED_FIELDS = 必填 ∪ 可选（与测试侧声明一致）。"""
+        optional = _ALL_OPTIONAL_FIELDS[node_type]
+        required = {
+            "ProjectProfile": {"name", "description", "tech_stack", "architecture"},
+            "Requirement": {"priority", "module"},
+            "CodeSnippet": {"name", "type", "responsibility", "file_path"},
+            "Solution": {"approach", "version"},
+            "DesignIntent": {"rationale", "trade_offs"},
+            "Decision": {"decision_id", "decision"},
+            "Pitfall": {"symptom", "root_cause", "solution"},
+        }[node_type]
+        assert ALLOWED_FIELDS[node_type] == required | optional
 
 
 # ============ 边类型校验 ============
@@ -241,7 +319,7 @@ class TestValidateEdgeType:
         with pytest.raises(SchemaValidationError, match="非法边类型"):
             validate_edge_type(invalid_type)
 
-    def test_all_edge_types_in_EDGE_TYPES(self):
+    def test_all_edge_types_in_edge_types(self):
         """EDGE_TYPES 包含 PDD 定义的 12 种边类型。"""
         assert len(EDGE_TYPES) == 12
         assert "implements" in EDGE_TYPES

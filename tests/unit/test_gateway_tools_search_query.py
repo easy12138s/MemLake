@@ -28,7 +28,6 @@ from mem_lake.gateway.tools.search_tools import (
     ConflictCheckOutput,
     HybridSearchOutput,
     ImpactScopeOutput,
-    KnowledgeNodeOutput,
     ListKnowledgeOutput,
     SearchItemOutput,
     _to_knowledge_node_output,
@@ -36,7 +35,6 @@ from mem_lake.gateway.tools.search_tools import (
 )
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.fusion import SearchResult
-
 
 # ============================================================================
 # _to_search_item_output 转换测试

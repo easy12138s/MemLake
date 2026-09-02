@@ -152,7 +152,7 @@ class TestBuildNodeItem:
             node_type="Requirement",
             title="测试需求",
             content="测试内容",
-            properties={"requirement_id": "REQ-001", "priority": "P0"},
+            properties={"priority": "P0", "module": "auth"},
             tags=["auth"],
             project_id=project_id,
             system_id=system_id,
@@ -163,7 +163,7 @@ class TestBuildNodeItem:
         assert item["entity_type"] == "Requirement"
         assert item["payload"]["ref"] == "requirement"
         assert item["payload"]["title"] == "测试需求"
-        assert item["payload"]["properties"]["requirement_id"] == "REQ-001"
+        assert item["payload"]["properties"]["priority"] == "P0"
         assert item["payload"]["tags"] == ["auth"]
         assert item["payload"]["project_id"] == str(project_id)
         assert item["payload"]["system_id"] == str(system_id)

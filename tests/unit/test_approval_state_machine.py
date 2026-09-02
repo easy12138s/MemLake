@@ -258,7 +258,6 @@ class TestValidateItemPayload:
             "system_id": str(uuid.uuid4()),
             "created_by": "ak",
             "properties": {
-                "requirement_id": "REQ-001",
                 "priority": "P0",
                 "module": "auth",
             },
@@ -329,23 +328,39 @@ class TestValidateItemPayload:
             "action": "create",
             "entity_type": "Requirement",
             "payload": self._valid_create_payload(
-                properties={"requirement_id": "REQ-001"},  # 缺 priority/module
+                properties={"module": "auth"},  # 缺 priority
             ),
         }
         with pytest.raises(PayloadValidationError) as exc_info:
             _validate_item_payload(item, 0)
         # 错误消息含缺失字段（透传 SchemaValidationError 信息）
-        assert "priority" in str(exc_info.value) or "module" in str(exc_info.value)
+        assert "priority" in str(exc_info.value)
+
+    def test_node_create_unknown_field_rejected(self):
+        """node+create 的 properties 含白名单外未知字段（含已废弃 requirement_id）抛错。"""
+        item = {
+            "item_type": "node",
+            "action": "create",
+            "entity_type": "Requirement",
+            "payload": self._valid_create_payload(
+                properties={"requirement_id": "REQ-001", "priority": "P0", "module": "auth"},
+            ),
+        }
+        with pytest.raises(PayloadValidationError) as exc_info:
+            _validate_item_payload(item, 0)
+        # 错误消息含未知字段与该类型合法字段列表（透传 SchemaValidationError 信息）
+        assert "未知字段" in str(exc_info.value)
+        assert "requirement_id" in str(exc_info.value)
 
     def test_edge_create_valid_payload(self):
-        """edge+create 含合法 edge_type 与 from_id/to_id 通过校验。"""
+        """edge+create 含合法 edge_type 与 from_ref/to_ref 通过校验。"""
         item = {
             "item_type": "edge",
             "action": "create",
             "entity_type": "implements",
             "payload": {
-                "from_id": str(uuid.uuid4()),
-                "to_id": str(uuid.uuid4()),
+                "from_ref": str(uuid.uuid4()),
+                "to_ref": str(uuid.uuid4()),
             },
         }
         _validate_item_payload(item, 0)  # 不抛即通过
@@ -356,31 +371,45 @@ class TestValidateItemPayload:
             "item_type": "edge",
             "action": "create",
             "entity_type": "invalid_edge",
-            "payload": {"from_id": "x", "to_id": "y"},
+            "payload": {"from_ref": "x", "to_ref": "y"},
         }
         with pytest.raises(PayloadValidationError, match="edge\\+create 校验失败"):
             _validate_item_payload(item, 0)
 
-    def test_edge_create_missing_from_id(self):
-        """edge+create 缺 from_ref/from_id 抛 PayloadValidationError。"""
+    def test_edge_create_missing_from_ref(self):
+        """edge+create 缺 from_ref 抛 PayloadValidationError。"""
         item = {
             "item_type": "edge",
             "action": "create",
             "entity_type": "implements",
-            "payload": {"to_id": str(uuid.uuid4())},
+            "payload": {"to_ref": str(uuid.uuid4())},
         }
         with pytest.raises(PayloadValidationError, match="缺 from_ref"):
             _validate_item_payload(item, 0)
 
-    def test_edge_create_missing_to_id(self):
-        """edge+create 缺 to_ref/to_id 抛 PayloadValidationError。"""
+    def test_edge_create_missing_to_ref(self):
+        """edge+create 缺 to_ref 抛 PayloadValidationError。"""
         item = {
             "item_type": "edge",
             "action": "create",
             "entity_type": "implements",
-            "payload": {"from_id": str(uuid.uuid4())},
+            "payload": {"from_ref": str(uuid.uuid4())},
         }
         with pytest.raises(PayloadValidationError, match="缺 from_ref"):
+            _validate_item_payload(item, 0)
+
+    def test_edge_create_legacy_from_id_rejected(self):
+        """edge+create 仅带旧字段 from_id/to_id（缺 from_ref/to_ref）提交时被拒。"""
+        item = {
+            "item_type": "edge",
+            "action": "create",
+            "entity_type": "implements",
+            "payload": {
+                "from_id": str(uuid.uuid4()),
+                "to_id": str(uuid.uuid4()),
+            },
+        }
+        with pytest.raises(PayloadValidationError, match="缺 from_ref/to_ref"):
             _validate_item_payload(item, 0)
 
     def test_edge_create_missing_both_ids(self):

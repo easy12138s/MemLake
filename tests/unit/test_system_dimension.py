@@ -19,7 +19,7 @@ def _req_input(**kw) -> RequirementInput:
     base = dict(
         title="悬浮需求",
         content="先于实现，跨项目落地",
-        properties={"requirement_id": "REQ-SYS-001", "priority": "P0", "module": "sys"},
+        properties={"priority": "P0", "module": "sys"},
         tags=[],
     )
     base.update(kw)
@@ -30,7 +30,7 @@ def test_build_publish_items_floating():
     """project_id=None（悬浮）时 node item 带 system_id、project_id 为空。"""
     system_id = uuid.uuid4()
     items = _build_publish_items(
-        None, _req_input(properties={"requirement_id": "REQ","priority":"P0","module":"m"}), None, "ak", system_id
+        None, _req_input(properties={"priority": "P0", "module": "m"}), None, "ak", system_id
     )
     assert len(items) == 1
     payload = items[0]["payload"]
@@ -45,7 +45,7 @@ def test_build_publish_items_with_project_and_system():
     project_id = uuid.uuid4()
     system_id = uuid.uuid4()
     items = _build_publish_items(
-        project_id, _req_input(properties={"requirement_id": "REQ","priority":"P0","module":"m"}), None, "ak", system_id
+        project_id, _req_input(properties={"priority": "P0", "module": "m"}), None, "ak", system_id
     )
     payload = items[0]["payload"]
     assert payload["project_id"] == str(project_id)
@@ -57,7 +57,7 @@ def test_build_publish_items_related_with_system():
     system_id = uuid.uuid4()
     related = RelatedInput(relates_to=["REQ-OLD"])
     items = _build_publish_items(
-        None, _req_input(properties={"requirement_id":"REQ","priority":"P0","module":"m"}), related, "ak", system_id
+        None, _req_input(properties={"priority": "P0", "module": "m"}), related, "ak", system_id
     )
     assert len(items) == 2
     assert items[0]["payload"]["system_id"] == str(system_id)
@@ -69,7 +69,7 @@ def test_build_node_item_requirement_floating():
     """Requirement 悬浮：project_id=None 合法（需 system_id）。"""
     item = build_node_item(
         ref="requirement", node_type="Requirement", title="t", content="c",
-        properties={"requirement_id":"R","priority":"P0","module":"m"},
+        properties={"priority": "P0", "module": "m"},
         project_id=None, system_id=uuid.uuid4(), created_by="ak",
     )
     assert item["payload"]["project_id"] is None
@@ -81,7 +81,7 @@ def test_build_node_item_requirement_missing_system_rejected():
     with pytest.raises(PayloadValidationError, match="必须归属 system"):
         build_node_item(
             ref="req", node_type="Requirement", title="t", content="c",
-            properties={"requirement_id":"R","priority":"P0","module":"m"},
+            properties={"priority": "P0", "module": "m"},
             project_id=uuid.uuid4(), system_id=None, created_by="ak",
         )
 
@@ -91,7 +91,7 @@ def test_build_node_item_asset_missing_project_rejected():
     with pytest.raises(PayloadValidationError, match="必须归属 project"):
         build_node_item(
             ref="req", node_type="CodeSnippet", title="t", content="c",
-            properties={"name":"n","type":"class","responsibility":"r"},
+            properties={"name": "n", "type": "class", "responsibility": "r", "file_path": "f"},
             project_id=None, created_by="ak",
         )
 
@@ -107,7 +107,7 @@ async def test_create_node_requirement_missing_system():
             project_id=uuid.uuid4(),
             node_type="Requirement",
             title="t", content="c",
-            properties={"requirement_id": "R", "priority": "P0", "module": "m"},
+            properties={"priority": "P0", "module": "m"},
             created_by="ak",
             system_id=None,
         )
@@ -124,7 +124,7 @@ async def test_create_node_asset_missing_project():
             project_id=None,
             node_type="CodeSnippet",
             title="t", content="c",
-            properties={"name": "n", "type": "class", "responsibility": "r"},
+            properties={"name": "n", "type": "class", "responsibility": "r", "file_path": "f"},
             created_by="ak",
         )
 
@@ -149,17 +149,16 @@ class _FakeToken:
         self.client_id = "client"
 
 
-def test_norm_scope_dict_and_legacy_list():
-    """_norm_scope：dict 原样归一化；旧扁平列表兜底视为 projects。"""
+def test_norm_scope_dict_and_non_dict_rejected():
+    """_norm_scope：dict 原样归一化；非 dict（如扁平列表）抛 ValueError。"""
     from mem_lake.auth.service import _norm_scope
 
     scope = _norm_scope({"systems": ["s1"], "projects": ["p1", "p2"]})
     assert scope["systems"] == ["s1"]
     assert scope["projects"] == ["p1", "p2"]
 
-    legacy = _norm_scope(["p1", "p2"])
-    assert legacy["systems"] == []
-    assert legacy["projects"] == ["p1", "p2"]
+    with pytest.raises(ValueError, match="project_scope 必须是"):
+        _norm_scope(["p1", "p2"])
 
 
 def test_get_current_system_scope(monkeypatch):

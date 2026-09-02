@@ -356,11 +356,11 @@ publish_requirement(
 ### 场景三：更新已有需求关系
 
 ```
-# 发现 REQ-001 与 REQ-005 有关联
+# 先用 search_requirements 查到两个需求节点的 UUID，再建立关联
 update_requirement_relations(
     project_id=uuid,
     relations=[
-        {"from_id": "REQ-001", "to_id": "REQ-005",
+        {"from_id": "<需求A节点UUID>", "to_id": "<需求B节点UUID>",
          "relation_type": "relates_to", "properties": {}}
     ]
 )

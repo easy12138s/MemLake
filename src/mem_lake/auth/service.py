@@ -58,16 +58,16 @@ async def get_access_key_by_id(
 def _norm_scope(value) -> dict:
     """把 access_key.project_scope 归一化为两级字典 {systems,projects}。
 
-    - dict：取 systems/projects
-    - 旧扁平数组（存量已清空，兜底）：视为 projects
+    仅接受 dict（取 systems/projects）；非 dict 抛 ValueError。
     """
-    if isinstance(value, dict):
-        return {
-            "systems": list(value.get("systems") or []),
-            "projects": list(value.get("projects") or []),
-        }
-    items = value or []
-    return {"systems": [], "projects": [str(x) for x in items]}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"project_scope 必须是 {{systems,projects}} 字典，实际类型: {type(value).__name__}"
+        )
+    return {
+        "systems": list(value.get("systems") or []),
+        "projects": list(value.get("projects") or []),
+    }
 
 
 async def authenticate_access_key(

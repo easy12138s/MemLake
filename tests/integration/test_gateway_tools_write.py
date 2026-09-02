@@ -141,7 +141,6 @@ class TestPublishRequirementEndToEnd:
 
         # 构造新需求 + supersedes 关系
         new_req_props = knowledge_helpers["Requirement"]()
-        new_req_props["requirement_id"] = "REQ-2026-002"
         requirement = RequirementInput(
             title="新需求",
             content="替代旧需求",

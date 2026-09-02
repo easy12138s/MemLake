@@ -12,7 +12,6 @@ from fastmcp.exceptions import McpError
 from mem_lake.gateway.auth import (
     ACCESS_KEY_HEADER,
     PROTOCOL_VERSION_HEADER,
-    SUPPORTED_PROTOCOL_VERSION,
     extract_access_key_from_headers,
     validate_protocol_version,
 )

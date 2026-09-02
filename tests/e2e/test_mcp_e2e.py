@@ -13,16 +13,15 @@
     3. 本地 Python 环境已安装 fastmcp（pip install fastmcp）
 """
 
+import argparse
 import asyncio
 import json
-import uuid
-import argparse
 import sys
 import traceback
+import uuid
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-
 
 # ========== 配置 ==========
 
@@ -140,7 +139,7 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
     """场景 1：系统引导与密钥管理"""
     result = ScenarioResult("场景 1：系统引导与密钥管理")
     print(f"\n{'='*60}")
-    print(f"场景 1：系统引导与密钥管理")
+    print("场景 1：系统引导与密钥管理")
     print(f"  project_id = {ctx.project_id}")
     print(f"{'='*60}")
 
@@ -283,7 +282,7 @@ async def scenario_2_pm_publish(ctx: TestContext) -> ScenarioResult:
     """场景 2：PM 发布需求"""
     result = ScenarioResult("场景 2：PM 发布需求")
     print(f"\n{'='*60}")
-    print(f"场景 2：PM 发布需求")
+    print("场景 2：PM 发布需求")
     print(f"{'='*60}")
 
     if not ctx.pm_key:
@@ -319,7 +318,6 @@ async def scenario_2_pm_publish(ctx: TestContext) -> ScenarioResult:
                         "错误码：401 未授权，403 禁止访问，429 限流。"
                     ),
                     "properties": {
-                        "requirement_id": "REQ-001",
                         "priority": "P1",
                         "module": "auth",
                         "acceptance_criteria": (
@@ -365,7 +363,7 @@ async def scenario_3_admin_auto_approve(ctx: TestContext) -> ScenarioResult:
     """场景 3：Admin 自动审批（无冲突）"""
     result = ScenarioResult("场景 3：Admin 自动审批（无冲突）")
     print(f"\n{'='*60}")
-    print(f"场景 3：Admin 自动审批（无冲突）")
+    print("场景 3：Admin 自动审批（无冲突）")
     print(f"{'='*60}")
 
     if not ctx.batch_id_1:
@@ -452,7 +450,7 @@ async def scenario_4_conflict_detection(ctx: TestContext) -> ScenarioResult:
     """场景 4：冲突检测与人工审批"""
     result = ScenarioResult("场景 4：冲突检测与人工审批")
     print(f"\n{'='*60}")
-    print(f"场景 4：冲突检测与人工审批")
+    print("场景 4：冲突检测与人工审批")
     print(f"{'='*60}")
 
     if not ctx.pm_key:
@@ -478,7 +476,6 @@ async def scenario_4_conflict_detection(ctx: TestContext) -> ScenarioResult:
                         "额外补充：支持 OAuth2 第三方登录。"
                     ),
                     "properties": {
-                        "requirement_id": "REQ-001",
                         "priority": "P1",
                         "module": "auth",
                         "acceptance_criteria": (
@@ -563,7 +560,7 @@ async def scenario_5_dev_submit(ctx: TestContext) -> ScenarioResult:
     """场景 5：Dev 提交开发产物"""
     result = ScenarioResult("场景 5：Dev 提交开发产物")
     print(f"\n{'='*60}")
-    print(f"场景 5：Dev 提交开发产物")
+    print("场景 5：Dev 提交开发产物")
     print(f"{'='*60}")
 
     if not ctx.dev_key or not ctx.requirement_node_id:
@@ -700,7 +697,7 @@ async def scenario_6_admin_approve_dev(ctx: TestContext) -> ScenarioResult:
     """场景 6：Admin 审批开发产物"""
     result = ScenarioResult("场景 6：Admin 审批开发产物")
     print(f"\n{'='*60}")
-    print(f"场景 6：Admin 审批开发产物")
+    print("场景 6：Admin 审批开发产物")
     print(f"{'='*60}")
 
     if not ctx.batch_id_3:
@@ -771,7 +768,7 @@ async def scenario_7_knowledge_retrieval(ctx: TestContext) -> ScenarioResult:
     """场景 7：知识检索与审计"""
     result = ScenarioResult("场景 7：知识检索与审计")
     print(f"\n{'='*60}")
-    print(f"场景 7：知识检索与审计")
+    print("场景 7：知识检索与审计")
     print(f"{'='*60}")
 
     async with make_client(ctx.url, ctx.admin_key) as admin:
@@ -854,7 +851,7 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
     """场景 8：错误处理与安全"""
     result = ScenarioResult("场景 8：错误处理与安全")
     print(f"\n{'='*60}")
-    print(f"场景 8：错误处理与安全")
+    print("场景 8：错误处理与安全")
     print(f"{'='*60}")
 
     # 8.1 无 X-MCP-Key header
@@ -935,7 +932,6 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
                     "title": "用户登录功能",
                     "content": "实现基于JWT的用户登录认证功能...",
                     "properties": {
-                        "requirement_id": "REQ-001",
                         "priority": "P1",
                         "module": "auth",
                         "acceptance_criteria": "测试",
@@ -975,7 +971,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    print(f"\nMemLake 端到端测试")
+    print("\nMemLake 端到端测试")
     print(f"服务器: {args.url}")
     print(f"Admin Key: {args.admin_key[:12]}...")
 

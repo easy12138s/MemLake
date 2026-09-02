@@ -27,6 +27,11 @@ from mem_lake.auth.service import (
     update_access_key_systems,
 )
 
+
+def _scope(*projects: uuid.UUID) -> dict:
+    """create_access_key 的两级 project_scope 入参构造（{systems,projects} 字典）。"""
+    return {"systems": [], "projects": [str(p) for p in projects]}
+
 # ============================================================================
 # create_access_key 端到端
 # ============================================================================
@@ -38,7 +43,7 @@ class TestCreateAccessKey:
     async def test_create_returns_key_id_and_plaintext(self, db_session):
         """create 返回 (key_id, plaintext)，plaintext 格式正确。"""
         key_id, plaintext = await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()], created_by="admin_ak"
+            db_session, role="pm", project_scope=_scope(uuid.uuid4()), created_by="admin_ak"
         )
         assert isinstance(key_id, uuid.UUID)
         assert plaintext.startswith("ak_")
@@ -48,7 +53,7 @@ class TestCreateAccessKey:
         """create 后 get_access_key_by_id 可查到，字段正确。"""
         project_id = uuid.uuid4()
         key_id, plaintext = await create_access_key(
-            db_session, role="dev", project_scope=[project_id], created_by="admin_ak"
+            db_session, role="dev", project_scope=_scope(project_id), created_by="admin_ak"
         )
         access_key = await get_access_key_by_id(db_session, key_id)
         assert access_key is not None
@@ -62,7 +67,7 @@ class TestCreateAccessKey:
     async def test_create_admin_empty_project_scope(self, db_session):
         """admin 角色允许空 project_scope（不受限）。"""
         key_id, plaintext = await create_access_key(
-            db_session, role="admin", project_scope=[], created_by="system"
+            db_session, role="admin", project_scope=_scope(), created_by="system"
         )
         access_key = await get_access_key_by_id(db_session, key_id)
         assert access_key.role == "admin"
@@ -72,7 +77,7 @@ class TestCreateAccessKey:
         """非法角色抛 ValueError。"""
         with pytest.raises(ValueError, match="非法角色"):
             await create_access_key(
-                db_session, role="guest", project_scope=[uuid.uuid4()]
+                db_session, role="guest", project_scope=_scope(uuid.uuid4())
             )
 
 
@@ -88,7 +93,7 @@ class TestAuthenticateAccessKey:
         """create 后用明文 authenticate 成功，返回正确字段。"""
         project_id = uuid.uuid4()
         key_id, plaintext = await create_access_key(
-            db_session, role="pm", project_scope=[project_id], created_by="admin_ak"
+            db_session, role="pm", project_scope=_scope(project_id), created_by="admin_ak"
         )
         result = await authenticate_access_key(db_session, plaintext)
         assert result is not None
@@ -99,7 +104,7 @@ class TestAuthenticateAccessKey:
     async def test_authenticate_wrong_plaintext_returns_none(self, db_session):
         """错误明文返回 None（bcrypt 校验失败）。"""
         _, plaintext = await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()]
+            db_session, role="pm", project_scope=_scope(uuid.uuid4())
         )
         # 篡改 secret 部分
         wrong = plaintext.rsplit(".", 1)[0] + ".wrong_secret"
@@ -109,7 +114,7 @@ class TestAuthenticateAccessKey:
     async def test_authenticate_revoked_returns_none(self, db_session):
         """已吊销的 key 认证返回 None。"""
         key_id, plaintext = await create_access_key(
-            db_session, role="dev", project_scope=[uuid.uuid4()]
+            db_session, role="dev", project_scope=_scope(uuid.uuid4())
         )
         await revoke_access_key(db_session, key_id=key_id, actor="admin_ak")
         result = await authenticate_access_key(db_session, plaintext)
@@ -140,7 +145,7 @@ class TestRevokeAccessKey:
     async def test_revoke_sets_status_and_timestamp(self, db_session):
         """revoke 后 status=revoked + revoked_at 非 None。"""
         key_id, _ = await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()]
+            db_session, role="pm", project_scope=_scope(uuid.uuid4())
         )
         await revoke_access_key(db_session, key_id=key_id, actor="admin_ak")
         access_key = await get_access_key_by_id(db_session, key_id)
@@ -150,7 +155,7 @@ class TestRevokeAccessKey:
     async def test_revoke_idempotent(self, db_session):
         """重复 revoke 不报错（幂等）。"""
         key_id, _ = await create_access_key(
-            db_session, role="dev", project_scope=[uuid.uuid4()]
+            db_session, role="dev", project_scope=_scope(uuid.uuid4())
         )
         await revoke_access_key(db_session, key_id=key_id, actor="admin_ak")
         # 第二次 revoke 不抛错
@@ -176,10 +181,10 @@ class TestListAccessKeys:
     async def test_list_all(self, db_session):
         """列出所有 key（不过滤）。"""
         await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()]
+            db_session, role="pm", project_scope=_scope(uuid.uuid4())
         )
         await create_access_key(
-            db_session, role="dev", project_scope=[uuid.uuid4()]
+            db_session, role="dev", project_scope=_scope(uuid.uuid4())
         )
         keys = await list_access_keys(db_session)
         assert len(keys) >= 2
@@ -187,10 +192,10 @@ class TestListAccessKeys:
     async def test_list_filter_by_role(self, db_session):
         """按角色过滤。"""
         await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()]
+            db_session, role="pm", project_scope=_scope(uuid.uuid4())
         )
         await create_access_key(
-            db_session, role="dev", project_scope=[uuid.uuid4()]
+            db_session, role="dev", project_scope=_scope(uuid.uuid4())
         )
         pm_keys = await list_access_keys(db_session, role="pm")
         assert len(pm_keys) >= 1
@@ -199,12 +204,12 @@ class TestListAccessKeys:
     async def test_list_filter_by_status(self, db_session):
         """按状态过滤。"""
         key_id, _ = await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()]
+            db_session, role="pm", project_scope=_scope(uuid.uuid4())
         )
         await revoke_access_key(db_session, key_id=key_id, actor="admin_ak")
         # 再创建一个 active 的
         await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()]
+            db_session, role="pm", project_scope=_scope(uuid.uuid4())
         )
 
         active_keys = await list_access_keys(db_session, status="active")
@@ -222,7 +227,7 @@ class TestListAccessKeys:
         from sqlalchemy.exc import MissingGreenlet
 
         await create_access_key(
-            db_session, role="pm", project_scope=[uuid.uuid4()]
+            db_session, role="pm", project_scope=_scope(uuid.uuid4())
         )
         keys = await list_access_keys(db_session)
         assert len(keys) >= 1
@@ -248,7 +253,7 @@ class TestAccessKeyLifecycle:
         key_id, plaintext = await create_access_key(
             db_session,
             role="pm",
-            project_scope=[project_id],
+            project_scope=_scope(project_id),
             created_by="admin_ak",
         )
 
@@ -267,7 +272,7 @@ class TestAccessKeyLifecycle:
     async def test_admin_full_lifecycle_empty_scope(self, db_session):
         """admin 角色 + 空 project_scope 完整流程。"""
         key_id, plaintext = await create_access_key(
-            db_session, role="admin", project_scope=[], created_by="system"
+            db_session, role="admin", project_scope=_scope(), created_by="system"
         )
 
         result = await authenticate_access_key(db_session, plaintext)
@@ -291,7 +296,7 @@ class TestRotateAccessKey:
     async def test_rotate_returns_new_plaintext_and_invalidates_old(self, db_session):
         """轮换后返回新明文，旧明文认证失败、新明文认证成功。"""
         key_id, old_plaintext = await create_access_key(
-            db_session, role="dev", project_scope=[uuid.uuid4()], created_by="admin_ak"
+            db_session, role="dev", project_scope=_scope(uuid.uuid4()), created_by="admin_ak"
         )
         # 旧明文先认证通过
         assert (await authenticate_access_key(db_session, old_plaintext)) is not None
@@ -314,7 +319,7 @@ class TestRotateAccessKey:
     async def test_rotate_revoked_raises(self, db_session):
         """已吊销的 Key 不可轮换。"""
         key_id, _ = await create_access_key(
-            db_session, role="dev", project_scope=[], created_by="admin_ak"
+            db_session, role="dev", project_scope=_scope(), created_by="admin_ak"
         )
         await revoke_access_key(db_session, key_id=key_id, actor="admin_ak")
         with pytest.raises(AccessKeyRevokedError):
@@ -338,8 +343,8 @@ class TestUpdateAccessKeyScope:
         """显式指定 key_ids 仅更新这些 Key 的 project_scope。"""
         pid_a = uuid.uuid4()
         pid_b = uuid.uuid4()
-        k1, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
-        k2, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
+        k1, _ = await create_access_key(db_session, role="dev", project_scope=_scope(), created_by="admin_ak")
+        k2, _ = await create_access_key(db_session, role="dev", project_scope=_scope(), created_by="admin_ak")
 
         updated = await update_access_key_scope(
             db_session,
@@ -358,9 +363,9 @@ class TestUpdateAccessKeyScope:
     async def test_update_by_role_filter(self, db_session):
         """role_filter 批量更新该角色全部 Key（含既有行，断言覆盖本次创建的 Key）。"""
         pid = uuid.uuid4()
-        d1, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
-        d2, _ = await create_access_key(db_session, role="dev", project_scope=[], created_by="admin_ak")
-        pm_key, _ = await create_access_key(db_session, role="pm", project_scope=[], created_by="admin_ak")
+        d1, _ = await create_access_key(db_session, role="dev", project_scope=_scope(), created_by="admin_ak")
+        d2, _ = await create_access_key(db_session, role="dev", project_scope=_scope(), created_by="admin_ak")
+        pm_key, _ = await create_access_key(db_session, role="pm", project_scope=_scope(), created_by="admin_ak")
 
         updated = await update_access_key_scope(
             db_session, project_scope=[pid], role_filter="dev", actor="admin_ak"
@@ -375,8 +380,12 @@ class TestUpdateAccessKeyScope:
 
     async def test_update_grant_all_projects(self, db_session):
         """grant_all_projects 更新全部 Key（空 scope = 不受限）。"""
-        d1, _ = await create_access_key(db_session, role="dev", project_scope=[uuid.uuid4()], created_by="admin_ak")
-        p1, _ = await create_access_key(db_session, role="pm", project_scope=[uuid.uuid4()], created_by="admin_ak")
+        d1, _ = await create_access_key(
+            db_session, role="dev", project_scope=_scope(uuid.uuid4()), created_by="admin_ak"
+        )
+        p1, _ = await create_access_key(
+            db_session, role="pm", project_scope=_scope(uuid.uuid4()), created_by="admin_ak"
+        )
 
         updated = await update_access_key_scope(
             db_session, project_scope=[], grant_all_projects=True, actor="admin_ak"
@@ -408,10 +417,10 @@ class TestUpdateAccessKeySystems:
         sid = uuid.uuid4()
         pid = uuid.uuid4()
         k1, _ = await create_access_key(
-            db_session, role="pm", project_scope=[pid], created_by="admin_ak"
+            db_session, role="pm", project_scope=_scope(pid), created_by="admin_ak"
         )
         k2, _ = await create_access_key(
-            db_session, role="pm", project_scope=[], created_by="admin_ak"
+            db_session, role="pm", project_scope=_scope(), created_by="admin_ak"
         )
 
         updated = await update_access_key_systems(
@@ -430,10 +439,10 @@ class TestUpdateAccessKeySystems:
         """role_filter 批量绑定 system 层。"""
         sid = uuid.uuid4()
         d1, _ = await create_access_key(
-            db_session, role="dev", project_scope=[uuid.uuid4()], created_by="admin_ak"
+            db_session, role="dev", project_scope=_scope(uuid.uuid4()), created_by="admin_ak"
         )
         pm_key, _ = await create_access_key(
-            db_session, role="pm", project_scope=[], created_by="admin_ak"
+            db_session, role="pm", project_scope=_scope(), created_by="admin_ak"
         )
 
         updated = await update_access_key_systems(
@@ -450,7 +459,7 @@ class TestUpdateAccessKeySystems:
         """grant_all 绑定全部 Key 的 system 层。"""
         sid = uuid.uuid4()
         d1, _ = await create_access_key(
-            db_session, role="dev", project_scope=[], created_by="admin_ak"
+            db_session, role="dev", project_scope=_scope(), created_by="admin_ak"
         )
 
         updated = await update_access_key_systems(
@@ -466,7 +475,7 @@ class TestUpdateAccessKeySystems:
         """多次绑定追加到 systems 层，不覆盖已有值。"""
         sid_a, sid_b = uuid.uuid4(), uuid.uuid4()
         k1, _ = await create_access_key(
-            db_session, role="pm", project_scope=[], created_by="admin_ak"
+            db_session, role="pm", project_scope=_scope(), created_by="admin_ak"
         )
 
         await update_access_key_systems(
