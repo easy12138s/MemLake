@@ -42,6 +42,11 @@ services:
     environment:
       # 推理设备：默认 cpu；GPU（TORCH_CUDA=true）时改为 cuda
       DEVICE: ${EMBEDDING_DEVICE:-cpu}
+      # encode 内部批大小：低配 CPU 部署实测批量 pad 导致注意力开销激增
+      #（10 条单请求 400s vs 逐条 150s），且批量叠放大请求易触发 OOM，默认置 1
+      EMBEDDING_ENCODE_BATCH_SIZE: ${EMBEDDING_ENCODE_BATCH_SIZE:-1}
+      # token 截断上限（默认 2048）：降低单条推理开销；改变口径会使超长文本旧向量不可复现
+      EMBEDDING_MAX_SEQ_LENGTH: ${EMBEDDING_MAX_SEQ_LENGTH:-2048}
       # 精排模型路径（默认镜像内置 bge-reranker-base；留空则不加载精排）
       RERANK_MODEL_PATH: ${RERANK_MODEL_PATH:-/models/bge-reranker-base}
       # 结构化日志格式：与 mem-lake 网关同源（OBS_LOG_FORMAT），json=单行 JSON / console=可读

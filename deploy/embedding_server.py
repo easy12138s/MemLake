@@ -89,6 +89,15 @@ model_path = os.environ.get("MODEL_PATH", "/models/Qwen3-Embedding-0.6B")
 device = os.environ.get("DEVICE", "cpu")
 model = SentenceTransformer(model_path, device=device)
 
+# OOM 防护（2026-09-02 小批量导入实测：10 条 8k-token 文档单次 encode >6min 未完成，
+# 内存一路涨到 6.2GiB 逼近容器上限）。两处调参：
+# 1) max_seq_length 8192→2048：token 截断上限降 4 倍，单条推理计算量/激活内存同步降 4 倍。
+#    注意：截断口径变化会使超长文本的向量与旧口径不可复现——已有存量向量需重建（reindex）。
+# 2) encode batch_size 默认 32→8：encode 内部按批 pad 推理，批越大峰值激活内存越高，
+#    CPU 低配机器上直接压垮容器。吞吐不足时优先迁移 embedding 容器，而非调大批量。
+model.max_seq_length = int(os.environ.get("EMBEDDING_MAX_SEQ_LENGTH", "2048"))
+ENCODE_BATCH_SIZE = int(os.environ.get("EMBEDDING_ENCODE_BATCH_SIZE", "8"))
+
 
 def _model_dimension() -> int:
     """模型输出维度。优先新方法名 get_embedding_dimension（sentence-transformers 已弃用旧名），
@@ -227,6 +236,7 @@ def _embed_impl(req: EmbedRequest) -> EmbedResponse:
         prompt=req.prompt,
         prompt_name=req.prompt_name,
         show_progress_bar=False,
+        batch_size=ENCODE_BATCH_SIZE,
     )
     return EmbedResponse(embeddings=embs.tolist(), dimension=embs.shape[1])
 

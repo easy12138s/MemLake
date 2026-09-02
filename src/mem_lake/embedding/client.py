@@ -7,7 +7,9 @@
 批量分块与重试：
 - 服务端单次 /embed 文本数上限 MAX_EMBED_TEXTS=128，超限返回 422；客户端在此按
   MAX_TEXTS_PER_REQUEST 分块后合并结果（与 embedding_server 常量需两端同步维护）。
-- 对瞬时错误（429/5xx、网络连接与超时）做指数退避重试，避免大批量任务一次抖动整体失败。
+- 对瞬时错误做指数退避重试：仅限 ConnectError（请求未到达服务端）。超时（ReadTimeout）
+  明确【不】重试——2026-09-02 实测：大批量 encode 耗时可超分钟级，客户端超时重试会把
+  已到达服务端的同一大请求重复压栈，服务端多个 encode 并发叠加直接推高内存（OOM 诱因）。
 """
 
 import asyncio
@@ -22,12 +24,12 @@ from mem_lake.observability.metrics import EMBEDDING_CALLS, EMBEDDING_DURATION
 # 与 embedding_server.MAX_EMBED_TEXTS 对齐的客户端侧分块上限（两端需同步维护）
 MAX_TEXTS_PER_REQUEST = 128
 
-# 瞬时错误重试：最多 MAX_RETRIES 次退避（2s / 4s），覆盖 429/5xx 与网络/超时
+# 瞬时错误重试：最多 MAX_RETRIES 次退避（2s / 4s），仅覆盖 ConnectError（未到达服务端）
 MAX_RETRIES = 2
 RETRY_BASE_DELAY = 2.0
 
-# 默认请求超时（秒）：CPU 大批量 embed 可能显著超过 30s，放宽默认值
-DEFAULT_TIMEOUT = 120.0
+# 默认请求超时（秒）：实测低配 CPU 上单请求 10 条（截断 2048）需 ~150-400s，取 600 留余量
+DEFAULT_TIMEOUT = 600.0
 
 
 class EmbeddingError(Exception):
@@ -63,7 +65,7 @@ class EmbeddingClient:
         校验响应 dimension 与 config.EMBEDDING_DIMENSION 一致，不符抛 EmbeddingError。
 
         超过 MAX_TEXTS_PER_REQUEST 的输入自动分块（每块一次 HTTP），结果按原顺序合并；
-        单块瞬时错误（429/5xx/网络/超时）自动指数退避重试。
+        单块连接失败（ConnectError）自动指数退避重试；超时不重试（防服务端叠压）。
         """
         if not texts:
             return []
@@ -94,11 +96,15 @@ class EmbeddingClient:
         for attempt in range(MAX_RETRIES + 1):
             try:
                 resp = await self._client.post("/embed", json=body)
-            except httpx.HTTPError as exc:
-                # 网络连接/超时等瞬时错误：退避后重试，最后抛 EmbeddingError
+            except httpx.ConnectError as exc:
+                # 请求未到达服务端（DNS/连接失败）：退避后重试，最后抛 EmbeddingError
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
                     continue
+                raise EmbeddingError(f"Embedding 服务连接失败: {exc}") from exc
+            except httpx.HTTPError as exc:
+                # 超时/读中断等：请求可能已到达服务端并在计算，重试会造成服务端
+                # 同一请求并发叠压（实测 OOM 诱因），故不重试，直接失败
                 raise EmbeddingError(f"Embedding 服务请求失败: {exc}") from exc
 
             if resp.status_code == 200:

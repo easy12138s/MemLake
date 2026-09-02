@@ -235,12 +235,22 @@ async def test_embed_retries_on_5xx_then_success(monkeypatch):
     assert len(fake.requests) == 2  # 失败 1 次 + 重试 1 次
 
 
-async def test_embed_retries_on_timeout_then_success(monkeypatch):
-    """网络超时退避重试后成功。"""
+async def test_embed_connect_error_retried_then_success(monkeypatch):
+    """ConnectError（请求未到达服务端）退避重试后成功。"""
     monkeypatch.setattr(embedding_client_module, "RETRY_BASE_DELAY", 0.0)
-    client, fake = _make_scripted_client(monkeypatch, [httpx.ReadTimeout("t")])
+    client, fake = _make_scripted_client(monkeypatch, [httpx.ConnectError("dns")])
     assert len(await client.embed(["a"])) == 1
     assert len(fake.requests) == 2
+
+
+async def test_embed_timeout_not_retried(monkeypatch):
+    """超时不重试（请求可能已到达服务端在计算，重试会叠压服务端，实测 OOM 诱因）。"""
+    monkeypatch.setattr(embedding_client_module, "RETRY_BASE_DELAY", 0.0)
+    client, fake = _make_scripted_client(monkeypatch, [httpx.ReadTimeout("t")])
+
+    with pytest.raises(EmbeddingError):
+        await client.embed(["a"])
+    assert len(fake.requests) == 1  # 仅尝试一次
 
 
 async def test_embed_retry_exhausted_raises(monkeypatch):
