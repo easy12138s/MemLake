@@ -374,8 +374,9 @@ async def review_approve(
             )
             # 边无 target_id，留空
 
-    # 2.1 新建节点向量化延迟到后台异步执行：content_vector 暂为 NULL（搜索已能安全
-    # 跳过 NULL），审批提交后由调用方经 start_embed_nodes_task 入队，复用 reindex
+    # 2.1 新建节点向量化延迟到后台异步执行：facet 向量（node_embedding）暂缺
+    # （FIX-08：content_vector 列已废弃，检索走 node_embedding，缺向量节点自动
+    # 排除），审批提交后由调用方经 start_embed_nodes_task 入队，复用 reindex
     # worker 补向量。此处不再同步 embed，避免大批次审批阻塞 MCP 调用超时。
     # 调用方从 batch.items（node+create 项的 target_id）即可取得新建节点 id。
 

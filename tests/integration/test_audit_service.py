@@ -39,11 +39,16 @@ async def test_query_by_actor(db_session):
 
 
 async def test_query_by_action(db_session):
-    """按 action 过滤。"""
-    await write_audit_log(db_session, actor="a1", action="write", target_type="node")
-    await write_audit_log(db_session, actor="a2", action="approve", target_type="node")
+    """按 action 过滤。
 
-    result = await query_audit_logs(db_session, action="approve")
+    FIX-09：用唯一 actor（uuid 后缀）隔离共享库历史审计行（同名 "approve" 审计行
+    会污染 action 计数），断言按该 actor 过滤后仅返回本测试写入的 approve 行。
+    """
+    actor = f"ak_action_{uuid.uuid4().hex[:8]}"
+    await write_audit_log(db_session, actor=actor, action="write", target_type="node")
+    await write_audit_log(db_session, actor=actor, action="approve", target_type="node")
+
+    result = await query_audit_logs(db_session, actor=actor, action="approve")
     assert len(result) == 1
     assert result[0].action == "approve"
 

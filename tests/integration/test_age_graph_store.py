@@ -68,6 +68,41 @@ class TestAddNode:
         assert node["properties"]["id"] == str(node_id)
         assert node["properties"]["title"] == "登录需求"
 
+    async def test_add_node_persists_system_id(self, db_session, store):
+        """FIX-05：properties 含 system_id 时图节点属性携带 system_id；缺失时写空串。"""
+        node_id = uuid.uuid4()
+        project_id = uuid.uuid4()
+        system_id = uuid.uuid4()
+        props = _props(node_id, project_id, "带 system 需求")
+        props["system_id"] = str(system_id)
+        await store.add_node(
+            db_session, node_id=node_id, label="Requirement", properties=props
+        )
+
+        rows = await match_pattern(
+            store, db_session,
+            "MATCH (n:Requirement {id: $nid}) RETURN n",
+            {"nid": str(node_id)},
+        )
+        assert len(rows) == 1
+        assert rows[0]["properties"]["system_id"] == str(system_id)
+
+        # 缺失 system_id → 写空串（与 project_id 口径一致）
+        bare_id = uuid.uuid4()
+        await store.add_node(
+            db_session,
+            node_id=bare_id,
+            label="CodeSnippet",
+            properties=_props(bare_id, project_id, "无 system 资产"),
+        )
+        rows = await match_pattern(
+            store, db_session,
+            "MATCH (n:CodeSnippet {id: $nid}) RETURN n",
+            {"nid": str(bare_id)},
+        )
+        assert len(rows) == 1
+        assert rows[0]["properties"]["system_id"] == ""
+
     async def test_add_node_invalid_label(self, db_session, store):
         """非法 label 抛 SchemaValidationError。"""
         node_id = uuid.uuid4()

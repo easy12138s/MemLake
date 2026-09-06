@@ -101,9 +101,8 @@ class KnowledgeNode(Base):
     )
     title: Mapped[str] = mapped_column(Text, comment="节点标题")
     content: Mapped[str] = mapped_column(Text, comment="节点正文内容")
-    content_vector: Mapped[list[float] | None] = mapped_column(
-        Vector(1024), nullable=True, comment="内容向量（Qwen3-Embedding-0.6B，1024 维）"
-    )
+    # FIX-08：content_vector 列废弃（检索主路径走 node_embedding 多向量），
+    # 由 0003_drop_content_vector 迁移 DROP。此处不再定义。
     content_tsv: Mapped[Any] = mapped_column(
         TSVECTOR(), nullable=True, comment="全文检索向量（触发器自动维护）"
     )
@@ -154,17 +153,9 @@ class KnowledgeNode(Base):
             "requirement_key",
             name="uq_node_system_requirement_key",
         ),
-        # HNSW 向量索引（pgvector-python 官方方案，由 create_all 按 __table_args__ 生成）
-        # 适配 1024 维高维向量：m=32、ef_construction=400（业界建议 m≈32-48、ef_construction≈m*10-20）。
-        # opclass 用 vector_ip_ops（内积）：向量均来自归一化 embedding 服务，内积 <#> 与余弦等价且更快，
-        # 与搜索层 search/vector.py 的 max_inner_product 调用对齐。
-        Index(
-            "idx_node_vector",
-            "content_vector",
-            postgresql_using="hnsw",
-            postgresql_with={"m": 32, "ef_construction": 400},
-            postgresql_ops={"content_vector": "vector_ip_ops"},
-        ),
+        # FIX-08：knowledge_node 的 HNSW 向量索引 idx_node_vector 随 content_vector
+        # 列一并废弃（0003_drop_content_vector 迁移 DROP）；向量检索索引在
+        # node_embedding 表（idx_node_embedding_vector，见 NodeEmbedding）。
     )
 
 
@@ -204,7 +195,7 @@ class NodeEmbedding(Base):
     __table_args__ = (
         Index("idx_node_embedding_node", "node_id"),
         Index("idx_node_embedding_node_facet", "node_id", "facet", unique=True),
-        # HNSW 向量索引（与 knowledge_node.content_vector 同参数/opclass）
+        # HNSW 向量索引（参数/opclass 与 FIX-04 统一，m=32/ef_construction=400/vector_ip_ops）
         Index(
             "idx_node_embedding_vector",
             "content_vector",

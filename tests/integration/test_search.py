@@ -14,6 +14,7 @@
 import uuid
 
 from conftest import mark_node_archived, match_pattern
+
 from mem_lake.knowledge.repository import create_node
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.fusion import hybrid_search
@@ -264,12 +265,17 @@ class TestFullTextSearch:
     async def test_fulltext_search_matches_keyword(
         self, db_session, graph_store, real_embedding_client, fulltext_searcher, knowledge_helpers
     ):
-        """查询"JWT"返回包含 JWT 的节点。"""
+        """查询"JWT"返回包含 JWT 的节点。
+
+        按 project_id 过滤隔离共享库历史节点（同 FIX-09 思路：避免其他测试
+        提交的 JWT 节点挤占 top_k）。
+        """
         pid, requirement, code, pitfall = await _seed_three_nodes(
             db_session, graph_store, real_embedding_client, knowledge_helpers
         )
 
-        results = await fulltext_searcher.search(db_session, query="JWT", top_k=50)
+        filters = FilterSpec(project_id=pid)
+        results = await fulltext_searcher.search(db_session, query="JWT", top_k=50, filters=filters)
 
         assert len(results) >= 1
         # requirement 与 code 都含 JWT，pitfall 不含
@@ -285,8 +291,9 @@ class TestFullTextSearch:
             db_session, graph_store, real_embedding_client, knowledge_helpers
         )
 
+        filters = FilterSpec(project_id=pid)
         results = await fulltext_searcher.search(
-            db_session, query="登录鉴权", top_k=50
+            db_session, query="登录鉴权", top_k=50, filters=filters
         )
 
         assert len(results) >= 1

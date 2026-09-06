@@ -1,17 +1,20 @@
 """向量语义检索：pgvector HNSW + 归一化内积（max_inner_product / <#>）。
 
 对齐 PDD 3.3 向量引擎：负责"找描述用户登录的需求"等语义检索场景。
-pgvector HNSW 索引（idx_node_vector，vector_ip_ops，m=32/ef_construction=400）由
-create_all 创建；M4 实现检索调用。向量检索只查 knowledge_node 表，不涉及 AGE 图。
+pgvector HNSW 索引（node_embedding.idx_node_embedding_vector，vector_ip_ops，
+m=32/ef_construction=400）由 create_all 创建；M4 实现检索调用。向量检索只查
+node_embedding + knowledge_node 关联表，不涉及 AGE 图。
 
 技术参考（网络搜索 pgvector-python 官方文档）：
-- content_vector 均来自归一化 embedding 服务（/embed normalize_embeddings=True），
-  因此内积 `<#>` 与余弦等价。KnowledgeNode.content_vector.max_inner_product(query_vector)
+- facet 向量均来自归一化 embedding 服务（/embed normalize_embeddings=True），
+  因此内积 `<#>` 与余弦等价。NodeEmbedding.content_vector.max_inner_product(query_vector)
   是 pgvector-python 提供的 SQLAlchemy 混合方法，等价于 SQL `content_vector <#> :vector`
   （注意：pgvector-python 的 `<#>` 对应方法名为 max_inner_product，无 inner_product）
 - HNSW 索引自动用于 ORDER BY <#> 查询（vector_ip_ops 操作符类）；<#> 返回负内积，
   归一化下 score = -max_inner_product = 余弦 ∈[-1,1]，负值截断为 0
 - 查询向量通过参数化传入，非字符串拼接，零注入风险
+- FIX-08：knowledge_node.content_vector 列已废弃（0003 迁移 DROP），检索主路径
+  走 node_embedding 多向量（facet max-pooling），单主向量不再落库
 """
 
 from sqlalchemy import func, select, text
@@ -52,14 +55,15 @@ class VectorSearcher:
             按相似度（归一化向量下内积 = 余弦，`-max_inner_product`）降序排序的 SearchResult 列表，
             score 字段为相似度（0~1），source 字段为 "vector"。
 
-        前提：本向量检索依赖"content_vector 均来自经归一化的 embedding 服务"
-        （/embed 固定 normalize_embeddings=True），因此内积 `<#>` 与余弦等价且更快
+        前提：本向量检索依赖"node_embedding 的 facet 向量均来自经归一化的 embedding
+        服务"（/embed 固定 normalize_embeddings=True），因此内积 `<#>` 与余弦等价且更快
         （索引 opclass 为 vector_ip_ops，与知识库 models.py 对齐）。若存在非归一化入向量
         （手工/历史导入），需先归一化或回退 cosine ops。
 
         边界：
-            - 无向量节点（content_vector IS NULL）被自动排除（max_inner_product 对 NULL 返回 NULL，
-              ORDER BY NULLS LAST 排在最后，LIMIT 截断后不出现）
+            - 无 facet 向量节点（node_embedding.content_vector IS NULL）被自动排除
+              （max_inner_product 对 NULL 返回 NULL，ORDER BY NULLS LAST 排在最后，
+              LIMIT 截断后不出现）
             - 无匹配返回空列表
         """
         # 指令感知：检索查询使用模型内置 "query" 指令，将查询摆入与文档对齐的子空间，

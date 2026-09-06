@@ -1,8 +1,9 @@
 """嵌入文本构造：将节点 title/content 与关键属性拼接为向量化输入。
 
-PDD 3.3：向量检索基于 knowledge_node.content_vector。仅用 title+content 会丢失
-properties 中的判别性信息（如 Pitfall.root_cause / CodeSnippet.name），导致按属性
-关键词无法召回。此处按节点类型纳入关键属性，提升语义召回（对应 dev 测试报告 P2）。
+PDD 3.3：向量检索基于 node_embedding 表的 facet 向量（FIX-08 后 content_vector
+列废弃）。仅用 title+content 会丢失 properties 中的判别性信息（如 Pitfall.root_cause
+/ CodeSnippet.name），导致按属性关键词无法召回。此处按节点类型纳入关键属性，
+提升语义召回（对应 dev 测试报告 P2）。
 """
 
 from typing import Any
@@ -84,7 +85,8 @@ def build_embed_facets(
 
     返回 dict 至少含 "content" facet（title+content）；其余为节点类型关键属性中
     非空的字段，各自独立成 facet。空节点（无 title/content/属性）返回空 dict，
-    调用方据此跳过向量写入（与 content_vector 为 NULL 的既有语义一致）。
+    调用方据此跳过向量写入（与无 facet 记录的既有语义一致，FIX-08 后以
+    node_embedding 记录存在性判定）。
 
     用于 create_node / update_node / regenerate_vector / batch_regenerate_vectors
     的逐 facet EmbeddingClient 输入；检索侧使用 max-pooling 融合。

@@ -71,10 +71,10 @@ async def test_batch_insert_batches_embeds_and_creates(db_session, graph_store):
     )
 
     assert result == {"created": 3}
-    # 至少 2 次 embed 调用：一次主向量 + 一次 facet 向量
-    assert len(embed.calls) >= 2
-    # 批量：某次调用一次收到全部 3 段文本（主向量）
-    assert max(embed.calls) >= 3
+    # FIX-08：content_vector 停写，仅一次 facet 批量 embed（汇聚全部节点所有 facet 文本）
+    # 每节点至少 content facet（还有 priority/module/acceptance_criteria 属性 facet）
+    assert len(embed.calls) >= 1
+    assert max(embed.calls) >= 3  # 一次收到全部 3 节点 facet 文本
 
     reqs = (
         (await db_session.execute(
@@ -89,9 +89,7 @@ async def test_batch_insert_batches_embeds_and_creates(db_session, graph_store):
     assert len(reqs) == 3
     keys = {r.requirement_key for r in reqs}
     assert keys == {"HIS-0001", "HIS-0002", "HIS-0003"}
-    for r in reqs:
-        assert r.content_vector is not None
-        assert len(r.content_vector) == 1024
+    # FIX-08：content_vector 列废弃，不再断言该列（改为 facet 记录存在性断言，见下）
 
     facets = (
         await db_session.execute(select(NodeEmbedding).where(NodeEmbedding.node_id.in_([n.id for n in reqs])))
