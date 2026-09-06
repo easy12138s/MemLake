@@ -7,6 +7,7 @@ append-only 语义：本模块仅提供 INSERT（write_audit_log）与 SELECT（
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +24,7 @@ async def write_audit_log(
     target_id: uuid.UUID | None = None,
     project_id: uuid.UUID | None = None,
     operation_id: str | None = None,
-    detail: dict | None = None,
+    detail: dict[str, Any] | None = None,
 ) -> AuditLog:
     """写入一条审计日志。
 

@@ -7,6 +7,7 @@ structlog.contextvars 绑定 request_id/operation_id/actor/project_id 等贯通�
 """
 
 import logging
+from typing import Any
 
 import structlog
 from structlog.contextvars import (
@@ -71,7 +72,7 @@ def configure_logging(level: int = logging.INFO, fmt: str | None = None) -> None
     root.addHandler(handler)
 
 
-def bind_request_context(**kwargs) -> None:
+def bind_request_context(**kwargs: Any) -> None:
     """为当前请求绑定结构化上下文字段（request_id/operation_id/actor 等）。"""
     bind_contextvars(**kwargs)
 

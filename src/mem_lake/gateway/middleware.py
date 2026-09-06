@@ -18,6 +18,8 @@
 import logging
 import time
 from collections import defaultdict, deque
+from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import uuid4
 
 from fastmcp.exceptions import ToolError
@@ -73,7 +75,9 @@ class AccessKeyAuthMiddleware(Middleware):
     不一致 raise McpError(code=-32020)。
     """
 
-    async def on_request(self, context: MiddlewareContext, call_next):
+    async def on_request(
+        self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
+    ) -> Any:
         """提取 X-MCP-Key → 异步认证 → 设置 request.scope["user"]。"""
         headers = get_http_headers()
 
@@ -138,7 +142,9 @@ class RBACMiddleware(Middleware):
         有权调用的工具；未认证或无角色返回空列表，避免跨角色泄露工具形态。
     """
 
-    async def on_list_tools(self, context: MiddlewareContext, call_next) -> list:
+    async def on_list_tools(
+        self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
+    ) -> list[Any]:
         """列举工具时按角色过滤，避免非 admin 角色看到 admin 专属工具。"""
         tools = await call_next(context)
         access_token = get_access_token()
@@ -150,7 +156,9 @@ class RBACMiddleware(Middleware):
         allowed = ROLE_TOOLSET.get(role, frozenset())
         return [t for t in tools if t.name in allowed]
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
+    ) -> Any:
         tool_name = context.message.name
         access_token = get_access_token()
 
@@ -210,7 +218,9 @@ class RateLimitMiddleware(Middleware):
                 "限流全表清扫：%d -> %d 桶", expired_before, len(self._buckets)
             )
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
+    ) -> Any:
         access_token = get_access_token()
         if access_token is None:
             # 未认证请求不限流（由 auth 层拒绝）
@@ -266,7 +276,9 @@ class AuditLogMiddleware(Middleware):
     本中间件记录所有工具调用（含读操作），写操作的审计由 service 层补充业务细节。
     """
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
+    ) -> Any:
         message = context.message
         tool_name = message.name
         arguments = getattr(message, "arguments", None) or {}

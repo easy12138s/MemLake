@@ -21,11 +21,10 @@
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
 from mem_lake.audit.service import query_audit_logs
@@ -41,14 +40,21 @@ from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     ROLE_SKILLS_MD,
     ROLE_SKILLS_VERSION,
+    get_lifespan_context,
     to_tool_error,
 )
+from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     get_node,
     list_nodes_by_project,
     list_project_profiles,
 )
+from mem_lake.search.graph import GraphSearcher
+
+if TYPE_CHECKING:
+    # 仅类型标注用：_to_audit_log_item_output 接收 AuditLog ORM 对象
+    from mem_lake.audit.models import AuditLog
 
 logger = logging.getLogger("mem_lake.gateway.tools.query")
 
@@ -260,7 +266,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def get_project_info(
@@ -305,7 +311,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except (ValueError, ToolError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def get_requirement_context(
@@ -326,8 +332,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             if not 1 <= depth <= 5:
                 raise ValueError("depth 必须在 1~5 之间")
 
-            ctx = get_context()
-            lifespan_ctx = ctx.lifespan_context
+            lifespan_ctx = get_lifespan_context()
 
             session = await get_readonly_session()
             try:
@@ -361,7 +366,6 @@ def register_query_tools(mcp: FastMCP) -> None:
                     )
 
                 # 2. 图遍历获取关联节点
-                from mem_lake.search.graph import GraphSearcher
                 graph_searcher = GraphSearcher(lifespan_ctx.graph_store)
                 from mem_lake.search.filters import FilterSpec
                 filters = FilterSpec(
@@ -396,7 +400,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except (NodeNotFoundError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def query_audit_log(
@@ -459,7 +463,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
 
 # ============================================================================
@@ -467,7 +471,7 @@ def register_query_tools(mcp: FastMCP) -> None:
 # ============================================================================
 
 
-def _to_audit_log_item_output(log) -> AuditLogItemOutput:
+def _to_audit_log_item_output(log: "AuditLog") -> AuditLogItemOutput:
     """从 AuditLog ORM 对象构造 AuditLogItemOutput。"""
     return AuditLogItemOutput(
         log_id=log.id,
@@ -480,13 +484,15 @@ def _to_audit_log_item_output(log) -> AuditLogItemOutput:
     )
 
 
-def _to_project_info(node, include_profile: bool = False) -> ProjectInfo:
+def _to_project_info(node: KnowledgeNode, include_profile: bool = False) -> ProjectInfo:
     """从 ProjectProfile 节点构造 ProjectInfo。
 
     name 优先取 properties.name（业务项目名），缺省回退 node.title，
     避免列表中的 name 与画像内部 name 语义割裂。
     """
     props = node.properties or {}
+    # ProjectProfile 节点必归属项目（画像链路 project_id 恒有值），供 out 模型非空字段
+    assert node.project_id is not None
     return ProjectInfo(
         project_id=node.project_id,
         name=props.get("name", node.title),
@@ -499,7 +505,7 @@ def _to_project_info(node, include_profile: bool = False) -> ProjectInfo:
     )
 
 
-def _build_scope_meta(is_admin: bool, scope: list[str], projects: list) -> ScopeMeta:
+def _build_scope_meta(is_admin: bool, scope: list[str], projects: list[ProjectInfo]) -> ScopeMeta:
     """构造 scope 自证信息。
 
     admin（不受限）：scope_type="all"，visible_uuids 置空，visible_count 取实际可见项目数。
@@ -522,8 +528,8 @@ async def _get_project_info_core(
     include_scope_meta: bool,
     role: str,
     scope: list[str],
-    list_fn,
-    validate_fn,
+    list_fn: Callable[..., Awaitable[list[KnowledgeNode]]],
+    validate_fn: Callable[[uuid.UUID], None],
 ) -> GetProjectInfoOutput:
     """get_project_info 的核心逻辑（与 FastMCP 上下文解耦，便于单测）。
 
@@ -538,9 +544,10 @@ async def _get_project_info_core(
         # 同 project_id 去重（created_at desc 已排序，取首条）
         seen: dict[uuid.UUID, ProjectInfo] = {}
         for n in nodes:
-            if n.project_id in seen:
-                continue
-            seen[n.project_id] = _to_project_info(n, include_profile)
+            pid = n.project_id
+            if pid is None or pid in seen:
+                continue  # ProjectProfile 必归属项目，None 仅防御性跳过
+            seen[pid] = _to_project_info(n, include_profile)
         projects = list(seen.values())
         scope_meta = (
             _build_scope_meta(is_admin, scope, projects) if include_scope_meta else None

@@ -23,10 +23,9 @@
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
 from mem_lake.config import get_settings
@@ -37,6 +36,7 @@ from mem_lake.gateway.dependencies import (
 )
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
+    get_lifespan_context,
     to_tool_error,
 )
 from mem_lake.knowledge.repository import list_nodes_by_project
@@ -44,6 +44,12 @@ from mem_lake.knowledge.schema import SchemaValidationError
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.fusion import SearchResult, hybrid_search
 from mem_lake.search.tag_expansion import expand_tags_for_project
+
+if TYPE_CHECKING:
+    # 仅类型标注用；get_lifespan_context 返回 LifespanContext，GraphSearcher 惰性导入
+    from mem_lake.gateway.server import LifespanContext
+    from mem_lake.knowledge.models import KnowledgeNode
+    from mem_lake.search.graph import GraphSearcher
 
 logger = logging.getLogger("mem_lake.gateway.tools.search")
 
@@ -216,7 +222,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 semantic_tags=semantic_tags,
             )
         except (SchemaValidationError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def search_code_snippets(
@@ -269,7 +275,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 semantic_tags=semantic_tags,
             )
         except (SchemaValidationError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def analyze_impact_scope(
@@ -289,8 +295,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         """
         try:
             validate_project_access(project_id)
-            ctx = get_context()
-            lifespan_ctx = ctx.lifespan_context
+            lifespan_ctx = get_lifespan_context()
 
             session = await get_readonly_session()
             try:
@@ -311,7 +316,7 @@ def register_search_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def check_requirement_conflicts(
@@ -342,8 +347,7 @@ def register_search_tools(mcp: FastMCP) -> None:
             validate_project_access(project_id)
             if threshold is None:
                 threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
-            ctx = get_context()
-            lifespan_ctx = ctx.lifespan_context
+            lifespan_ctx = get_lifespan_context()
 
             # 获取被检测需求的标题用作查询文本（build_embed_text 含属性段，
             # 与落库向量构造一致）
@@ -386,10 +390,12 @@ def register_search_tools(mcp: FastMCP) -> None:
             has_conflict = len(conflicts) > 0
             suggestion = None
             if has_conflict:
-                # 最高相似度 >= 0.95 推荐 manual_merge，否则 review
-                # （conflicts 已在上面过滤 score is not None）
-                max_score = max(c.score for c in conflicts)
-                suggestion = "manual_merge" if max_score >= 0.95 else "review"
+                # 最高相似度 >= CONFLICT_SUGGEST_PENDING(0.95) 推荐 manual_merge，否则 review
+                # （FIX-21：阈值可配置；conflicts 已在上面过滤 score is not None，
+                #   此处再显式过滤以收敛类型——生成的 score 必为 float 参与 max 比较）
+                max_score = max(c.score for c in conflicts if c.score is not None)
+                suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
+                suggestion = "manual_merge" if max_score >= suggest_threshold else "review"
 
             return ConflictCheckOutput(
                 requirement_id=requirement_id,
@@ -399,7 +405,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 suggestion=suggestion,
             )
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def list_knowledge(
@@ -442,7 +448,7 @@ def register_search_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
 
 # ============================================================================
@@ -471,8 +477,7 @@ async def _run_hybrid_search(
     system 维度：传 project_id 检索该 project 资产；传 system_id 检索该系统全部需求
     （含悬浮需求）。二者都不传时用 project_scope 内全部 project 检索。
     """
-    ctx = get_context()
-    lifespan_ctx = ctx.lifespan_context
+    lifespan_ctx = get_lifespan_context()
 
     effective_tags = tags
     if semantic_tags and tags and project_id is not None:
@@ -551,7 +556,7 @@ def _to_search_item_output(
     )
 
 
-def _to_knowledge_node_output(node) -> KnowledgeNodeOutput:
+def _to_knowledge_node_output(node: "KnowledgeNode") -> KnowledgeNodeOutput:
     """从 KnowledgeNode ORM 对象构造 KnowledgeNodeOutput。"""
     return KnowledgeNodeOutput(
         node_id=node.id,
@@ -565,7 +570,7 @@ def _to_knowledge_node_output(node) -> KnowledgeNodeOutput:
     )
 
 
-def _get_graph_searcher(lifespan_ctx):
+def _get_graph_searcher(lifespan_ctx: "LifespanContext") -> "GraphSearcher":
     """从 lifespan 上下文获取 GraphSearcher 实例。
 
     lifespan_ctx 已注入 graph_store，构造 GraphSearcher 包装。

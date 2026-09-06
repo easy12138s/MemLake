@@ -28,6 +28,7 @@ from pydantic import Field
 from mem_lake.approval.service import (
     PayloadValidationError,
 )
+from mem_lake.config import get_settings
 from mem_lake.gateway.access import is_requirement_visible
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
@@ -57,15 +58,16 @@ from mem_lake.knowledge.schema import SchemaValidationError
 
 logger = logging.getLogger("mem_lake.gateway.tools.write")
 
-# 单产物 content 长度上限，防止超长文本入库（审批 + 向量化成本高）
-MAX_CONTENT_LENGTH: int = 10000
+def _check_content_length(value: str | None, label: str) -> None:
+    """校验 content 长度不超过上限，超限抛 PayloadValidationError。
 
-
-def _check_content_length(value: str, label: str) -> None:
-    """校验 content 长度不超过上限，超限抛 PayloadValidationError。"""
-    if value is not None and len(value) > MAX_CONTENT_LENGTH:
+    上限来自 Settings.MAX_CONTENT_LENGTH（FIX-21：业务阈值收敛可配置）。
+    value 为 None（update 不更新 content）时跳过长度校验。
+    """
+    max_len = get_settings().MAX_CONTENT_LENGTH
+    if value is not None and len(value) > max_len:
         raise PayloadValidationError(
-            f"{label} 长度 {len(value)} 超过上限 {MAX_CONTENT_LENGTH} 字符"
+            f"{label} 长度 {len(value)} 超过上限 {max_len} 字符"
         )
 
 
@@ -120,7 +122,19 @@ class RelationInput(StrictInputModel):
 # ============================================================================
 
 
-class CodeSnippetInput(StrictInputModel):
+class _ArtifactRefInput(StrictInputModel):
+    """产物输入基类：ref 公共字段（批次内引用名）。
+
+    四类产物（code/solution/intent/pitfall）均以 ref 作为批次内唯一引用键，
+    供 relations 的 from_ref/to_ref 在审批通过时解析（见 approval._resolve_ref）。
+    """
+
+    ref: str = Field(
+        description="批次内引用名（如 'LoginService'），供 relations 中 from_ref/to_ref 引用"
+    )
+
+
+class CodeSnippetInput(_ArtifactRefInput):
     """代码片段。"""
 
     ref: str = Field(
@@ -137,7 +151,7 @@ class CodeSnippetInput(StrictInputModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class SolutionInput(StrictInputModel):
+class SolutionInput(_ArtifactRefInput):
     """实现方案。"""
 
     ref: str = Field(description="批次内引用名")
@@ -149,7 +163,7 @@ class SolutionInput(StrictInputModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class DesignIntentInput(StrictInputModel):
+class DesignIntentInput(_ArtifactRefInput):
     """设计意图。"""
 
     ref: str = Field(description="批次内引用名")
@@ -161,7 +175,7 @@ class DesignIntentInput(StrictInputModel):
     tags: list[str] = Field(default=[], description="标签数组")
 
 
-class PitfallInput(StrictInputModel):
+class PitfallInput(_ArtifactRefInput):
     """踩坑记录。"""
 
     ref: str = Field(description="批次内引用名")
@@ -269,7 +283,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def update_requirement_relations(
@@ -320,7 +334,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def submit_dev_artifacts(
@@ -396,7 +410,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def update_node(
@@ -450,7 +464,6 @@ def register_write_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
 
-            key_id = get_current_key_id()
             items = [
                 build_update_node_item(
                     node_id=node_id,
@@ -469,7 +482,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
 
 # ============================================================================

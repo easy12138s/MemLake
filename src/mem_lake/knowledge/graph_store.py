@@ -6,6 +6,7 @@
 
 import uuid
 from abc import ABC, abstractmethod
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,7 +34,7 @@ class GraphStore(ABC):
         session: AsyncSession,
         node_id: uuid.UUID,
         label: str,
-        properties: dict,
+        properties: dict[str, Any],
     ) -> None:
         """添加节点。label 为节点类型，properties 必须含 id 与 project_id。"""
 
@@ -44,7 +45,7 @@ class GraphStore(ABC):
         from_id: uuid.UUID,
         to_id: uuid.UUID,
         edge_type: str,
-        properties: dict,
+        properties: dict[str, Any],
     ) -> None:
         """添加边。edge_type 为关系类型，properties 携带边元数据。
 
@@ -70,7 +71,7 @@ class GraphStore(ABC):
         node_id: uuid.UUID,
         edge_type: str | None = None,
         depth: int = 1,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """邻居遍历。返回邻居节点 dict 列表。edge_type=None 表示不限类型。"""
 
     @abstractmethod
@@ -79,7 +80,7 @@ class GraphStore(ABC):
         session: AsyncSession,
         node_id: uuid.UUID,
         depth: int = 2,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """邻居遍历并透出路径边类型与跳数（FIX-10：收口检索层鸭子类型调用）。
 
         返回结构化结果列表，每项：{"node": <agtype 节点 dict>, "edge_types": [label...],

@@ -19,7 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mem_lake.cli.adapters import get_adapter
 from mem_lake.cli.extractor import ParsedRequirement, extract_directory
 from mem_lake.knowledge.models import KnowledgeNode, System
-from mem_lake.knowledge.repository import batch_insert_requirements
+from mem_lake.knowledge.repository import (
+    batch_insert_requirements,
+    get_system_by_code,
+    get_system_by_name,
+)
 
 
 @dataclass
@@ -40,15 +44,11 @@ async def resolve_system(
     DB 存量 system 的 code 可能为 NULL（如『中方诊药云系统』），此时用 name 匹配。
     """
     if name is not None:
-        sys_obj = (
-            await session.execute(select(System).where(System.name == name))
-        ).scalar_one_or_none()
+        sys_obj = await get_system_by_name(session, name)
         if sys_obj is not None:
             return sys_obj
     if code is not None:
-        sys_obj = (
-            await session.execute(select(System).where(System.code == code))
-        ).scalar_one_or_none()
+        sys_obj = await get_system_by_code(session, code)
         if sys_obj is not None:
             return sys_obj
     raise ValueError(

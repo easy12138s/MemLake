@@ -22,10 +22,10 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from mem_lake.auth.models import AccessKey
 from mem_lake.auth.service import (
     create_access_key as svc_create_access_key,
 )
@@ -61,12 +61,17 @@ from mem_lake.gateway.dependencies import (
 from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     StrictInputModel,
+    get_lifespan_context,
     to_tool_error,
 )
-from mem_lake.knowledge.models import System, SystemProject
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
+    count_system_projects,
     create_node,
+    create_system,
+    get_system,
+    list_systems,
+    set_system_projects,
     update_node,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -312,7 +317,7 @@ class ManageSystemOutput(BaseModel):
     name: str | None = Field(default=None, description="系统域名（create 时）")
     description: str | None = Field(default=None, description="系统域描述（create 时）")
     project_count: int | None = Field(default=None, description="归属项目数（set_projects/list 时）")
-    systems: list[dict] | None = Field(default=None, description="系统域列表（list 时，含 project_count）")
+    systems: list[dict[str, Any]] | None = Field(default=None, description="系统域列表（list 时，含 project_count）")
     affected_key_ids: list[str] | None = Field(default=None, description="受影响 Key ID 列表（bind_keys 时）")
 
 
@@ -368,7 +373,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     onboarding_prompt=_build_onboarding_prompt(role),
                 )
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def revoke_access_key(
@@ -386,7 +391,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 )
                 return RevokeAccessKeyOutput(key_id=key_id, status="revoked")
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def list_access_keys(
@@ -407,7 +412,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 items = [_to_access_key_output(k) for k in keys]
                 return AccessKeyListOutput(items=items, total=len(items))
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def update_access_key_scope(
@@ -453,7 +458,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 items = [_to_access_key_output(k) for k in updated]
                 return AccessKeyListOutput(items=items, total=len(items))
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def rotate_access_key(
@@ -487,7 +492,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     onboarding_prompt=_build_onboarding_prompt(ak.role),
                 )
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def set_access_key_mode(
@@ -528,7 +533,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 items = [_to_access_key_output(k) for k in updated]
                 return AccessKeyListOutput(items=items, total=len(items))
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def manage_system(
@@ -577,9 +582,9 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 if action == "create":
                     if not name:
                         raise ValueError("create 操作必须指定 name")
-                    sys_obj = System(name=name, description=description or "")
-                    session.add(sys_obj)
-                    await session.flush()
+                    sys_obj = await create_system(
+                        session, name=name, description=description or ""
+                    )
                     return ManageSystemOutput(
                         action="create",
                         system_id=str(sys_obj.id),
@@ -587,49 +592,33 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         description=description,
                     )
                 if action == "list":
-                    rows = (
-                        await session.execute(select(System).order_by(System.name))
-                    ).scalars().all()
+                    rows = await list_systems(session)
                     result = []
                     for row in rows:
-                        cnt = (
-                            await session.execute(
-                                select(SystemProject.project_id).where(
-                                    SystemProject.system_id == row.id
-                                )
-                            )
-                        ).scalars().all()
+                        cnt = await count_system_projects(session, system_id=row.id)
                         result.append(
                             {
                                 "system_id": str(row.id),
                                 "name": row.name,
                                 "description": row.description,
-                                "project_count": len(cnt),
+                                "project_count": cnt,
                             }
                         )
                     return ManageSystemOutput(action="list", systems=result)
 
                 if not system_id:
                     raise ValueError("set_projects / bind_keys 必须指定 system_id")
-                exists = (
-                    await session.execute(
-                        select(System).where(System.id == system_id)
-                    )
-                ).scalar_one_or_none()
+                exists = await get_system(session, system_id)
                 if exists is None:
                     raise ValueError(f"system 不存在: {system_id}")
 
                 if action == "set_projects":
                     pids = [str(p) for p in (project_ids or [])]
-                    # 先清空该系统归属，再批量写入（幂等：删+插）
-                    await session.execute(
-                        delete(SystemProject).where(SystemProject.system_id == system_id)
+                    await set_system_projects(
+                        session,
+                        system_id=system_id,
+                        project_ids=[uuid.UUID(p) for p in pids],
                     )
-                    for pid in pids:
-                        session.add(
-                            SystemProject(system_id=system_id, project_id=uuid.UUID(pid))
-                        )
-                    await session.flush()
                     return ManageSystemOutput(
                         action="set_projects",
                         system_id=str(system_id),
@@ -653,7 +642,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
                 raise ValueError(f"未知 action: {action}")
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def manage_project_profile(
@@ -682,8 +671,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
             profile_id = _resolve_profile_id(project_id)
             if project_id is not None:
                 validate_project_access(project_id)
-            ctx = get_context()
-            lifespan_ctx = ctx.lifespan_context
+            lifespan_ctx = get_lifespan_context()
             key_id = get_current_key_id()
 
             async with transactional_session() as session:
@@ -744,6 +732,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         actor=key_id,
                         regenerate_vector=True,
                     )
+                    # ProjectProfile 节点必归属项目（画像链路 project_id 恒有值）
+                    assert node.project_id is not None
                     return ManageProjectProfileOutput(
                         # 出参 project_id 取实际节点归属（AUDIT §2.16：此前
                         # update 未传 project_id 时误用随机新生成的 profile_id）
@@ -756,7 +746,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 else:
                     raise ValueError(f"未知 action: {action}")
         except (NodeNotFoundError, SchemaValidationError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def reindex_project_vectors(
@@ -792,7 +782,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 project_id=project_id, task_id=task_id, reindexed=0, status="pending"
             )
         except (NodeNotFoundError, ValueError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def get_reindex_status(
@@ -803,6 +793,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
             task = await get_task_record(task_id)
             if task is None:
                 raise ValueError(f"任务不存在: {task_id}")
+            # reindex_project_vectors 创建的任务必有 project_id（整库重嵌按项目定位）
+            assert task.project_id is not None
             return ReindexStatusOutput(
                 task_id=task.id,
                 project_id=task.project_id,
@@ -816,7 +808,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 created_at=task.created_at,
             )
         except ValueError as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
 
 # ============================================================================
@@ -825,7 +817,9 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
 
 async def _has_approved_profile(
-    session, project_id, exclude_node_id
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    exclude_node_id: uuid.UUID,
 ) -> bool:
     """判断项目下是否存在其他 approved 画像节点（供 create 提示）。
 
@@ -834,13 +828,13 @@ async def _has_approved_profile(
     from sqlalchemy import select
 
     from mem_lake.knowledge.models import KnowledgeNode
+    from mem_lake.search.filters import node_active_approved
 
     stmt = (
         select(KnowledgeNode.id)
         .where(KnowledgeNode.project_id == project_id)
         .where(KnowledgeNode.type == "ProjectProfile")
-        .where(KnowledgeNode.status == "approved")
-        .where(KnowledgeNode.is_deleted.is_(False))
+        .where(*node_active_approved())
         .where(KnowledgeNode.id != exclude_node_id)
         .limit(1)
     )
@@ -848,12 +842,12 @@ async def _has_approved_profile(
     return result.scalar_one_or_none() is not None
 
 
-def _profile_properties(profile: "ProjectProfileInput") -> dict:
+def _profile_properties(profile: "ProjectProfileInput") -> dict[str, Any]:
     """合并 work_dir/repo 到 properties 副本，避免修改入参。
 
     work_dir/repo 为可选元数据字段，仅当非空时写入，便于 get_project_info 回显。
     """
-    props: dict = dict(profile.properties or {})
+    props: dict[str, Any] = dict(profile.properties or {})
     if profile.work_dir is not None:
         props["work_dir"] = profile.work_dir
     if profile.repo is not None:
@@ -861,7 +855,7 @@ def _profile_properties(profile: "ProjectProfileInput") -> dict:
     return props
 
 
-def _to_access_key_output(access_key) -> AccessKeyOutput:
+def _to_access_key_output(access_key: AccessKey) -> AccessKeyOutput:
     """从 AccessKey ORM 对象构造 AccessKeyOutput。
 
     access_key.created_at/revoked_at 在 ORM 中为 naive datetime（列类型未带时区），
@@ -881,12 +875,15 @@ def _to_access_key_output(access_key) -> AccessKeyOutput:
         if isinstance(access_key.project_scope, dict)
         else {"systems": [], "projects": [str(x) for x in (access_key.project_scope or [])]}
     )
+    # created_at 恒有值（server_default now），仅需补时区；断言其非空以便类型收敛
+    created_at = _as_utc_aware(access_key.created_at)
+    assert created_at is not None
     return AccessKeyOutput(
         key_id=access_key.id,
         role=access_key.role,
         project_scope=[str(p) for p in scope.get("projects", [])],
         status=access_key.status,
         lax_mode=bool(access_key.lax_mode),
-        created_at=_as_utc_aware(access_key.created_at),
+        created_at=created_at,
         revoked_at=_as_utc_aware(access_key.revoked_at),
     )

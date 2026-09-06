@@ -17,7 +17,7 @@ import logging
 import re
 import uuid
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,15 +58,22 @@ class AGEGraphStore(GraphStore):
         self._graph_name = graph_name
 
     async def _ensure_age_session(self, session: AsyncSession) -> None:
-        """确保会话已加载 AGE 扩展并设置 search_path（幂等）。"""
+        """确保会话已加载 AGE 扩展并设置事务级 search_path（幂等）。
+
+        FIX-19：cypher() 函数与裸 agtype 类型依赖 search_path 含 ag_catalog
+        （AGE 对 PREPARE 参数化路径的硬依赖，全限定 `ag_catalog.cypher` 对
+        无参数路径可行但参数化路径的 $1 类型匹配失败）。采用 `SET LOCAL`：
+        仅在当前事务内生效，事务结束（commit/rollback）自动恢复原 search_path，
+        消除此前 `SET` 的会话级残留（连接归还后不再污染同连接后续查询）。
+        """
         await session.execute(text("LOAD 'age'"))
-        await session.execute(text("SET search_path = ag_catalog, public"))
+        await session.execute(text("SET LOCAL search_path = ag_catalog, public"))
 
     async def _exec_cypher(
         self,
         session: AsyncSession,
         cypher_stmt: str,
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
     ) -> list[Any]:
         """执行 Cypher 语句并返回结果列表。
 
@@ -87,7 +94,8 @@ class AGEGraphStore(GraphStore):
 
         if params is None:
             sql = text(
-                f"SELECT * FROM cypher({graph_literal}, {dollar_cypher}) AS (result agtype)"
+                f"SELECT * FROM ag_catalog.cypher({graph_literal}, {dollar_cypher}) "
+                f"AS (result ag_catalog.agtype)"
             )
             result = await session.execute(sql)
             return [row[0] for row in result]
@@ -98,8 +106,9 @@ class AGEGraphStore(GraphStore):
         params_json = json.dumps(params)
 
         prepare_sql = text(
-            f"PREPARE {stmt_name}(agtype) AS "
-            f"SELECT * FROM cypher({graph_literal}, {dollar_cypher}, $1) AS (result agtype)"
+            f"PREPARE {stmt_name}(ag_catalog.agtype) AS "
+            f"SELECT * FROM ag_catalog.cypher({graph_literal}, {dollar_cypher}, $1) "
+            f"AS (result ag_catalog.agtype)"
         )
         await session.execute(prepare_sql)
 
@@ -126,7 +135,7 @@ class AGEGraphStore(GraphStore):
         await session.execute(text(f"DEALLOCATE {stmt_name}"))
         return [row[0] for row in result]
 
-    def _parse_agtype(self, value: Any) -> dict | list | None:
+    def _parse_agtype(self, value: Any) -> dict[str, Any] | list[Any] | None:
         """解析 agtype 字符串为 Python 对象。
 
         AGE 返回 '{"id":..., "label":..., "properties":{...}}::vertex' 形式的字符串。
@@ -139,7 +148,8 @@ class AGEGraphStore(GraphStore):
         # 全局移除所有 ::vertex/::edge/::path 类型后缀（含嵌套结构内的多个后缀）
         s = _AGE_TYPE_SUFFIX_RE.sub("", s)
         try:
-            return json.loads(s)
+            # json.loads 返回类型被 mypy 视为 Any，cast 收敛为声明的联合返回类型
+            return cast(dict[str, Any] | list[Any], json.loads(s))
         except (json.JSONDecodeError, ValueError):
             # FIX-14：解析失败留痕（原始值前 200 字符），避免静默丢数据无日志可查；
             # 返回 None 的优雅降级保留（调用方判空）。
@@ -151,7 +161,7 @@ class AGEGraphStore(GraphStore):
         session: AsyncSession,
         node_id: uuid.UUID,
         label: str,
-        properties: dict,
+        properties: dict[str, Any],
     ) -> None:
         """添加节点。label 经白名单校验，properties 通过 PREPARE 参数化。
 
@@ -181,7 +191,7 @@ class AGEGraphStore(GraphStore):
         from_id: uuid.UUID,
         to_id: uuid.UUID,
         edge_type: str,
-        properties: dict,
+        properties: dict[str, Any],
     ) -> None:
         """添加边。edge_type 经白名单校验，properties 逐属性 SET。
 
@@ -257,7 +267,7 @@ class AGEGraphStore(GraphStore):
         node_id: uuid.UUID,
         edge_type: str | None = None,
         depth: int = 1,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """邻居遍历。edge_type=None 时不限类型，depth 控制遍历深度。
 
         语义说明：本实现的遍历为**无向**（-[r]- / -[*1..N]- 模式），即有向边
@@ -294,7 +304,12 @@ class AGEGraphStore(GraphStore):
                 )
                 params = {"node_id": str(node_id)}
                 rows = await self._exec_cypher(session, cypher, params)
-                return [p for p in (self._parse_agtype(r) for r in rows) if p is not None]
+                # members 为 agtype 节点 dict，cast 收敛为声明的返回元素类型
+                return [
+                    cast(dict[str, Any], p)
+                    for p in (self._parse_agtype(r) for r in rows)
+                    if p is not None
+                ]
             else:
                 # depth>1：AGE v1.7.0 不支持 ALL() 谓词，取路径后在 Python 端过滤
                 cypher = (
@@ -303,7 +318,7 @@ class AGEGraphStore(GraphStore):
                 )
                 params = {"node_id": str(node_id)}
                 rows = await self._exec_cypher(session, cypher, params)
-                result: list[dict] = []
+                result: list[dict[str, Any]] = []
                 seen: set[str] = set()
                 for row in rows:
                     parsed = self._parse_agtype(row)
@@ -332,14 +347,19 @@ class AGEGraphStore(GraphStore):
         )
         params = {"node_id": str(node_id)}
         rows = await self._exec_cypher(session, cypher, params)
-        return [p for p in (self._parse_agtype(r) for r in rows) if p is not None]
+        # members 为 agtype 节点 dict，cast 收敛为声明的返回元素类型
+        return [
+            cast(dict[str, Any], p)
+            for p in (self._parse_agtype(r) for r in rows)
+            if p is not None
+        ]
 
     async def neighbors_with_context(
         self,
         session: AsyncSession,
         node_id: uuid.UUID,
         depth: int = 2,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """邻居遍历并透出路径边类型与跳数（供 get_requirement_context 替换 unknown 占位）。
 
         返回结构化结果列表，每项：{"node": <agtype 节点 dict>, "edge_types": [label...],
@@ -357,7 +377,7 @@ class AGEGraphStore(GraphStore):
         )
         params = {"node_id": str(node_id)}
         rows = await self._exec_cypher(session, cypher, params)
-        seen: dict[str, dict] = {}
+        seen: dict[str, dict[str, Any]] = {}
         for row in rows:
             parsed = self._parse_agtype(row)
             if not isinstance(parsed, dict):

@@ -14,16 +14,16 @@
 """
 
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mem_lake.knowledge.models import SystemProject
+from mem_lake.knowledge.models import KnowledgeNode
+from mem_lake.knowledge.repository import get_system_project_ids
 
 
 async def is_requirement_visible(
     session: AsyncSession,
     *,
-    req_node,
+    req_node: KnowledgeNode,
     role: str,
     project_scope: list[str],
     system_scope: list[str],
@@ -43,13 +43,9 @@ async def is_requirement_visible(
 
     # dev：需求 system 含调用者任一 project → 可见
     if role == "dev" and req_system is not None and project_scope:
-        result = await session.execute(
-            select(SystemProject.project_id).where(
-                SystemProject.system_id == req_system
-            )
-        )
-        sys_projects = {str(row[0]) for row in result}
-        if sys_projects & set(project_scope):
+        sys_projects = await get_system_project_ids(session, system_id=req_system)
+        sys_projects_str = {str(pid) for pid in sys_projects}
+        if sys_projects_str & set(project_scope):
             return True
 
     return False

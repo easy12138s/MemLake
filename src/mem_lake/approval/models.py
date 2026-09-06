@@ -8,6 +8,7 @@ target_id 在审批通过后回填实际节点 ID（边无 target_id，留空）
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -63,7 +64,9 @@ class ApprovalBatch(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="审核人 Access Key ID")
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="审核时间")
     review_comment: Mapped[str | None] = mapped_column(Text, nullable=True, comment="审核意见（拒绝时填写）")
-    conflict_hint: Mapped[dict | None] = mapped_column(JSONB, nullable=True, comment="冲突检测提示（审批通过时生成）")
+    conflict_hint: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True, comment="冲突检测提示（审批通过时生成）"
+    )
     operation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="幂等操作标识")
 
     items: Mapped[list["ApprovalItem"]] = relationship(
@@ -124,7 +127,7 @@ class ApprovalItem(Base):
         nullable=False,
         comment="节点类型（Requirement/CodeSnippet/...）或关系类型（implements/conflicts_with/...）",
     )
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, comment="完整内容（审批通过后写入正式存储）")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, comment="完整内容（审批通过后写入正式存储）")
     target_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True, comment="审批通过后写入的实际节点 ID（回填）"
     )

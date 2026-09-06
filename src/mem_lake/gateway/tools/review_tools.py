@@ -18,10 +18,9 @@ review_approve 是唯一触发知识图谱写入的入口（原子性写入由 s
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_context
 from pydantic import BaseModel, Field
 
 from mem_lake.approval.service import (
@@ -48,10 +47,15 @@ from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     ApprovalResultOutput,
     _safe_enqueue_embed,
+    get_lifespan_context,
     to_tool_error,
 )
 from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
+
+if TYPE_CHECKING:
+    # 仅类型标注用：_to_pending_batch_item/_to_batch_detail_output 接收 ApprovalBatch ORM 对象
+    from mem_lake.approval.models import ApprovalBatch
 
 logger = logging.getLogger("mem_lake.gateway.tools.review")
 
@@ -181,7 +185,7 @@ def register_review_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def review_batch_detail(
@@ -200,7 +204,7 @@ def register_review_tools(mcp: FastMCP) -> None:
             finally:
                 await session.close()
         except Exception as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def review_approve(
@@ -216,8 +220,7 @@ def register_review_tools(mcp: FastMCP) -> None:
         临时引用（from_ref/to_ref）在此时解析为实际节点 ID。
         """
         try:
-            ctx = get_context()
-            lifespan_ctx = ctx.lifespan_context
+            lifespan_ctx = get_lifespan_context()
 
             async with transactional_session() as session:
                 batch = await approval_review_approve(
@@ -243,6 +246,7 @@ def register_review_tools(mcp: FastMCP) -> None:
             #（AUDIT §2.11：避免"审批成功但工具报错"的 Agent 误判重试窗口）。
             if created_node_ids:
                 await _safe_enqueue_embed(batch.project_id, created_node_ids)
+            assert batch.reviewed_at is not None  # 审批通过后 reviewed_at 必已回填（列类型可为空）
             return ApprovalResultOutput(
                 batch_id=batch.id,
                 status=batch.status,
@@ -255,7 +259,7 @@ def register_review_tools(mcp: FastMCP) -> None:
             NodeNotFoundError,
             SchemaValidationError,
         ) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def review_reject(
@@ -277,6 +281,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                     reviewed_by=get_current_key_id(),
                     review_comment=review_comment,
                 )
+            assert batch.reviewed_at is not None  # 审批退回后 reviewed_at 必已回填（列类型可为空）
             return ApprovalResultOutput(
                 batch_id=batch.id,
                 status=batch.status,
@@ -284,7 +289,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                 conflict_hint=None,
             )
         except (BatchNotFoundError, BatchStatusError) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def review_auto_process(
@@ -304,8 +309,7 @@ def register_review_tools(mcp: FastMCP) -> None:
         换 embedding 模型后需重新标定）。三层全部通过才视为冲突。
         """
         try:
-            ctx = get_context()
-            lifespan_ctx = ctx.lifespan_context
+            lifespan_ctx = get_lifespan_context()
 
             async with transactional_session() as session:
                 result = await auto_process_batch(
@@ -338,7 +342,7 @@ def register_review_tools(mcp: FastMCP) -> None:
             NodeNotFoundError,
             SchemaValidationError,
         ) as e:
-            raise to_tool_error(e)
+            raise to_tool_error(e) from e
 
 
 # ============================================================================
@@ -346,7 +350,7 @@ def register_review_tools(mcp: FastMCP) -> None:
 # ============================================================================
 
 
-def _to_pending_batch_item(batch) -> PendingBatchItem:
+def _to_pending_batch_item(batch: "ApprovalBatch") -> PendingBatchItem:
     """从 ApprovalBatch ORM 对象构造 PendingBatchItem。"""
     from datetime import timezone
 
@@ -373,7 +377,7 @@ def _to_pending_batch_item(batch) -> PendingBatchItem:
     )
 
 
-def _to_batch_detail_output(batch) -> ReviewBatchDetailOutput:
+def _to_batch_detail_output(batch: "ApprovalBatch") -> ReviewBatchDetailOutput:
     """从 ApprovalBatch ORM 对象构造 ReviewBatchDetailOutput。"""
     return ReviewBatchDetailOutput(
         batch_id=batch.id,

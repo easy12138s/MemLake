@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     # 作为紧急熔断（单一判定源见 approval/service.submit_batch_with_mode）。
     LAX_MODE_ENABLED: bool = True
 
+    # ========== 业务阈值（FIX-21：收敛硬编码，可环境覆盖）==========
+    # 单审批批次 items 上限（节点+边总数，防止一次灌入造成滥用）
+    MAX_ITEMS_PER_BATCH: int = 50
+    # 节点 title/content 等文本字段最大长度（字符，防御超长内容撑爆存储/嵌入）
+    MAX_CONTENT_LENGTH: int = 10000
+    # 标签语义扩展的相似度阈值（默认 0.7）：仅保留余弦相似度 >= 阈值的候选标签
+    TAG_EXPANSION_THRESHOLD: float = 0.7
+    # 冲突建议级别阈值：检索最高相似度 >= 该值 → manual_merge，否则 review
+    CONFLICT_SUGGEST_PENDING: float = 0.95
+
     # ========== 可观测性 ==========
     # 是否挂载网关 /metrics（Prometheus 拉取）。面向内网，默认不加鉴权。
     OBS_METRICS_ENABLED: bool = True

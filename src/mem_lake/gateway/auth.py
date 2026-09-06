@@ -12,6 +12,8 @@ MCP-Protocol-Version 头与正文 _meta.protocolVersion 不一致返回错误码
 -32020 为项目自定义错误码（落在 -32000~-32099 保留段合法，MCP 官方未定义此码）。
 """
 
+from typing import Any
+
 from fastmcp.exceptions import McpError
 
 # Access Key 头名（PDD 3.1 / 6.2）
@@ -30,7 +32,7 @@ PROTOCOL_VERSION_MISMATCH_ERROR_CODE = -32020
 
 
 def validate_protocol_version(
-    headers: dict[str, str], message_meta: dict | None
+    headers: dict[str, str], message_meta: dict[str, Any] | None
 ) -> None:
     """校验 MCP-Protocol-Version 头与正文 _meta.protocolVersion 一致性。
 

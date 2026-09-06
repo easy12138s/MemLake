@@ -16,10 +16,11 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 
-from mem_lake.embedding.client import get_embedding_client
+from mem_lake.embedding.client import EmbeddingClient, get_embedding_client
 from mem_lake.gateway.dependencies import (
     get_readonly_session,
     transactional_session,
@@ -42,7 +43,7 @@ logger = logging.getLogger("mem_lake.gateway.background_tasks")
 
 # 持有进行中 asyncio.Task 引用，防止被 GC（任务在接收请求的 worker 事件循环上运行）。
 # 任务完成后由 done_callback 自动移除。
-ACTIVE_TASKS: set[asyncio.Task] = set()
+ACTIVE_TASKS: set[asyncio.Task[Any]] = set()
 
 DEFAULT_BATCH_SIZE = 50
 
@@ -105,7 +106,7 @@ async def find_running_task(project_id: uuid.UUID) -> ReindexTask | None:
         await session.close()
 
 
-async def _patch_task(task_id: uuid.UUID, **fields) -> None:
+async def _patch_task(task_id: uuid.UUID, **fields: Any) -> None:
     """补丁式更新任务字段（统一带 updated_at）。独立事务。"""
     fields["updated_at"] = datetime.now(timezone.utc)
     async with transactional_session() as session:
@@ -134,7 +135,9 @@ async def _claim_task(task_id: uuid.UUID) -> bool:
                 updated_at=datetime.now(timezone.utc),
             )
         )
-        return int(result.rowcount) > 0  # type: ignore[union-attr]
+        # rowcount 是 CursorResult 的真实属性；SQLAlchemy 泛化 execute() 返回 Result，
+        # 经 cast 收敛以便访问（避免 type: ignore[attr-defined] 掩盖 stub 局限）。
+        return int(cast("CursorResult[Any]", result).rowcount) > 0
 
 
 # ============================================================================
@@ -143,16 +146,20 @@ async def _claim_task(task_id: uuid.UUID) -> bool:
 
 
 async def _reindex_worker(
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     task_id: uuid.UUID,
     actor: str,
     batch_size: int,
-    embedding_client,  # EmbeddingClient
+    embedding_client: EmbeddingClient,
 ) -> None:
     """后台重嵌协程：分页遍历全部 approved 节点，批量向量化并写回。
 
     状态机：pending → running → done / failed。进度（processed/total）实时落库，
     供 get_reindex_status 轮询。异常时整体标记 failed 并记录 error。
+
+    project_id 可为 None：仅「嵌入指定节点」任务（start_embed_nodes_task）允许
+    project_id 为空，此类任务在下面 target_node_ids 分支提前 return，不会进入
+    需要按项目过滤的整库扫描路径（list/count 均要求非空 project_id）。
     """
     try:
         # 防重入 DB 抢占：仅当任务仍为 pending 时置 running（条件更新）。
@@ -174,6 +181,9 @@ async def _reindex_worker(
             )
             return
 
+        # 进入整库扫描（按项目过滤）：只有 project_id 非空的任务才会走到此路径
+        # （project_id=None 的嵌入任务已在上方 return），此处防御性断言供类型收窄。
+        assert project_id is not None
         async with transactional_session() as session:
             total = await count_nodes_by_project(
                 session, project_id=project_id, status="approved"
@@ -231,7 +241,7 @@ async def _embed_specific_nodes(
     task_id: uuid.UUID,
     actor: str,
     batch_size: int,
-    embedding_client,  # EmbeddingClient
+    embedding_client: EmbeddingClient,
 ) -> None:
     """节点级嵌入协程：仅嵌入 task.target_node_ids 指定的节点。
 
@@ -278,8 +288,8 @@ def _spawn_worker(
     task_id: uuid.UUID,
     actor: str,
     batch_size: int,
-    embedding_client,  # EmbeddingClient
-) -> asyncio.Task:
+    embedding_client: EmbeddingClient,
+) -> asyncio.Task[Any]:
     """创建 _reindex_worker 后台协程并挂到 ACTIVE_TASKS。
 
     统一三处调用点（start_embed_nodes_task / start_reindex_task /
