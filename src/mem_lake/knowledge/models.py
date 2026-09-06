@@ -1,8 +1,9 @@
 """SQLAlchemy ORM 模型：knowledge_node 表。
 
 对齐 PDD 4.2 节点主表 Schema。节点统一存储于 knowledge_node 表，通过 type 字段区分实体类型，
-properties JSONB 存储类型特有属性。content_vector 支撑向量检索，content_tsv 支撑全文检索。
-HNSW 向量索引通过 pgvector-python 官方方案放入 __table_args__，随 create_all 创建
+properties JSONB 存储类型特有属性。向量检索走 node_embedding 表的 facet 多向量（FIX-08 后
+knowledge_node.content_vector 列废弃），content_tsv 支撑全文检索。
+node_embedding 的 HNSW 向量索引通过 pgvector-python 官方方案放入 __table_args__，随 create_all 创建
 （opclass 为 vector_ip_ops，配 1024 维归一化向量；参数 m=32、ef_construction=400）。
 content_tsv 使用 PostgreSQL 内置 TSVECTOR 类型（GIN 索引默认 tsvector_ops opclass）。
 """
