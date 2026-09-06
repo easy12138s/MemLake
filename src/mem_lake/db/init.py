@@ -172,12 +172,9 @@ async def check_migrations_synced(session: AsyncSession) -> None:
     script_head = ScriptDirectory.from_config(cfg).get_current_head()
 
     if db_current != script_head:
-        action = (
-            "alembic upgrade head"
-            if db_current != script_head
-            else "alembic stamp head"
-        )
         raise RuntimeError(
             f"数据库 Alembic 版本（{db_current!r}）与脚本目录 head（{script_head!r}）不一致。"
-            f"处置命令：{action}（在项目根目录、使用 conda memlake 环境执行）。"
+            "处置：执行 alembic upgrade head 应用增量迁移；"
+            "若确认库 schema 实际已是最新（仅版本登记错位），执行 alembic stamp head 重新登记。"
+            "（容器部署由启动命令自动执行 upgrade；本地开发在项目根目录、conda memlake 环境执行）"
         )

@@ -143,9 +143,18 @@ git pull
 docker compose up -d --build
 ```
 
-Schema 说明：业务表 schema 由应用启动时 `create_tables()` 按 models 定义经 `create_all` 全量生成（全新安装-only），tsvector 触发器由 `init_knowledge_schema()` 幂等重建，均无需手动迁移。
+Schema 说明：业务表 schema 变更由 Alembic 迁移管理（`alembic/versions/`），mem-lake 容器启动时自动执行 `alembic upgrade head`（幂等）；`create_tables()` 保留作为 v1.0.x 过渡期兜底，tsvector 触发器由 `init_knowledge_schema()` 幂等重建。应用启动时会校验 `alembic_version` 与迁移脚本目录一致，不一致将拒绝启动并在日志中给出处置命令。
 
-v1.0.0 不支持原地升级。旧部署如需保留数据迁移到 v1.0.0：用 `deploy/backup.sh` 备份 → 按发行版全新重建（`docker compose down -v` → `up -d --build`）→ 用 `deploy/restore.sh` 恢复；恢复的旧数据须符合 v1.0.0 契约（节点 properties 不得含 `requirement_id` 等白名单外字段、`project_scope` 须为 `{systems,projects}` 字典结构）。
+存量 v1.0.0 部署原地升级（保留数据）：
+
+```bash
+git pull
+docker compose build mem-lake
+docker compose run --rm mem-lake alembic stamp 0001_initial   # 登记基线（不改动 schema）
+docker compose up -d                                           # 启动时自动 upgrade head（含 0002 向量索引 opclass 修复）
+```
+
+早于 v1.0.0 的历史部署仍走备份迁移：`deploy/backup.sh` 备份 → 全新重建（`docker compose down -v` → `up -d --build`）→ `deploy/restore.sh` 恢复；恢复的旧数据须符合 v1.0.0 契约（节点 properties 不得含 `requirement_id` 等白名单外字段、`project_scope` 须为 `{systems,projects}` 字典结构），恢复完成后按上方存量升级流程登记 Alembic 基线。
 
 ### 数据库状态查询
 
