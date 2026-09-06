@@ -16,6 +16,7 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, replace
+from typing import Any
 
 from mem_lake.config import get_settings
 from mem_lake.db.session import AsyncSessionLocal
@@ -42,8 +43,8 @@ class SearchResult:
     node_type: str
     score: float | None
     source: str  # "vector" / "fulltext" / "graph" / "fused"
-    properties: dict
-    tags: list
+    properties: dict[str, Any]
+    tags: list[str]
     # 图遍历上下文（仅 get_requirement_context 路径填充，其他来源为 None）：
     edge_types: list[str] | None = None  # 路径边类型列表（从起点出发每一跳一个）
     graph_depth: int | None = None  # 路径跳数（1=直接关联）
@@ -178,7 +179,7 @@ async def hybrid_search(
     filters: FilterSpec | None = None,
     graph_node_id: uuid.UUID | None = None,
     graph_depth: int = 3,
-) -> dict:
+) -> dict[str, Any]:
     """并行三引擎混合检索。
 
     向量与全文引擎并行执行并 RRF 融合；图遍历作为独立路径仅在提供 graph_node_id 时执行

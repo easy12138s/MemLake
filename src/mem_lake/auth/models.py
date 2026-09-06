@@ -8,6 +8,7 @@
 import secrets
 import uuid
 from datetime import datetime
+from typing import Any
 
 import bcrypt
 from sqlalchemy import Boolean, Index, String, text
@@ -38,7 +39,7 @@ class AccessKey(Base):
     role: Mapped[str] = mapped_column(
         String(16), comment="业务角色: admin/pm/dev"
     )
-    project_scope: Mapped[dict] = mapped_column(
+    project_scope: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         default=dict,
         server_default=text("'{\"systems\":[],\"projects\":[]}'::jsonb"),

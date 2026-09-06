@@ -8,9 +8,9 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-import yaml
+import yaml  # type: ignore[import-untyped]  # 无官方 stub；运行依赖 pyyaml，仅供 safe_load 使用
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_context
 from mcp_types import ToolAnnotations
@@ -32,6 +32,12 @@ from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError, validate_attribution
 
 logger = logging.getLogger("mem_lake.gateway.tools.shared")
+
+if TYPE_CHECKING:
+    # 仅用于类型标注：lifespan 共享资源的真实类型在 gateway/server.py 定义，
+    # 运行期不 import（避免工具↔server 的模块级循环依赖）。
+    from mem_lake.approval.models import ApprovalBatch
+    from mem_lake.gateway.server import LifespanContext
 
 
 # ============================================================================
@@ -101,7 +107,7 @@ class WriteToolOutput(BaseModel):
 
     @classmethod
     def from_batch(
-        cls, batch, decision: str | None = None
+        cls, batch: "ApprovalBatch", decision: str | None = None
     ) -> "WriteToolOutput":
         """从 ApprovalBatch ORM 对象构造输出。"""
         return cls(
@@ -446,13 +452,24 @@ async def _safe_enqueue_embed(
 # ============================================================================
 
 
+def get_lifespan_context() -> "LifespanContext":
+    """返回类型化的 lifespan 共享资源容器。
+
+    FastMCP 的 ``get_context().lifespan_context`` 类型标注为 ``dict``（fastmcp
+    泛化 type alias），但运行时是 ``gateway.server.LifespanContext`` 实例（@lifespan
+    yield 的对象，含 graph_store/embedding_client/vector_searcher 属性）。工具层
+    统一经本 helper 取回类型化上下文，避免各工具各自 cast / type: ignore。
+    """
+    ctx = get_context()
+    return cast("LifespanContext", ctx.lifespan_context)
+
+
 def _lax_lifespan_resources() -> tuple[Any, Any, Any]:
     """宽松模式下从 lifespan context 取图谱/嵌入/检索依赖。
 
     返回 (graph_store, embedding_client, vector_searcher)；strict 模式无需调用。
     """
-    ctx = get_context()
-    lifespan_ctx = ctx.lifespan_context
+    lifespan_ctx = get_lifespan_context()
     return (
         lifespan_ctx.graph_store,
         lifespan_ctx.embedding_client,

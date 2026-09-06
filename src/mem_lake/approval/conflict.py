@@ -17,6 +17,7 @@
 """
 
 import uuid
+from typing import Any
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mem_lake.config import get_settings
 from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.models import KnowledgeNode
-from mem_lake.search.filters import FilterSpec
+from mem_lake.search.filters import FilterSpec, node_active_approved
 from mem_lake.search.vector import VectorSearcher
 
 # 各节点类型的关键标识字段：用于 L2 关键属性比对
@@ -55,12 +56,12 @@ async def detect_conflicts(
     node_type: str,
     title: str,
     content: str,
-    properties: dict,
+    properties: dict[str, Any],
     tags: list[str],
     exclude_node_id: uuid.UUID | None = None,
     top_k: int = 5,
     query_vector: list[float] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """三层架构检测节点是否与已有知识冲突。
 
     三层检测流程：
@@ -101,7 +102,7 @@ async def detect_conflicts(
             "suggestion": "review" | None
         }
     """
-    conflicting_nodes: list[dict] = []
+    conflicting_nodes: list[dict[str, Any]] = []
     candidates_examined = 0
 
     # L1 + L3：向量检索（FilterSpec 内含 project_id/system_id + node_type + status=approved 过滤）
@@ -192,9 +193,9 @@ async def _detect_exact_key_conflicts(
     project_id: uuid.UUID | None = None,
     system_id: uuid.UUID | None = None,
     node_type: str,
-    properties: dict,
+    properties: dict[str, Any],
     exclude_node_id: uuid.UUID | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """L0 硬判定：候选域内同类型下关键标识字段完全相同即判冲突（不依赖向量相似度）。
 
     捕获三层检测只在向量相似度 ≥ 阈值时才比对关键属性时，
@@ -215,8 +216,7 @@ async def _detect_exact_key_conflicts(
 
     conditions = [
         KnowledgeNode.type == node_type,
-        KnowledgeNode.status == "approved",
-        KnowledgeNode.is_deleted.is_(False),
+        *node_active_approved(),
     ]
     if project_id is not None:
         conditions.append(KnowledgeNode.project_id == project_id)
@@ -249,8 +249,8 @@ async def _detect_exact_key_conflicts(
 
 
 def _match_key_attrs(
-    new_props: dict, existing_props: dict, node_type: str
-) -> dict | None:
+    new_props: dict[str, Any], existing_props: dict[str, Any], node_type: str
+) -> dict[str, Any] | None:
     """比对关键标识字段，全部相同返回匹配字典，任一不同返回 None。
 
     参数：
@@ -287,8 +287,7 @@ async def get_node_for_conflict(
     stmt = (
         select(KnowledgeNode)
         .where(KnowledgeNode.id == node_id)
-        .where(KnowledgeNode.status == "approved")
-        .where(KnowledgeNode.is_deleted.is_(False))
+        .where(*node_active_approved())
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()

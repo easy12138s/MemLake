@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.schema import MAX_TRAVERSAL_DEPTH
-from mem_lake.search.filters import FilterSpec, compile_sqlalchemy
+from mem_lake.search.filters import FilterSpec, compile_sqlalchemy, node_active_approved
 from mem_lake.search.fusion import SearchResult, _truncate
 
 
@@ -156,7 +156,7 @@ class GraphSearcher:
         if not neighbor_ctxs:
             return []
 
-        id_to_ctx: dict[uuid.UUID, dict] = {}
+        id_to_ctx: dict[uuid.UUID, dict[str, Any]] = {}
         neighbor_ids: list[uuid.UUID] = []
         for nc in neighbor_ctxs:
             nid = _extract_node_id(nc.get("node"))
@@ -202,7 +202,7 @@ class GraphSearcher:
         session: AsyncSession,
         requirement_id: uuid.UUID,
         max_depth: int = 5,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """影响范围分析（PDD 4.3 示例）。
 
         从需求出发，遍历所有关联代码及其依赖，再展开到方案与设计意图：
@@ -230,11 +230,9 @@ class GraphSearcher:
         # 1. 需求节点：PG 查询（存在 + approved + 未软删除），不存在返回全空结果
         req_row = (
             await session.execute(
-                select(KnowledgeNode).where(
-                    KnowledgeNode.id == requirement_id,
-                    KnowledgeNode.status == "approved",
-                    KnowledgeNode.is_deleted.is_(False),
-                )
+                select(KnowledgeNode)
+                .where(KnowledgeNode.id == requirement_id)
+                .where(*node_active_approved())
             )
         ).scalar_one_or_none()
         if req_row is None:
@@ -262,8 +260,8 @@ class GraphSearcher:
         )
 
         # 3. 对每个代码节点，遍历 depends_on 依赖链与 realized_by 方案
-        all_dependencies: list[dict] = []
-        all_solutions: list[dict] = []
+        all_dependencies: list[dict[str, Any]] = []
+        all_solutions: list[dict[str, Any]] = []
         seen_dep_ids: set[str] = set()
         seen_sol_ids: set[str] = set()
 
@@ -299,7 +297,7 @@ class GraphSearcher:
             session, _extract_node_ids([*code_dicts, *all_dependencies, *all_solutions])
         )
 
-        def _filter_approved(dicts: list[dict]) -> list[dict]:
+        def _filter_approved(dicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [
                 d
                 for d in dicts
@@ -313,7 +311,7 @@ class GraphSearcher:
 
         # 5. 仅对 approved 的方案展开设计意图（Solution --embodies--> DesignIntent）
         #    （归档方案不再展开其意图：方案已不构成影响范围，其意图同样不算）
-        all_intents: list[dict] = []
+        all_intents: list[dict[str, Any]] = []
         seen_intent_ids: set[str] = set()
         for sol in solutions:
             sol_uuid = _extract_node_id(sol)
@@ -354,10 +352,8 @@ class GraphSearcher:
         if not node_ids:
             return set()
         result = await session.execute(
-            select(KnowledgeNode.id).where(
-                KnowledgeNode.id.in_(node_ids),
-                KnowledgeNode.status == "approved",
-                KnowledgeNode.is_deleted.is_(False),
-            )
+            select(KnowledgeNode.id)
+            .where(KnowledgeNode.id.in_(node_ids))
+            .where(*node_active_approved())
         )
         return {str(row[0]) for row in result}

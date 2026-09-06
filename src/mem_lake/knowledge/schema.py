@@ -95,7 +95,7 @@ def validate_node_type(node_type: str) -> None:
         )
 
 
-def validate_node(node_type: str, properties: dict) -> None:
+def validate_node(node_type: str, properties: dict[str, Any]) -> None:
     """校验节点类型、properties 必填字段与封闭字段白名单。
 
     - 校验 node_type 在 NODE_TYPES 中

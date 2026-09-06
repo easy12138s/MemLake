@@ -15,6 +15,7 @@
 import asyncio
 import time
 from functools import lru_cache
+from typing import Any, cast
 
 import httpx
 
@@ -87,7 +88,7 @@ class EmbeddingClient:
         prompt_name: str | None,
     ) -> list[list[float]]:
         """单块 /embed 请求（≤ MAX_TEXTS_PER_REQUEST），带瞬时错误指数退避重试。"""
-        body: dict = {"texts": texts}
+        body: dict[str, Any] = {"texts": texts}
         if prompt is not None:
             body["prompt"] = prompt
         if prompt_name is not None:
@@ -130,6 +131,10 @@ class EmbeddingClient:
             raise EmbeddingError(
                 f"Embedding 服务返回非 200: status={resp.status_code} body={resp.text[:200]}"
             )
+        # mypy 对所有 for 循环保守假设可能一次都不执行，故补一个终点 raise 以闭合
+        # 「缺返回」的类型分析；运行时 MAX_RETRIES+1>=1，循环必执行且每轮必 return/
+        # raise，此分支不可达，不改变运行行为。
+        raise EmbeddingError("Embedding 请求在重试上限内未完成（应不可达）")  # pragma: no cover
 
     async def embed_one(
         self,
@@ -144,7 +149,7 @@ class EmbeddingClient:
         result = await self.embed([text], prompt=prompt, prompt_name=prompt_name)
         return result[0]
 
-    async def health(self) -> dict:
+    async def health(self) -> dict[str, Any]:
         """健康检查。
 
         GET /health → {"status":"ok","model":"...","dimension":1024,"has_rerank":bool}。
@@ -164,7 +169,8 @@ class EmbeddingClient:
         if data.get("status") != "ok":
             raise EmbeddingError(f"Embedding 服务状态异常: {data}")
 
-        return data
+        # resp.json() 返回类型被 mypy 视为 Any，cast 收敛为声明的响应 dict 类型
+        return cast(dict[str, Any], data)
 
     async def has_rerank(self) -> bool:
         """查询服务端是否已加载 rerank 模型。

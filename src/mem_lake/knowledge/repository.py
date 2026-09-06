@@ -37,12 +37,14 @@ from mem_lake.knowledge.models import (
     NodeEmbedding,
     RequirementCounter,
     System,
+    SystemProject,
 )
 from mem_lake.knowledge.schema import (
     validate_attribution,
     validate_edge_type,
     validate_node,
 )
+from mem_lake.search.filters import node_active_approved
 
 
 class NodeNotFoundError(Exception):
@@ -230,6 +232,45 @@ async def _alloc_requirement_sequence(session: AsyncSession, system_id: uuid.UUI
     return int(result.scalar_one())
 
 
+async def _write_facets_batch(
+    session: AsyncSession,
+    *,
+    node_meta: list[tuple[uuid.UUID, str, str, str, dict[str, Any]]],
+    embedding_client: EmbeddingClient,
+) -> int:
+    """批量写入多向量 facet（FIX-25 单一实现，三调用点复用）。
+
+    node_meta 每项为 (node_id, node_type, title, content, properties)。所有节点的
+    所有 facet 文本一次批量 embed（减少 HTTP 往返），写回 node_embedding 表，
+    按 node_id 幂等（先删旧行再写）。返回写入的 facet 行数（全部空节点返回 0）。
+    不 commit，由调用方事务控制。
+    """
+    all_texts: list[str] = []
+    meta: list[tuple[uuid.UUID, str]] = []  # (node_id, facet_name)
+    for node_id, node_type, title, content, props in node_meta:
+        facets = build_embed_facets(node_type, title, content, props)
+        for fname, ftext in facets.items():
+            all_texts.append(ftext)
+            meta.append((node_id, fname))
+    if not all_texts:
+        return 0
+    vectors = await embedding_client.embed(all_texts)
+    # 幂等：先按节点批量删旧行，再插入新行
+    node_ids = [m[0] for m in meta]
+    await session.execute(
+        delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(node_ids))
+    )
+    for (node_id, fname), vec in zip(meta, vectors):
+        session.add(
+            NodeEmbedding(
+                node_id=node_id,
+                facet=fname,
+                content_vector=vec,
+            )
+        )
+    return len(meta)
+
+
 async def _store_facet_vectors(
     session: AsyncSession,
     *,
@@ -240,30 +281,16 @@ async def _store_facet_vectors(
     properties: dict[str, Any],
     embedding_client: EmbeddingClient,
 ) -> int:
-    """写入节点多向量 facet（32k 适配 D）。
+    """写入单个节点的多向量 facet（32k 适配 D）。
 
-    先删旧 facet 行（幂等更新），再按 build_embed_facets 构造各 facet 文本，
-    一次批量 embed 写回 node_embedding 表。返回写入的 facet 行数（0 表示空节点，不写）。
-    不 commit，由调用方事务控制。
+    FIX-25：收敛为 _write_facets_batch 的单元素调用（create_node/update_node 复用
+    同一实现），保持幂等（先清后写）。返回写入的 facet 行数（0 表示空节点不写）。
     """
-    facets = build_embed_facets(node_type, title, content, properties)
-    if not facets:
-        return 0
-    # 幂等：先清后写（更新场景）
-    await session.execute(
-        delete(NodeEmbedding).where(NodeEmbedding.node_id == node_id)
+    return await _write_facets_batch(
+        session,
+        node_meta=[(node_id, node_type, title, content, properties)],
+        embedding_client=embedding_client,
     )
-    texts = list(facets.values())
-    vectors = await embedding_client.embed(texts)
-    for facet_name, vec in zip(facets.keys(), vectors):
-        session.add(
-            NodeEmbedding(
-                node_id=node_id,
-                facet=facet_name,
-                content_vector=vec,
-            )
-        )
-    return len(facets)
 
 
 async def get_node(
@@ -521,31 +548,15 @@ async def batch_regenerate_vectors(
     """
     if not nodes:
         return 0
-    # 多向量 facet（32k 适配 D）：汇集所有节点所有 facet 文本，一次批量 embed
-    all_facet_texts: list[str] = []
-    node_facet_meta: list[tuple[uuid.UUID, str]] = []  # (node_id, facet_name)
-    for n in nodes:
-        facets = build_embed_facets(n.type, n.title, n.content, n.properties)
-        for fname, ftext in facets.items():
-            all_facet_texts.append(ftext)
-            node_facet_meta.append((n.id, fname))
-    facet_embeddings = (
-        await embedding_client.embed(all_facet_texts) if all_facet_texts else []
+    # FIX-25：收敛到 _write_facets_batch 单一实现（汇集所有节点所有 facet 文本一次
+    # 批量 embed，幂等写回），与 create_node/update_node/batch_insert_requirements 复用。
+    await _write_facets_batch(
+        session,
+        node_meta=[
+            (n.id, n.type, n.title, n.content, n.properties) for n in nodes
+        ],
+        embedding_client=embedding_client,
     )
-
-    # 写回 facets：先按节点批量删旧行，再插入新行
-    node_ids = [n.id for n in nodes]
-    await session.execute(
-        delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(node_ids))
-    )
-    for (node_id, fname), vec in zip(node_facet_meta, facet_embeddings):
-        session.add(
-            NodeEmbedding(
-                node_id=node_id,
-                facet=fname,
-                content_vector=vec,
-            )
-        )
 
     for node in nodes:
         await write_audit_log(
@@ -592,34 +603,19 @@ async def batch_insert_requirements(
             seq = await _alloc_requirement_sequence(session, system_id)
             node.requirement_key = f"{prefix}-{seq:04d}"
 
-    # 多向量 facet（32k 适配 D）：汇集所有节点所有 facet 文本，一次批量 embed。
-    # facet 文本按 node_index 归组，node_id 需在 flush 后解析。
-    all_facet_texts: list[str] = []
-    node_facet_meta: list[tuple[int, str]] = []  # (node_index, facet_name)
-    for node_index, n in enumerate(nodes):
-        facets = build_embed_facets(n.type, n.title, n.content, n.properties)
-        for fname, ftext in facets.items():
-            all_facet_texts.append(ftext)
-            node_facet_meta.append((node_index, fname))
-    facet_embeddings = (
-        await embedding_client.embed(all_facet_texts)
-        if (embedding_client and all_facet_texts)
-        else []
-    )
-
     session.add_all(nodes)
     await session.flush()  # 触发 server_default 生成 id 与 created_at
 
-    # 写 facet 行（节点 id 就绪后）
-    if facet_embeddings:
-        for facet_idx, (node_index, fname) in enumerate(node_facet_meta):
-            session.add(
-                NodeEmbedding(
-                    node_id=nodes[node_index].id,
-                    facet=fname,
-                    content_vector=facet_embeddings[facet_idx],
-                )
-            )
+    # 写 facet 行：节点 id 需在 flush 后解析，故在 flush 之后汇总 node_meta 并收敛到
+    # _write_facets_batch（FIX-25：与 create_node/update_node/batch_regenerate_vectors 复用）。
+    if embedding_client:
+        await _write_facets_batch(
+            session,
+            node_meta=[
+                (n.id, n.type, n.title, n.content, n.properties) for n in nodes
+            ],
+            embedding_client=embedding_client,
+        )
 
     # AGE 图节点 + 审计日志
     for node in nodes:
@@ -663,7 +659,7 @@ async def get_distinct_tags(
     if node_type is not None:
         base += " AND type = :nt"
     stmt = text(base)
-    params = {"pid": project_id}
+    params: dict[str, Any] = {"pid": project_id}
     if node_type is not None:
         params["nt"] = node_type
     result = await session.execute(stmt, params)
@@ -686,11 +682,91 @@ async def list_project_profiles(
     stmt = (
         select(KnowledgeNode)
         .where(KnowledgeNode.type == "ProjectProfile")
-        .where(KnowledgeNode.is_deleted == False)  # noqa: E712
-        .where(KnowledgeNode.status == "approved")
+        .where(*node_active_approved())
     )
     if project_ids is not None:
         stmt = stmt.where(KnowledgeNode.project_id.in_(project_ids))
     stmt = stmt.order_by(KnowledgeNode.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# ============================================================================
+# System / SystemProject 域 repository（FIX-26：OR 操作收口于本层）
+# ============================================================================
+
+
+async def create_system(
+    session: AsyncSession,
+    *,
+    name: str,
+    description: str = "",
+) -> System:
+    """创建 System 域（不 commit，由调用方事务控制）。"""
+    sys_obj = System(name=name, description=description)
+    session.add(sys_obj)
+    await session.flush()
+    return sys_obj
+
+
+async def get_system(
+    session: AsyncSession, system_id: uuid.UUID
+) -> System | None:
+    """按 id 查询 System，不存在返回 None。"""
+    return await session.get(System, system_id)
+
+
+async def list_systems(session: AsyncSession) -> list[System]:
+    """枚举全部 System（按 name 升序）。"""
+    result = await session.execute(select(System).order_by(System.name))
+    return list(result.scalars().all())
+
+
+async def get_system_by_name(session: AsyncSession, name: str) -> System | None:
+    """按 name 精确查询 System，不存在返回 None。"""
+    result = await session.execute(select(System).where(System.name == name))
+    return result.scalar_one_or_none()
+
+
+async def get_system_by_code(session: AsyncSession, code: str) -> System | None:
+    """按 code 精确查询 System（code 可能为 NULL），不存在返回 None。"""
+    result = await session.execute(select(System).where(System.code == code))
+    return result.scalar_one_or_none()
+
+
+async def count_system_projects(
+    session: AsyncSession, *, system_id: uuid.UUID
+) -> int:
+    """统计某 System 下绑定的项目数。"""
+    result = await session.execute(
+        select(func.count())
+        .select_from(SystemProject)
+        .where(SystemProject.system_id == system_id)
+    )
+    return int(result.scalar() or 0)
+
+
+async def get_system_project_ids(
+    session: AsyncSession, *, system_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """返回某 System 下绑定的项目 ID 集合（供可见性判定）。"""
+    result = await session.execute(
+        select(SystemProject.project_id).where(SystemProject.system_id == system_id)
+    )
+    return {row[0] for row in result}
+
+
+async def set_system_projects(
+    session: AsyncSession,
+    *,
+    system_id: uuid.UUID,
+    project_ids: list[uuid.UUID],
+) -> int:
+    """重置某 System 的项目绑定（幂等：先清空再批量插入，不 commit）。"""
+    await session.execute(
+        delete(SystemProject).where(SystemProject.system_id == system_id)
+    )
+    for pid in project_ids:
+        session.add(SystemProject(system_id=system_id, project_id=pid))
+    await session.flush()
+    return len(project_ids)

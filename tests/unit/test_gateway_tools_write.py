@@ -332,28 +332,28 @@ class TestContentLengthLimit:
         _check_content_length(None, "label")
 
     def test_check_content_length_exceeds(self):
-        from mem_lake.gateway.tools.write_tools import (
-            MAX_CONTENT_LENGTH,
-            _check_content_length,
-        )
+        from mem_lake.config import get_settings
+        from mem_lake.gateway.tools.write_tools import _check_content_length
 
+        max_len = get_settings().MAX_CONTENT_LENGTH
         with pytest.raises(PayloadValidationError):
-            _check_content_length("x" * (MAX_CONTENT_LENGTH + 1), "label")
+            _check_content_length("x" * (max_len + 1), "label")
 
     def test_build_dev_items_content_too_long(self):
+        from mem_lake.config import get_settings
         from mem_lake.gateway.tools.write_tools import (
-            MAX_CONTENT_LENGTH,
             ArtifactsInput,
             CodeSnippetInput,
             _build_dev_items,
         )
 
+        max_len = get_settings().MAX_CONTENT_LENGTH
         artifacts = ArtifactsInput(
             code_snippets=[
                 CodeSnippetInput(
                     ref="C1",
                     title="t",
-                    content="x" * (MAX_CONTENT_LENGTH + 1),
+                    content="x" * (max_len + 1),
                     properties={
                         "name": "n",
                         "type": "function",

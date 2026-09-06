@@ -6,6 +6,7 @@ service 层仅暴露 INSERT 与 SELECT 路径（见 audit/service.py）。
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Index, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -44,7 +45,7 @@ class AuditLog(Base):
     operation_id: Mapped[str | None] = mapped_column(
         nullable=True, comment="幂等操作标识（可选）"
     )
-    detail: Mapped[dict] = mapped_column(
+    detail: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         default=dict,
         server_default=text("'{}'::jsonb"),

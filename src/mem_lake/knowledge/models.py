@@ -107,19 +107,19 @@ class KnowledgeNode(Base):
     content_tsv: Mapped[Any] = mapped_column(
         TSVECTOR(), nullable=True, comment="全文检索向量（触发器自动维护）"
     )
-    properties: Mapped[dict] = mapped_column(
+    properties: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         default=dict,
         server_default=text("'{}'::jsonb"),
         comment="类型特有属性（schema 规范见 PDD 4.4）",
     )
-    tags: Mapped[list] = mapped_column(
+    tags: Mapped[list[str]] = mapped_column(
         JSONB,
         default=list,
         server_default=text("'[]'::jsonb"),
         comment="标签数组",
     )
-    source: Mapped[dict] = mapped_column(
+    source: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         default=dict,
         server_default=text("'{}'::jsonb"),

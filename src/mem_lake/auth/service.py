@@ -16,6 +16,7 @@
 import json
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import bindparam, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +56,7 @@ async def get_access_key_by_id(
     return result.scalar_one_or_none()
 
 
-def _norm_scope(value) -> dict:
+def _norm_scope(value: Any) -> dict[str, list[Any]]:
     """把 access_key.project_scope 归一化为两级字典 {systems,projects}。
 
     仅接受 dict（取 systems/projects）；非 dict 抛 ValueError。
@@ -72,7 +73,7 @@ def _norm_scope(value) -> dict:
 
 async def authenticate_access_key(
     session: AsyncSession, plaintext: str
-) -> dict | None:
+) -> dict[str, Any] | None:
     """完整 Access Key 认证流程。
 
     流程：
@@ -112,7 +113,7 @@ async def create_access_key(
     session: AsyncSession,
     *,
     role: str,
-    project_scope: dict,
+    project_scope: dict[str, Any],
     created_by: str = "system",
     lax_mode: bool = False,
 ) -> tuple[uuid.UUID, str]:

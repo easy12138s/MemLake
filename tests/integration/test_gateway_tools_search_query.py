@@ -15,9 +15,9 @@
 import uuid
 
 import pytest
+from conftest import match_pattern
 from sqlalchemy import select
 
-from conftest import match_pattern
 from mem_lake.audit.service import query_audit_logs
 from mem_lake.gateway.tools.query_tools import (
     _get_project_info_core,

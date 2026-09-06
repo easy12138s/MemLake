@@ -10,6 +10,7 @@ request.scope["user"]，使 get_access_token() 正常工作（详见 gateway/mid
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
@@ -25,6 +26,9 @@ from mem_lake.gateway.middleware import (
 from mem_lake.knowledge.age_store import get_graph_store
 from mem_lake.search.vector import VectorSearcher
 
+if TYPE_CHECKING:
+    from mem_lake.knowledge.age_store import AGEGraphStore
+
 logger = logging.getLogger("mem_lake.gateway.server")
 
 
@@ -34,15 +38,18 @@ class LifespanContext:
 
     通过 ctx.lifespan_context 访问，供工具函数获取共享的 embedding/graph/search 实例。
     避免每次工具调用重新创建（EmbeddingClient 连接池/GraphStore 会话初始化有成本）。
+
+    此 dataclass 的类型由 tools/_shared.get_lifespan_context() 经 cast 取回，
+    工具层统一据此访问共享属性（FastMCP 泛化的 lifespan_context 类型为 dict）。
     """
 
     embedding_client: EmbeddingClient
-    graph_store: "AGEGraphStore"  # noqa: F821  # 避免循环导入，用字符串引用
+    graph_store: "AGEGraphStore"  # 字符串前向引用；AGEGraphStore 仅 TYPE_CHECKING 导入（避免工具↔age_store 模块循环）
     vector_searcher: VectorSearcher
 
 
 @lifespan
-async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
+async def app_lifespan(server: FastMCP) -> AsyncIterator[Any]:
     """应用生命周期：启动时初始化共享资源，关闭时清理。
 
     PDD 6.1：共享资源通过 lifespan_context 传递给工具函数，
@@ -50,6 +57,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
 
     yield 前的代码在服务器启动时执行（初始化资源），
     yield 后的代码在服务器关闭时执行（清理资源）。
+
+    返回类型标注为 AsyncIterator[Any]：fastmcp 的 lifespan 泛化类型为
+    AsyncIterator[dict]，而本函数实际 yield LifespanContext 实例（工具层经
+    get_lifespan_context() cast 取回），两者在运行时等价，故用 Any 兼容。
     """
     settings = get_settings()
     logger.info(

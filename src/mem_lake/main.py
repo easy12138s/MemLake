@@ -12,6 +12,7 @@
 import logging
 
 import uvicorn
+from starlette.requests import Request
 from starlette.responses import Response
 
 from mem_lake.config import get_settings
@@ -41,7 +42,7 @@ app = mcp.http_app()
 # /metrics（Prometheus 拉取）：开关为 False 时不下发指标
 if get_settings().OBS_METRICS_ENABLED:
 
-    def _metrics_handler(request):  # noqa: ANN001, ANN202
+    def _metrics_handler(request: Request) -> Response:
         return Response(
             content=get_metrics_body(),
             media_type=get_metrics_media_type(),
