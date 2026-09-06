@@ -29,7 +29,7 @@ from mem_lake.gateway.dependencies import (
     transactional_session,
 )
 from mem_lake.knowledge.repository import NodeNotFoundError
-from mem_lake.knowledge.schema import SchemaValidationError
+from mem_lake.knowledge.schema import SchemaValidationError, validate_attribution
 
 logger = logging.getLogger("mem_lake.gateway.tools.shared")
 
@@ -208,12 +208,12 @@ def build_node_item(
         raise PayloadValidationError(f"节点 {ref} 缺少 properties 字段")
     if not created_by:
         raise PayloadValidationError(f"节点 {ref} 缺少 created_by")
-    if node_type == "Requirement" and system_id is None:
-        raise PayloadValidationError(
-            f"Requirement 节点 {ref} 必须归属 system（system_id 必填）"
-        )
-    if node_type != "Requirement" and project_id is None:
-        raise PayloadValidationError(f"节点 {ref} 必须归属 project（project_id 必填）")
+    # 归属约束统一走 schema.validate_attribution（FIX-17 单一实现）；
+    # 工具层对外仍包装为 PayloadValidationError（含 ref 便于定位批次内项）。
+    try:
+        validate_attribution(node_type, system_id=system_id, project_id=project_id)
+    except SchemaValidationError as e:
+        raise PayloadValidationError(f"节点 {ref} 归属校验失败: {e}") from e
     payload: dict[str, Any] = {
         "ref": ref,
         "node_type": node_type,

@@ -65,7 +65,12 @@ async def _cleanup_batch_scope(*, system_id=None, title_prefix=None):
 
         graph_store = get_graph_store()
         for n in nodes:
-            await graph_store.delete_node(s, n.id)
+            # FIX-11：图节点删除方法已移除（软删除模型下图节点随 PG 软删过滤兜底），
+            # 测试清理直接 DETACH DELETE 图节点。
+            await graph_store._exec_cypher(
+                s, "MATCH (n {id: $node_id}) DETACH DELETE n",
+                {"node_id": str(n.id)},
+            )
             await s.execute(delete(AuditLog).where(AuditLog.target_id == n.id))
             await s.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id == n.id))
             await s.execute(delete(KnowledgeNode).where(KnowledgeNode.id == n.id))

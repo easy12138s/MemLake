@@ -39,7 +39,7 @@ from mem_lake.knowledge.models import (
     System,
 )
 from mem_lake.knowledge.schema import (
-    SchemaValidationError,
+    validate_attribution,
     validate_edge_type,
     validate_node,
 )
@@ -129,15 +129,8 @@ async def create_node(
     """
     validate_node(node_type, properties)
 
-    # ---- system / project 归属强约束（system 维度）----
-    if node_type == "Requirement" and system_id is None:
-        raise SchemaValidationError(
-            "Requirement 必须归属 system（system_id 必填）"
-        )
-    if node_type != "Requirement" and project_id is None:
-        raise SchemaValidationError(
-            f"节点类型 {node_type} 必须归属 project（project_id 必填）"
-        )
+    # ---- system / project 归属强约束（FIX-17：schema.validate_attribution 单一实现）----
+    validate_attribution(node_type, system_id=system_id, project_id=project_id)
 
     requirement_key = None
     if node_type == "Requirement" and system_id is not None:

@@ -4,15 +4,14 @@
 1. add_node + neighbors 自查询验证
 2. add_edge + neighbors 跨节点遍历
 3. neighbors 1跳/多跳/带 edge_type 过滤
-4. delete_node（DETACH DELETE）+ 关联边一并删除
-5. 边界：不存在的节点 neighbors 返回空
-6. 非法 label/edge_type 抛 SchemaValidationError
+4. 边界：不存在的节点 neighbors 返回空
+5. 非法 label/edge_type 抛 SchemaValidationError
 
 事务回滚隔离，AGE DML 操作随事务回滚。
 
-注：图查询三件套（find_path/subgraph/match_pattern）已从生产代码删除
-（代码瘦身 D4：全链零调用），其专属用例一并移除；图状态断言改用
-conftest.match_pattern 测试专用 helper。
+注：图查询三件套（find_path/subgraph/match_pattern）与图节点删除方法已从生产
+代码删除（代码瘦身 D4 / FIX-11：全链零调用），其专属用例一并移除；图状态断言
+改用 conftest.match_pattern 测试专用 helper，图清理用 Cypher DETACH DELETE。
 """
 
 import uuid
@@ -333,60 +332,6 @@ class TestNeighbors:
         assert neighbors == []
 
 
-# ============ delete_node ============
-
-class TestDeleteNode:
-    """delete_node 测试。"""
-
-    async def test_delete_node_detaches_edges(self, db_session, store):
-        """删除节点后关联边一并删除（DETACH DELETE）。"""
-        project_id = uuid.uuid4()
-        a, b = uuid.uuid4(), uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-        await store.add_node(db_session, b, "CodeSnippet", _props(b, project_id))
-        await store.add_edge(db_session, a, b, "implements", {})
-
-        # 删除 a（DETACH DELETE 一并删除 a 的边）
-        await store.delete_node(db_session, a)
-
-        # a 不再存在
-        rows = await match_pattern(
-            store, db_session,
-            "MATCH (n {id: $nid}) RETURN n",
-            {"nid": str(a)},
-        )
-        assert len(rows) == 0
-
-        # b 仍存在
-        rows = await match_pattern(
-            store, db_session,
-            "MATCH (n {id: $nid}) RETURN n",
-            {"nid": str(b)},
-        )
-        assert len(rows) == 1
-
-    async def test_delete_node_idempotent(self, db_session, store):
-        """删除不存在的节点幂等（不报错）。"""
-        fake_id = uuid.uuid4()
-        # 不存在的节点删除不应抛异常
-        await store.delete_node(db_session, fake_id)
-
-    async def test_delete_isolated_node(self, db_session, store):
-        """删除无边节点正常。"""
-        project_id = uuid.uuid4()
-        a = uuid.uuid4()
-        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
-
-        await store.delete_node(db_session, a)
-
-        rows = await match_pattern(
-            store, db_session,
-            "MATCH (n {id: $nid}) RETURN n",
-            {"nid": str(a)},
-        )
-        assert len(rows) == 0
-
-
 # ============ 边界场景补充 ============
 
 class TestNeighborsEdgeCases:
@@ -514,7 +459,6 @@ class TestAddEdgeEdgeCases:
 
 
 # ============ _exec_cypher 异常处理（FIX-02）============
-
 class TestExecCypherErrorHandling:
     """_exec_cypher 参数化路径的异常处理：EXECUTE 失败不被 DEALLOCATE 掩盖。"""
 
@@ -564,3 +508,82 @@ class TestSyncNodeTitle:
         fake_id = uuid.uuid4()
         await store.sync_node_title(db_session, fake_id, "任意标题")
         # 不抛异常即可
+
+
+# ============ FIX-14/15/16 纵深防御与参数校验 ============
+
+class TestParseAgtypeWarning:
+    """_parse_agtype 解析失败告警（FIX-14）。"""
+
+    async def test_parse_agtype_failure_logs_warning(self, store, caplog):
+        """坏 agtype 数据：返回 None 且输出 warning（含原始值）。"""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="mem_lake.knowledge.age_store"):
+            result = store._parse_agtype("这不是合法 JSON {{ broken")
+        assert result is None
+        assert any("agtype 解析失败" in rec.message for rec in caplog.records)
+        assert any("broken" in rec.message for rec in caplog.records)
+
+
+class TestDepthClamp:
+    """depth 纵深防御 clamp（FIX-15）。"""
+
+    async def test_neighbors_depth_clamped_to_max(self, db_session, store):
+        """depth=10000 传入存储层实际按 MAX_TRAVERSAL_DEPTH(5) 执行。"""
+        project_id = uuid.uuid4()
+        nodes = [uuid.uuid4() for _ in range(6)]  # n0→n1→...→n5 共 5 跳
+        for i, nid in enumerate(nodes):
+            await store.add_node(
+                db_session, nid, "Requirement", _props(nid, project_id, f"N{i}")
+            )
+        for i in range(5):
+            await store.add_edge(db_session, nodes[i], nodes[i + 1], "depends_on", {})
+
+        # 深度超限：等效于 depth=5（n0 的 5 跳内邻居 = n1..n5）
+        neighbors = await store.neighbors(db_session, nodes[0], depth=10000)
+        ids = {n["properties"]["id"] for n in neighbors}
+        for i in range(1, 6):
+            assert str(nodes[i]) in ids
+        assert len(ids) == 5
+
+    async def test_neighbors_with_context_depth_clamped(self, db_session, store):
+        """neighbors_with_context 同样 clamp 上界。"""
+        project_id = uuid.uuid4()
+        a, b, c = (uuid.uuid4() for _ in range(3))
+        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
+        await store.add_node(db_session, b, "CodeSnippet", _props(b, project_id))
+        await store.add_node(db_session, c, "CodeSnippet", _props(c, project_id))
+        await store.add_edge(db_session, a, b, "implements", {})
+        await store.add_edge(db_session, b, c, "depends_on", {})
+
+        ctxs = await store.neighbors_with_context(db_session, a, depth=10000)
+        assert len(ctxs) == 2  # b（1跳）+ c（2跳），clamp 后仍可达
+
+
+class TestReservedEdgePropKeys:
+    """add_edge 边属性键保留字检查（FIX-16）。"""
+
+    async def test_add_edge_reserved_prop_key_rejected(self, db_session, store):
+        """属性键 from_id/to_id 为保留字，抛 ValueError 拒绝（防参数覆盖）。"""
+        project_id = uuid.uuid4()
+        a, b = uuid.uuid4(), uuid.uuid4()
+        await store.add_node(db_session, a, "Requirement", _props(a, project_id))
+        await store.add_node(db_session, b, "CodeSnippet", _props(b, project_id))
+
+        with pytest.raises(ValueError, match="保留字"):
+            await store.add_edge(
+                db_session,
+                from_id=a,
+                to_id=b,
+                edge_type="implements",
+                properties={"from_id": "覆盖端点"},
+            )
+        with pytest.raises(ValueError, match="保留字"):
+            await store.add_edge(
+                db_session,
+                from_id=a,
+                to_id=b,
+                edge_type="implements",
+                properties={"to_id": "覆盖端点"},
+            )

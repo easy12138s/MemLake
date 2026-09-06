@@ -1,4 +1,4 @@
-"""GraphStore 抽象接口：add_node、add_edge、neighbors、sync_node_title、delete_node。
+"""GraphStore 抽象接口：add_node、add_edge、neighbors、neighbors_with_context、sync_node_title。
 
 对齐 PDD 10.2 GraphStore 抽象层。定义图操作原语，AGEGraphStore 为 v1.0 实现，
 未来可替换为 Neo4j 等其他图后端，业务代码无感。
@@ -74,9 +74,16 @@ class GraphStore(ABC):
         """邻居遍历。返回邻居节点 dict 列表。edge_type=None 表示不限类型。"""
 
     @abstractmethod
-    async def delete_node(
+    async def neighbors_with_context(
         self,
         session: AsyncSession,
         node_id: uuid.UUID,
-    ) -> None:
-        """删除节点及其关联边（DETACH DELETE）。幂等。"""
+        depth: int = 2,
+    ) -> list[dict]:
+        """邻居遍历并透出路径边类型与跳数（FIX-10：收口检索层鸭子类型调用）。
+
+        返回结构化结果列表，每项：{"node": <agtype 节点 dict>, "edge_types": [label...],
+        "depth": <跳数>}。depth 为路径跳数（= len(edge_types)）。同一目标节点若经
+        多条路径到达，保留跳数最小者。遍历为无向，direction 无第一语义，不返回方向。
+        供 get_requirement_context 替换 unknown 占位（search.graph.context_traverse）。
+        """

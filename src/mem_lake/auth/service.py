@@ -234,6 +234,23 @@ async def list_access_keys(
     return list(result.scalars().all())
 
 
+async def _fetch_access_keys(
+    session: AsyncSession, target_ids: list[uuid.UUID]
+) -> list[AccessKey]:
+    """按 id 列表重新查回 Access Key（key_hash 已 defer），按创建时间倒序。
+
+    FIX-18：三个 update 函数（scope/systems/mode）更新后的重查块逐字复制，
+    收敛为本共享 helper，确保重查逻辑单一实现。
+    """
+    result = await session.execute(
+        select(AccessKey)
+        .options(defer(AccessKey.key_hash))
+        .where(AccessKey.id.in_(target_ids))
+        .order_by(AccessKey.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
 async def update_access_key_scope(
     session: AsyncSession,
     *,
@@ -275,14 +292,8 @@ async def update_access_key_scope(
         )
     )
 
-    # 重新查回（defer key_hash）用于出参，确保返回最新 project_scope
-    refreshed = await session.execute(
-        select(AccessKey)
-        .options(defer(AccessKey.key_hash))
-        .where(AccessKey.id.in_(target_ids))
-        .order_by(AccessKey.created_at.desc())
-    )
-    updated = list(refreshed.scalars().all())
+    # 重新查回（defer key_hash）用于出参，确保返回最新 project_scope（FIX-18 共享 helper）
+    updated = await _fetch_access_keys(session, target_ids)
 
     await write_audit_log(
         session,
@@ -343,13 +354,8 @@ async def update_access_key_systems(
         )
     )
 
-    refreshed = await session.execute(
-        select(AccessKey)
-        .options(defer(AccessKey.key_hash))
-        .where(AccessKey.id.in_(target_ids))
-        .order_by(AccessKey.created_at.desc())
-    )
-    updated = list(refreshed.scalars().all())
+    # 重新查回（FIX-18 共享 helper）
+    updated = await _fetch_access_keys(session, target_ids)
 
     await write_audit_log(
         session,
@@ -398,13 +404,8 @@ async def update_access_key_mode(
         .values(lax_mode=lax_mode)
     )
 
-    refreshed = await session.execute(
-        select(AccessKey)
-        .options(defer(AccessKey.key_hash))
-        .where(AccessKey.id.in_(target_ids))
-        .order_by(AccessKey.created_at.desc())
-    )
-    updated = list(refreshed.scalars().all())
+    # 重新查回（FIX-18 共享 helper）
+    updated = await _fetch_access_keys(session, target_ids)
 
     await write_audit_log(
         session,

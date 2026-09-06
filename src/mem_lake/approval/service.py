@@ -26,7 +26,12 @@ from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.repository import add_edge, create_node, get_node, update_node
-from mem_lake.knowledge.schema import SchemaValidationError, validate_edge_type, validate_node
+from mem_lake.knowledge.schema import (
+    SchemaValidationError,
+    validate_attribution,
+    validate_edge_type,
+    validate_node,
+)
 from mem_lake.observability.metrics import APPROVAL_BATCHES
 from mem_lake.search.vector import VectorSearcher
 
@@ -119,22 +124,25 @@ async def submit_batch(
             return await get_batch_detail(session, existing.id)
 
     try:
-        return await _create_batch(
-            session,
-            project_id=project_id,
-            batch_type=batch_type,
-            submitted_by=submitted_by,
-            submitter_role=submitter_role,
-            items=items,
-            operation_id=operation_id,
-        )
+        # FIX-13：_create_batch 包 begin_nested()（SAVEPOINT），IntegrityError 竞态时
+        # 自动回滚至 savepoint，外事务状态不受影响（SQLAlchemy 标准恢复模式），
+        # 取代此前手动 session.rollback()（会废弃整个外事务）。
+        async with session.begin_nested():
+            return await _create_batch(
+                session,
+                project_id=project_id,
+                batch_type=batch_type,
+                submitted_by=submitted_by,
+                submitter_role=submitter_role,
+                items=items,
+                operation_id=operation_id,
+            )
     except IntegrityError:
         # 并发同 operation_id 提交：两个请求都通过幂等检查后各自插入，
-        # 第二个撞唯一约束 uq_approval_batch_idempotency。回滚本次未成功
-        # 的插入，回查已存在的批次做幂等重放（AUDIT §2.17 竞态）。
+        # 第二个撞唯一约束 uq_approval_batch_idempotency。SAVEPOINT 已回滚本次
+        # 未成功的插入（外事务仍可用），回查已存在的批次做幂等重放（AUDIT §2.17）。
         if operation_id is None:
             raise
-        await session.rollback()
         existing = await _find_by_idempotency_key(
             session, submitted_by=submitted_by, batch_type=batch_type, operation_id=operation_id
         )
@@ -302,21 +310,11 @@ async def review_approve(
         if it.item_type == "node" and it.action == "create"
     ]
     if conflict_query_vectors is None:
-        if not create_items:
-            conflict_query_vectors = []
-        else:
-            conflict_query_vectors = await embedding_client.embed(
-                [
-                    build_embed_text(
-                        it.entity_type,
-                        it.payload["title"],
-                        it.payload["content"],
-                        it.payload.get("properties", {}),
-                    )
-                    for it in create_items
-                ],
-                prompt_name="query",
-            )
+        # FIX-12：复用 _build_conflict_query_vectors（与 auto_process_batch 同一实现），
+        # 消除瘦身轮遗留的内联重复。
+        conflict_query_vectors = await _build_conflict_query_vectors(
+            embedding_client, create_items
+        )
 
     qv_index = 0
     for item in batch.items:
@@ -776,17 +774,23 @@ def _validate_item_payload(item: dict, idx: int) -> None:
         raise PayloadValidationError(f"item[{idx}] payload 必须为 dict")
 
     if item_type == "node" and action == "create":
-        # node + create：校验节点类型、必填字段与必填顶层字段
-        # system 维度：Requirement 必填 system_id（project 可空=悬浮）；其余类型必填 project_id。
-        if entity_type == "Requirement":
-            required_top = ("title", "content", "system_id", "created_by")
-        else:
-            required_top = ("title", "content", "project_id", "created_by")
+        # node + create：校验节点类型、必填字段与必填顶层字段。
+        # 归属约束（Requirement 必填 system_id、其余必填 project_id）统一走
+        # schema.validate_attribution（FIX-17 单一实现），保留 title/content/created_by 校验。
+        required_top = ("title", "content", "created_by")
         for required in required_top:
             if not payload.get(required):
                 raise PayloadValidationError(
                     f"item[{idx}] node+create payload 缺必填字段: {required}"
                 )
+        try:
+            validate_attribution(
+                entity_type,
+                system_id=payload.get("system_id"),
+                project_id=payload.get("project_id"),
+            )
+        except SchemaValidationError as e:
+            raise PayloadValidationError(f"item[{idx}] node+create 归属校验失败: {e}") from e
         properties = payload.get("properties")
         if not isinstance(properties, dict):
             raise PayloadValidationError(

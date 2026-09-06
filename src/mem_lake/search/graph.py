@@ -22,8 +22,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.models import KnowledgeNode
+from mem_lake.knowledge.schema import MAX_TRAVERSAL_DEPTH
 from mem_lake.search.filters import FilterSpec, compile_sqlalchemy
 from mem_lake.search.fusion import SearchResult, _truncate
+
+
+def _clamp_depth(depth: int) -> int:
+    """遍历深度 clamp（FIX-15 纵深防御）：上界 MAX_TRAVERSAL_DEPTH，下界 1。
+
+    存储层（age_store.neighbors）亦 clamp，此处检索层入口再兜一层，
+    避免深度参数在到达存储层前被组合放大（如 impact_analysis 多跳展开）。
+    """
+    return min(max(depth, 1), MAX_TRAVERSAL_DEPTH)
 
 
 def _extract_node_id(agtype_dict: Any) -> uuid.UUID | None:
@@ -87,7 +97,7 @@ class GraphSearcher:
         """
         # 1. 调用 GraphStore.neighbors 获取邻居节点（agtype dict 列表，含 properties.id）
         neighbor_dicts = await self._graph_store.neighbors(
-            session, node_id, edge_type=edge_type, depth=depth
+            session, node_id, edge_type=edge_type, depth=_clamp_depth(depth)
         )
 
         if not neighbor_dicts:
@@ -141,7 +151,7 @@ class GraphSearcher:
         无意义，故不返回。
         """
         neighbor_ctxs = await self._graph_store.neighbors_with_context(
-            session, node_id, depth=depth
+            session, node_id, depth=_clamp_depth(depth)
         )
         if not neighbor_ctxs:
             return []
@@ -262,9 +272,9 @@ class GraphSearcher:
             if code_id is None:
                 continue
 
-            # 3a. 依赖链遍历（depth=max_depth）
+            # 3a. 依赖链遍历（depth=max_depth，FIX-15 clamp 上界）
             dep_dicts = await self._graph_store.neighbors(
-                session, code_id, edge_type="depends_on", depth=max_depth
+                session, code_id, edge_type="depends_on", depth=_clamp_depth(max_depth)
             )
             for dep in dep_dicts:
                 if isinstance(dep, dict):
