@@ -59,8 +59,14 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
         settings.AGE_GRAPH_NAME,
     )
 
-    # DB 初始化：检查扩展 + 建业务表 + tsvector 触发器 + RLS 策略
-    from mem_lake.db.init import create_tables, init_database, init_knowledge_schema
+    # DB 初始化：检查扩展 + 建业务表 + tsvector 触发器 + Alembic 迁移版本校验。
+    # 项目隔离由应用层 validate_project_access + FilterSpec 实现（见 db/init.py 设计说明）。
+    from mem_lake.db.init import (
+        check_migrations_synced,
+        create_tables,
+        init_database,
+        init_knowledge_schema,
+    )
     from mem_lake.db.session import AsyncSessionLocal
 
     logger.info("执行数据库初始化检查...")
@@ -71,6 +77,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
         await init_knowledge_schema(session)
         await session.commit()
     logger.info("业务表与 schema 初始化完成")
+
+    # FIX-01：Alembic 迁移版本校验（create_tables 之后，确保增量迁移未被遗漏登记）
+    async with AsyncSessionLocal() as session:
+        await check_migrations_synced(session)
+    logger.info("Alembic 迁移版本校验通过")
 
     # 启动对账：把残留 pending/running 的 reindex 任务置为 failed（进程重启后其 worker 已不存在）
     from mem_lake.gateway.background_tasks import reconcile_orphan_tasks

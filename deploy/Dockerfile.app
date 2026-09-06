@@ -18,10 +18,14 @@ RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 WORKDIR /app
 COPY pyproject.toml /app/
 COPY src/ /app/src/
+# Alembic 迁移脚本：app 容器启动前执行 alembic upgrade head（FIX-01 迁移机制），
+# 全新库自动建表并登记版本，存量库自动增量迁移；配合 lifespan 内的版本校验。
+COPY alembic.ini /app/
+COPY alembic/ /app/alembic/
 
 # 安装项目（不含 sentence-transformers 可选依赖，app 容器通过 HTTP 调用 embedding 服务）
 RUN pip install --no-cache-dir /app
 
 EXPOSE 8000
-# python -m mem_lake.main 触发 mcp.run(transport="http")，监听 0.0.0.0:8000
-CMD ["python", "-m", "mem_lake.main"]
+# 先执行 alembic upgrade head（幂等），再启动 FastMCP（python -m mem_lake.main）
+CMD ["sh", "-c", "alembic upgrade head && python -m mem_lake.main"]

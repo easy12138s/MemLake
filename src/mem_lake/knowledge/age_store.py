@@ -13,6 +13,7 @@
 """
 
 import json
+import logging
 import re
 import uuid
 from functools import lru_cache
@@ -34,6 +35,8 @@ _AGE_TYPE_SUFFIX_RE = re.compile(r"::(vertex|edge|path)\b")
 # 边属性键白名单正则：仅允许字母/数字/下划线，首字符为字母或下划线
 # 用于动态构建 SET 子句时防止 Cypher 注入（属性键拼入 Cypher 语法部分）
 _EDGE_PROP_KEY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+logger = logging.getLogger("mem_lake.knowledge.age_store")
 
 
 class AGEGraphStore(GraphStore):
@@ -98,9 +101,22 @@ class AGEGraphStore(GraphStore):
             tag = f"p{uuid.uuid4().hex[:8]}"
             execute_sql = text(f"EXECUTE {stmt_name}(${tag}${params_json}${tag}$)")
             result = await session.execute(execute_sql)
-            return [row[0] for row in result]
-        finally:
-            await session.execute(text(f"DEALLOCATE {stmt_name}"))
+        except Exception:
+            # EXECUTE 失败后 PG 事务进入 aborted 状态（25P02），finally 中的 DEALLOCATE
+            # 必抛 InFailedSqlTransaction 并替换原始 Cypher 错误。此处清理动作改 best-effort：
+            # 捕获次级异常仅告警，保留原始异常向上传播。prepared statement 为会话级对象，
+            # 异常路径下少量泄漏由连接池连接回收兜底（连接归还即释放）。
+            try:
+                await session.execute(text(f"DEALLOCATE {stmt_name}"))
+            except Exception as exc:  # noqa: BLE001  # 清理动作失败不掩盖原始异常
+                logger.warning(
+                    "DEALLOCATE %s 失败（可能因事务 aborted），交由连接池回收兜底: %s",
+                    stmt_name,
+                    exc,
+                )
+            raise
+        await session.execute(text(f"DEALLOCATE {stmt_name}"))
+        return [row[0] for row in result]
 
     def _parse_agtype(self, value: Any) -> dict | list | None:
         """解析 agtype 字符串为 Python 对象。

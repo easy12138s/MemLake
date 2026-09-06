@@ -17,10 +17,14 @@ tsvector 触发器。
   RLS 不 FORCE 时天然绕过，故不创建 RLS 策略）
 """
 
+import logging
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.config import get_settings
+
+logger = logging.getLogger("mem_lake.db.init")
 
 REQUIRED_EXTENSIONS = ("age", "vector", "zhparser")
 
@@ -130,3 +134,50 @@ async def init_database() -> None:
                 f"缺少 AGE 图 '{settings.AGE_GRAPH_NAME}'。"
                 "请确认 deploy/init/001_extensions.sql 已执行。"
             )
+
+
+async def check_migrations_synced(session: AsyncSession) -> None:
+    """启动时校验 Alembic 迁移版本与脚本目录一致（FIX-01 迁移机制）。
+
+    比对数：
+    - 数据库 alembic_version 表登记的当前版本
+    - 脚本目录 alembic/versions 的 head revision
+
+    不一致（含缺 alembic_version 表的全新/存量库）→ 抛 RuntimeError，
+    指明处置命令（upgrade head / stamp head），避免 schema 静默漂移。
+
+    过渡约定：v1.0.x 内 create_tables 的幂等 ALTER 与 Alembic revision 并存
+    且保持一致；本校验确保两者之一缺失时启动即暴露。
+    """
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    conn = await session.connection()
+    tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+
+    if "alembic_version" not in tables:
+        raise RuntimeError(
+            "数据库未登记 Alembic 迁移版本（缺 alembic_version 表）。"
+            "全新安装请执行：alembic upgrade head；存量库请执行：alembic stamp head。"
+            "详细见 docs/架构优化修复方案.md FIX-01。"
+        )
+
+    result = await session.execute(text("SELECT version_num FROM alembic_version"))
+    db_current = result.scalar()
+
+    cfg = Config()
+    cfg.set_main_option("script_location", "alembic")
+    from alembic.script import ScriptDirectory
+
+    script_head = ScriptDirectory.from_config(cfg).get_current_head()
+
+    if db_current != script_head:
+        action = (
+            "alembic upgrade head"
+            if db_current != script_head
+            else "alembic stamp head"
+        )
+        raise RuntimeError(
+            f"数据库 Alembic 版本（{db_current!r}）与脚本目录 head（{script_head!r}）不一致。"
+            f"处置命令：{action}（在项目根目录、使用 conda memlake 环境执行）。"
+        )

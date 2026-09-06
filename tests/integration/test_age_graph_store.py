@@ -18,8 +18,8 @@ conftest.match_pattern 测试专用 helper。
 import uuid
 
 import pytest
-
 from conftest import match_pattern
+
 from mem_lake.knowledge.age_store import AGEGraphStore
 from mem_lake.knowledge.graph_store import EdgeTargetNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -476,6 +476,29 @@ class TestAddEdgeEdgeCases:
                 edge_type="implements",
                 properties={"invalid-key": "value"},  # 含连字符，非法
             )
+
+
+# ============ _exec_cypher 异常处理（FIX-02）============
+
+class TestExecCypherErrorHandling:
+    """_exec_cypher 参数化路径的异常处理：EXECUTE 失败不被 DEALLOCATE 掩盖。"""
+
+    async def test_failed_execute_preserves_original_error(self, db_session, store):
+        """EXECUTE 失败时保留原始 Cypher 错误，不替换为 InFailedSqlTransaction。
+
+        构造在 EXECUTE 阶段必然失败的 Cypher（除零在运行时求值时报错）：
+        事务进入 aborted 状态（25P02）后，异常路径的 DEALLOCATE 清理为
+        best-effort（捕获次级异常仅告警），原始 DivisionByZero 必须向上传播。
+        """
+        with pytest.raises(Exception) as exc_info:
+            await store._exec_cypher(
+                db_session,
+                "RETURN 1 / $zero AS x",
+                {"zero": 0},
+            )
+        err_msg = str(exc_info.value)
+        assert "InFailedSqlTransaction" not in err_msg
+        assert "division by zero" in err_msg.lower()
 
 
 # ============ sync_node_title ============
