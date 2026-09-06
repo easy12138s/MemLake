@@ -114,6 +114,29 @@ async def _patch_task(task_id: uuid.UUID, **fields) -> None:
         )
 
 
+async def _claim_task(task_id: uuid.UUID) -> bool:
+    """DB 抢占：将 pending 任务置为 running。影响 0 行说明已被其它 worker 抢占。
+
+    条件更新 `WHERE id=:id AND status='pending'` 保证原子性：
+    - 多 worker 部署下只允许一个 worker 将 pending → running（防重入的最终保证）。
+    - 返回 True=本 worker 抢占成功；False=任务已被认领/状态非 pending。
+    """
+    async with transactional_session() as session:
+        result = await session.execute(
+            update(ReindexTask)
+            .where(
+                ReindexTask.id == task_id,
+                ReindexTask.status == TASK_STATUS_PENDING,
+            )
+            .values(
+                status=TASK_STATUS_RUNNING,
+                started_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        return int(result.rowcount) > 0  # type: ignore[union-attr]
+
+
 # ============================================================================
 # 后台 worker
 # ============================================================================
@@ -132,9 +155,16 @@ async def _reindex_worker(
     供 get_reindex_status 轮询。异常时整体标记 failed 并记录 error。
     """
     try:
-        await _patch_task(
-            task_id, status=TASK_STATUS_RUNNING, started_at=datetime.now(timezone.utc)
-        )
+        # 防重入 DB 抢占：仅当任务仍为 pending 时置 running（条件更新）。
+        # 多 worker 部署下同一 pending 任务可能被多个进程认领，本语句影响 0 行
+        # 即已被其它 worker 抢占，直接返回，避免重复执行。ACTIVE_TASKS 仅防 GC。
+        claimed = await _claim_task(task_id)
+        if not claimed:
+            logger.info(
+                "reindex task %s 已被其它 worker 认领（状态非 pending），跳过执行",
+                task_id,
+            )
+            return
 
         # 节点级嵌入任务（审批异步嵌入）：仅嵌入指定节点，跳过整库扫描
         task = await get_task_record(task_id)

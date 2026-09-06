@@ -48,12 +48,11 @@ async def test_knowledge_node_columns(db_session):
     assert "type" in cols
     assert "title" in cols
     assert "content" in cols
-    # content_vector 为 vector 类型（udt_name = vector）
-    assert "content_vector" in cols
-    assert cols["content_vector"][1] == "vector"
     # content_tsv 为 tsvector 类型
     assert "content_tsv" in cols
     assert cols["content_tsv"][1] == "tsvector"
+    # FIX-08：content_vector 列已废弃（0003 迁移 DROP），不应存在于表结构
+    assert "content_vector" not in cols
     # properties/tags/source 为 jsonb
     assert cols["properties"][1] == "jsonb"
     assert cols["tags"][1] == "jsonb"
@@ -65,7 +64,7 @@ async def test_knowledge_node_columns(db_session):
 
 
 async def test_indexes_exist(db_session):
-    """三个关键索引存在：HNSW 向量、GIN tsvector、GIN tags、组合索引。"""
+    """关键索引存在性：FIX-08 后 knowledge_node 无向量索引（列已废弃），tsvector/tags/组合保留。"""
     result = await db_session.execute(
         text(
             "SELECT indexname, indexdef FROM pg_indexes "
@@ -74,10 +73,9 @@ async def test_indexes_exist(db_session):
     )
     indexes = {row[0]: row[1] for row in result}
 
-    # HNSW 向量索引
-    assert "idx_node_vector" in indexes
-    assert "hnsw" in indexes["idx_node_vector"].lower()
-    assert "vector_ip_ops" in indexes["idx_node_vector"]
+    # FIX-08：knowledge_node 的 HNSW 向量索引 idx_node_vector 已随 content_vector
+    # 列废弃（0003 迁移 DROP）；向量索引在 node_embedding 表。
+    assert "idx_node_vector" not in indexes
 
     # GIN tsvector 索引
     assert "idx_node_tsv" in indexes
@@ -166,7 +164,10 @@ async def test_tsvector_updated_on_content_change(db_session):
 
 
 async def test_vector_column_dimension(db_session):
-    """content_vector 列维度为 1024（对齐 Qwen3-Embedding-0.6B）。"""
+    """node_embedding.content_vector 列维度为 1024（对齐 Qwen3-Embedding-0.6B）。
+
+    FIX-08：knowledge_node.content_vector 已废弃，向量列在 node_embedding 表。
+    """
     # 通过插入 1024 维向量验证
     pid = uuid.uuid4()
     node_id = uuid.uuid4()
@@ -176,15 +177,23 @@ async def test_vector_column_dimension(db_session):
     await db_session.execute(
         text(
             "INSERT INTO knowledge_node (id, project_id, type, title, content, "
-            "content_vector, properties, tags, source, status, version, created_by) "
-            "VALUES (:id, :pid, 'Requirement', 'R', 'c', CAST(:vec AS vector), "
+            "properties, tags, source, status, version, created_by) "
+            "VALUES (:id, :pid, 'Requirement', 'R', 'c', "
             "'{}'::jsonb, '[]'::jsonb, '{}'::jsonb, 'approved', 1, 't')"
         ),
-        {"id": node_id, "pid": pid, "vec": vec_str},
+        {"id": node_id, "pid": pid},
+    )
+
+    await db_session.execute(
+        text(
+            "INSERT INTO node_embedding (node_id, facet, content_vector) "
+            "VALUES (:nid, 'content', CAST(:vec AS vector))"
+        ),
+        {"nid": node_id, "vec": vec_str},
     )
 
     result = await db_session.execute(
-        text("SELECT content_vector FROM knowledge_node WHERE id = :id"),
+        text("SELECT content_vector FROM node_embedding WHERE node_id = :id"),
         {"id": node_id},
     )
     vec = result.scalar()

@@ -145,17 +145,21 @@ class AGEGraphStore(GraphStore):
         """添加节点。label 经白名单校验，properties 通过 PREPARE 参数化。
 
         图节点仅引用 knowledge_node.id（不重复存储完整 properties），
-        携带 id/project_id/title 用于图查询过滤与展示。label 校验用
+        携带 id/project_id/title/system_id 用于图查询过滤与展示。label 校验用
         validate_node_type（仅校验类型，不校验必填字段，因图节点不存完整属性）。
+        system_id 缺失时写 ""（与 project_id 口径一致），保证图侧可按 system
+        维度直接分组/过滤（ENH-01 图能力规划前置）。
         """
         validate_node_type(label)
         cypher = (
-            f"CREATE (n:{label} {{id: $node_id, project_id: $project_id, title: $title}}) "
+            f"CREATE (n:{label} {{id: $node_id, project_id: $project_id, "
+            f"system_id: $system_id, title: $title}}) "
             f"RETURN n"
         )
         params = {
             "node_id": str(node_id),
             "project_id": str(properties.get("project_id", "")),
+            "system_id": str(properties.get("system_id", "")),
             "title": str(properties.get("title", "")),
         }
         await self._exec_cypher(session, cypher, params)

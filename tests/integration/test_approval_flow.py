@@ -17,9 +17,9 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
+from conftest import match_pattern
 from sqlalchemy import select
 
-from conftest import match_pattern
 from mem_lake.approval.service import (
     BATCH_TYPES,
     STATUS_APPROVED,
@@ -419,10 +419,11 @@ class TestReviewApprove:
         vector_searcher_mock,
         sample_batch_payloads,
     ):
-        """审批通过时向量延迟生成：节点先以 NULL 向量落库，由后台异步补向量。
+        """审批通过时向量延迟生成：节点先以缺库落库，由后台异步补向量。
 
-        同步审批路径不再阻塞于 embedding（避免大批次超时）；content_vector 在
-        审批返回时为 NULL，搜索已能安全跳过 NULL，后台 worker 随后填充。
+        同步审批路径不再阻塞于 embedding（避免大批次超时）；FIX-08 后向量在
+        node_embedding（facet），审批返回时无 facet 记录（content_vector 列已废），
+        后台 worker 随后补写。
         """
         project_id = uuid.uuid4()
         items = sample_batch_payloads["publish_requirement"](project_id)
@@ -448,8 +449,13 @@ class TestReviewApprove:
         stmt = select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
         result = await db_session.execute(stmt)
         node = result.scalar_one()
-        # 同步审批路径不再 embed：向量暂为 NULL（异步补向量在审批返回之后）
-        assert node.content_vector is None
+        # FIX-08：同步审批路径不写向量，facet 记录暂缺（异步补向量在审批返回之后）
+        from mem_lake.knowledge.models import NodeEmbedding
+
+        facet_rows = await db_session.execute(
+            select(NodeEmbedding).where(NodeEmbedding.node_id == node.id)
+        )
+        assert facet_rows.scalars().first() is None
 
     async def test_review_approve_writes_edge_to_age_graph(
         self,
@@ -1616,10 +1622,14 @@ class TestApprovalEndToEnd:
         nodes = list(result.scalars().all())
         assert len(nodes) == 1
         assert nodes[0].status == "approved"
-        # 同步审批路径延迟向量化：审批返回时向量暂为 NULL（搜索已能安全跳过 NULL）；
-        # 异步补向量由后台 worker（start_embed_nodes_task）完成，见 unit 测试
-        # test_start_embed_nodes_task_schedules_node_scope_worker 等。
-        assert nodes[0].content_vector is None
+        # FIX-08：同步审批路径延迟向量化：审批返回时无 facet 记录（搜索已能安全
+        # 跳过缺向量节点）；异步补向量由后台 worker（start_embed_nodes_task）完成。
+        from mem_lake.knowledge.models import NodeEmbedding
+
+        facet_rows = await db_session.execute(
+            select(NodeEmbedding).where(NodeEmbedding.node_id == nodes[0].id)
+        )
+        assert facet_rows.scalars().first() is None
 
         # approval_item.target_id 已回填
         detail_after = await get_batch_detail(db_session, batch.id)

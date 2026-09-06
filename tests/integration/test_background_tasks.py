@@ -23,6 +23,7 @@ from mem_lake.gateway.background_tasks import (
     TASK_STATUS_FAILED,
     TASK_STATUS_PENDING,
     TASK_STATUS_RUNNING,
+    _claim_task,
     _reindex_worker,
     create_task_record,
     find_running_task,
@@ -42,25 +43,33 @@ from mem_lake.knowledge.repository import (
 async def _seed_nodes(project_id: uuid.UUID, n: int, with_vector: bool = False) -> None:
     """向 knowledge_node 直接插入 n 个 approved 节点（绕过 AGE 图写入）。
 
-    reindex/worker 仅读 PG 表并写回 content_vector，故直接插 ORM 即可满足测试。
-    with_vector=True 时预置向量（用于 batch_regenerate_vectors 覆盖写回验证）。
+    reindex/worker 仅读 PG 表并写回 node_embedding facet 向量（FIX-08：
+    content_vector 列废弃，检索主路径走 node_embedding）。with_vector=True 时
+    预置一条 content facet 向量记录（用于 batch_regenerate_vectors 覆盖写回验证）。
     """
+    from mem_lake.knowledge.models import NodeEmbedding
+
     async with AsyncSessionLocal() as session:
         for i in range(n):
-            session.add(
-                KnowledgeNode(
-                    project_id=project_id,
-                    type="CodeSnippet",
-                    title=f"node-{i}",
-                    content=f"content {i}",
-                    content_vector=([0.0] * 1024) if with_vector else None,
-                    status="approved",
-                    is_deleted=False,
-                    created_by="ak_seed",
-                    properties={"name": f"n{i}"},
-                    tags=[],
-                )
+            node = KnowledgeNode(
+                project_id=project_id,
+                type="CodeSnippet",
+                title=f"node-{i}",
+                content=f"content {i}",
+                status="approved",
+                is_deleted=False,
+                created_by="ak_seed",
+                properties={"name": f"n{i}"},
+                tags=[],
             )
+            session.add(node)
+            await session.flush()
+            if with_vector:
+                session.add(
+                    NodeEmbedding(
+                        node_id=node.id, facet="content", content_vector=[0.0] * 1024
+                    )
+                )
         await session.commit()
 
 
@@ -71,10 +80,25 @@ def _mock_embed(batch_client) -> None:
     )
 
 
+async def _projects_embedded_count(project_id: uuid.UUID) -> int:
+    """统计某 project 下拥有 facet 向量记录的节点数（FIX-08：替代 content_vector 判空）。"""
+    from sqlalchemy import func
+
+    from mem_lake.knowledge.models import NodeEmbedding
+
+    async with AsyncSessionLocal() as s:
+        result = await s.execute(
+            select(func.count(func.distinct(NodeEmbedding.node_id)))
+            .join(KnowledgeNode, KnowledgeNode.id == NodeEmbedding.node_id)
+            .where(KnowledgeNode.project_id == project_id)
+        )
+        return int(result.scalar() or 0)
+
+
 async def test_reindex_worker_processes_all_with_pagination(init_tables, mock_embedding_client):
     """batch_size 小于节点总数时，worker 分页遍历全部节点并批量向量化。
 
-    验证：status=done、processed==total==N、所有节点 content_vector 非空。
+    验证：status=done、processed==total==N、所有节点均写入 facet 向量（FIX-08）。
     """
     _mock_embed(mock_embedding_client)
     project_id = uuid.uuid4()
@@ -91,12 +115,7 @@ async def test_reindex_worker_processes_all_with_pagination(init_tables, mock_em
     assert record.reindexed == 7
     assert record.error is None
 
-    async with AsyncSessionLocal() as s:
-        nodes = (await s.execute(
-            select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
-        )).scalars().all()
-    assert len(nodes) == 7
-    assert all(n.content_vector is not None for n in nodes)
+    assert await _projects_embedded_count(project_id) == 7
 
 
 async def test_reindex_worker_empty_project(init_tables, mock_embedding_client):
@@ -133,7 +152,7 @@ async def test_reindex_worker_node_scope_fills_target_nodes(
     """节点级嵌入：仅嵌入 target_node_ids 指定的节点（审批异步嵌入路径）。
 
     验证：worker 跳过整库扫描，仅对指定节点批量向量化；任务 total=1、status=done，
-    指定节点 content_vector 被填充，其余节点保持 NULL。
+    指定节点写入 facet 向量，其余节点无 facet 记录（FIX-08）。
     """
     _mock_embed(mock_embedding_client)
     project_id = uuid.uuid4()
@@ -158,17 +177,21 @@ async def test_reindex_worker_node_scope_fills_target_nodes(
     assert record.total == 1
     assert record.reindexed == 1
 
+    # FIX-08：断言 facet 记录存在性（仅目标节点有）
+    from mem_lake.knowledge.models import NodeEmbedding
+
     async with AsyncSessionLocal() as s:
-        refreshed = (
+        rows = (
             await s.execute(
-                select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
+                select(NodeEmbedding.node_id).where(
+                    NodeEmbedding.node_id.in_([target.id] + other_ids)
+                )
             )
         ).scalars().all()
-    by_id = {n.id: n for n in refreshed}
-    assert by_id[target.id].content_vector is not None
-    # 其余节点未被嵌入（仍为 NULL）
+    embedded_ids = set(rows)
+    assert target.id in embedded_ids
     for oid in other_ids:
-        assert by_id[oid].content_vector is None
+        assert oid not in embedded_ids
 
 
 async def test_start_embed_nodes_task_schedules_node_scope_worker(
@@ -217,15 +240,39 @@ async def test_start_embed_nodes_task_schedules_node_scope_worker(
     assert record.status == TASK_STATUS_DONE
     assert record.reindexed == 1
 
+    # FIX-08：断言 facet 记录存在性（仅目标节点被嵌入）
+    from mem_lake.knowledge.models import NodeEmbedding
+
     async with AsyncSessionLocal() as s:
-        refreshed = (
+        rows = (
             await s.execute(
-                select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
+                select(NodeEmbedding.node_id).where(
+                    NodeEmbedding.node_id.in_([seeded[0].id, seeded[1].id])
+                )
             )
         ).scalars().all()
-    by_id = {n.id: n for n in refreshed}
-    assert by_id[seeded[0].id].content_vector is not None
-    assert by_id[seeded[1].id].content_vector is None
+    embedded_ids = set(rows)
+    assert seeded[0].id in embedded_ids
+    assert seeded[1].id not in embedded_ids
+
+
+async def test_claim_task_cas_single_winner(init_tables):
+    """FIX-07：DB 抢占条件更新 —— 同一 pending 任务两个 worker 认领仅一方成功。
+
+    第一个 _claim_task 成功（True，pending→running）；第二个（此时状态已非
+    pending）认领失败（False）→ 不会进入执行体，避免多 worker 重复执行。
+    """
+    project_id = uuid.uuid4()
+    task_id = await create_task_record(project_id, "ak_admin")  # status=pending
+
+    first = await _claim_task(task_id)
+    assert first is True
+    # 第二次认领：状态已 running，条件更新影响 0 行 → False
+    second = await _claim_task(task_id)
+    assert second is False
+
+    record = await get_task_record(task_id)
+    assert record.status == TASK_STATUS_RUNNING
 
 
 async def test_find_running_task_states(init_tables):
@@ -301,7 +348,7 @@ async def test_start_reindex_task_schedules_worker(init_tables, mock_embedding_c
 
 
 async def test_batch_regenerate_vectors_and_count(init_tables, mock_embedding_client):
-    """batch_regenerate_vectors 批量写回向量；count_nodes_by_project 计数准确。"""
+    """batch_regenerate_vectors 批量写回 facet 向量；count_nodes_by_project 计数准确。"""
     _mock_embed(mock_embedding_client)
     project_id = uuid.uuid4()
     await _seed_nodes(project_id, 4, with_vector=True)  # 预置向量，验证被覆盖
@@ -319,9 +366,16 @@ async def test_batch_regenerate_vectors_and_count(init_tables, mock_embedding_cl
         )
         assert updated == 4
 
-    # 验证向量被覆盖为 0.1（来自 mock）
+    # FIX-08：验证 facet 向量被覆盖为 0.1（来自 mock）
+    from mem_lake.knowledge.models import NodeEmbedding
+
     async with AsyncSessionLocal() as s:
-        recs = (await s.execute(
-            select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
-        )).scalars().all()
-    assert all(n.content_vector == [0.1] * 1024 for n in recs)
+        recs = (
+            await s.execute(
+                select(NodeEmbedding.content_vector).where(
+                    NodeEmbedding.node_id.in_([n.id for n in nodes])
+                )
+            )
+        ).scalars().all()
+    assert len(recs) >= 4
+    assert all(vec == [0.1] * 1024 for vec in recs)

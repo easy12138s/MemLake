@@ -27,6 +27,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.server.auth import AccessToken
 
+from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.gateway.server import create_mcp_server
 
 # ============================================================================
@@ -419,6 +420,33 @@ class TestRolesCollaboration:
         async with Client(_make_role_app(monkeypatch, role="admin", project_id=project_id)) as admin:
             auto = await _call(admin, "review_auto_process", {"batch_id": batch_id_3})
             assert auto["decision"] == "auto_approved"
+
+        # 审批节点为延迟向量化（generate_vector=False，后台 worker 异步补）。
+        # 测试需在检索前让向量就绪：显式同步补 facet（FIX-08 后向量在
+        # node_embedding），等价于等待后台 worker，但规避异步 worker 在全量
+        # 运行下的 event loop 时序问题。新建独立 client 避免跨 loop 复用。
+        from mem_lake.config import get_settings
+        from mem_lake.embedding.client import EmbeddingClient
+        from mem_lake.knowledge.repository import (
+            batch_regenerate_vectors,
+            list_nodes_by_project,
+        )
+
+        async with AsyncSessionLocal() as s:
+            nodes = await list_nodes_by_project(
+                s, project_id=uuid.UUID(project_id), status="approved"
+            )
+            client = EmbeddingClient(
+                base_url=f"http://{get_settings().EMBEDDING_HOST}:{get_settings().EMBEDDING_PORT}",
+                dimension=get_settings().EMBEDDING_DIMENSION,
+            )
+            try:
+                await batch_regenerate_vectors(
+                    s, embedding_client=client, nodes=nodes, actor="ak_admin"
+                )
+                await s.commit()
+            finally:
+                await client.close()
 
         # Dev 检索代码片段
         async with Client(_make_role_app(monkeypatch, role="dev", project_id=project_id)) as dev:

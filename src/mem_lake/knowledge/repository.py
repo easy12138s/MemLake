@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
-from mem_lake.knowledge.embed import build_embed_facets, build_embed_text
+from mem_lake.knowledge.embed import build_embed_facets
 from mem_lake.knowledge.graph_store import GraphStore
 from mem_lake.knowledge.models import (
     KnowledgeNode,
@@ -65,15 +65,29 @@ def _graph_props(node: KnowledgeNode) -> dict[str, Any]:
     return props
 
 
-def _node_write_audit_detail(node: KnowledgeNode) -> dict[str, Any]:
-    """构造节点创建审计 detail（create_node 与 batch_insert_requirements 共用）。"""
+async def _node_write_audit_detail(
+    session: AsyncSession, node: KnowledgeNode
+) -> dict[str, Any]:
+    """构造节点创建审计 detail（create_node 与 batch_insert_requirements 共用）。
+
+    FIX-08：vector_generated 判定基于 NodeEmbedding 记录存在性（content_vector
+    列废弃，检索主路径走 node_embedding），而非 content_vector 判空。
+    """
     return {
         "node_type": node.type,
         "title": node.title,
-        "version": 1,
-        "vector_generated": node.content_vector is not None,
+        "version": node.version,
+        "vector_generated": await _node_has_embedding(session, node.id),
         "system_id": str(node.system_id) if node.system_id else None,
     }
+
+
+async def _node_has_embedding(session: AsyncSession, node_id: uuid.UUID) -> bool:
+    """判断节点是否已有 facet 向量记录（FIX-08：替代 content_vector 判空）。"""
+    result = await session.execute(
+        select(NodeEmbedding.id).where(NodeEmbedding.node_id == node_id).limit(1)
+    )
+    return result.first() is not None
 
 
 async def create_node(
@@ -102,12 +116,16 @@ async def create_node(
     流程：
     1. schema.validate_node 校验类型与必填字段
     2. 按类型强约束 system/project 归属
-    3. 若 generate_vector 且 embedding_client 提供：调用 EmbeddingClient 生成 1024 维向量
+    3. 若 generate_vector 且 embedding_client 提供：写入 facet 多向量（node_embedding）
     4. INSERT knowledge_node（content_tsv 由触发器自动维护）
     5. 调用 graph_store.add_node 同步图节点（带 id/project_id/title 属性）
     6. write_audit_log 记录创建审计
 
     不 commit，由调用方控制事务。
+
+    注（FIX-08）：不再向 knowledge_node.content_vector 写主向量——检索主路径走
+    node_embedding 多向量，content_vector 列废弃。此处仅写 facet 向量，避免为
+    无用途列多算一次 content embed。
     """
     validate_node(node_type, properties)
 
@@ -120,16 +138,6 @@ async def create_node(
         raise SchemaValidationError(
             f"节点类型 {node_type} 必须归属 project（project_id 必填）"
         )
-
-    content_vector_value: list[float] | None = None
-    if generate_vector:
-        if embedding_client is None:
-            raise ValueError(
-                "generate_vector=True 时必须提供 embedding_client"
-            )
-        # 拼接标题、正文与关键属性作为向量化输入（属性富集提升语义召回）
-        embed_input = build_embed_text(node_type, title, content, properties)
-        content_vector_value = await embedding_client.embed_one(embed_input)
 
     requirement_key = None
     if node_type == "Requirement" and system_id is not None:
@@ -146,7 +154,6 @@ async def create_node(
         type=node_type,
         title=title,
         content=content,
-        content_vector=content_vector_value,
         properties=properties,
         tags=tags or [],
         source=source or {},
@@ -157,10 +164,14 @@ async def create_node(
     session.add(node)
     await session.flush()  # 触发 server_default 生成 id 与 created_at
 
-    # 多向量 facet 写入（32k 适配 D）：与 content_vector 同条件（generate_vector 且
-    # 有 embedding_client 才 embed）。generate_vector=False 时跳过，
-    # 由 reindex worker 后续补写。
-    if generate_vector and embedding_client is not None:
+    # 多向量 facet 写入（32k 适配 D）：generate_vector 必须提供 embedding_client 才可写。
+    # FIX-08：content_vector 停写，单主向量 embed 一并消除，仅写 facet 多向量；
+    # generate_vector=True 但缺 client 仍抛错（facet 向量写入依赖 client）。
+    if generate_vector:
+        if embedding_client is None:
+            raise ValueError(
+                "generate_vector=True 时必须提供 embedding_client"
+            )
         await _store_facet_vectors(
             session,
             node_id=node.id,
@@ -186,7 +197,7 @@ async def create_node(
         target_type="node",
         target_id=node.id,
         project_id=project_id,
-        detail=_node_write_audit_detail(node),
+        detail=await _node_write_audit_detail(session, node),
     )
 
     return node
@@ -322,8 +333,8 @@ async def update_node(
 
     规则：
     - 不允许修改 type 字段（节点类型不可变更），调用方需重新创建新节点
-    - title/content/properties 任一更新且 regenerate_vector=True：重新生成向量
-      （build_embed_text 的输入含属性段，属性变更同样影响向量）
+    - title/content/properties 任一更新且 regenerate_vector=True：重新生成 facet
+      向量（facet 文本含属性段，属性变更同样影响向量）
     - properties 整体替换（不深度合并，调用方负责合并逻辑）
     - 版本号 +1
     - 审计日志记录变更前后关键字段
@@ -357,7 +368,8 @@ async def update_node(
 
     node.version += 1
 
-    # 标题/正文/属性任一变更时重生成向量（embed 输入含属性段，属性变更影响向量）
+    # 标题/正文/属性任一变更时重生成 facet 向量（embed 输入含属性段，属性变更影响向量）。
+    # FIX-08：content_vector 停写，单主向量 embed 一并消除，仅重算 facet 多向量。
     if regenerate_vector and any(
         k in changes for k in ("title", "content", "properties")
     ):
@@ -365,10 +377,8 @@ async def update_node(
             raise ValueError(
                 "regenerate_vector=True 且 title/content/properties 变更时必须提供 embedding_client"
             )
-        embed_input = build_embed_text(node.type, node.title, node.content, node.properties)
-        node.content_vector = await embedding_client.embed_one(embed_input)
         changes["vector_regenerated"] = True
-        # 同步多向量 facet（32k 适配 D）
+        # 多向量 facet（32k 适配 D）
         await _store_facet_vectors(
             session,
             node_id=node.id,
@@ -510,18 +520,14 @@ async def batch_regenerate_vectors(
     nodes: list[KnowledgeNode],
     actor: str,
 ) -> int:
-    """批量重新生成节点向量（不 commit，由调用方事务控制）。
+    """批量重新生成节点 facet 向量（不 commit，由调用方事务控制）。
 
-    收集节点 embed 文本 → 一次批量 embed 调用 → 逐节点写回 content_vector +
-    审计日志。相比逐节点 embed_one 大幅减少 HTTP 往返，供 reindex 后台任务使用。
+    FIX-08：content_vector 停写，仅重算多向量 facet（node_embedding）。汇集所有
+    节点所有 facet 文本，一次批量 embed（相比逐节点 embed_one 大幅减少 HTTP 往返），
+    供 reindex 后台任务使用。
     """
     if not nodes:
         return 0
-    # 组合向量（content_vector，冲突检测/向后兼容）
-    texts = [
-        build_embed_text(n.type, n.title, n.content, n.properties) for n in nodes
-    ]
-    embeddings = await embedding_client.embed(texts)
     # 多向量 facet（32k 适配 D）：汇集所有节点所有 facet 文本，一次批量 embed
     all_facet_texts: list[str] = []
     node_facet_meta: list[tuple[uuid.UUID, str]] = []  # (node_id, facet_name)
@@ -533,10 +539,6 @@ async def batch_regenerate_vectors(
     facet_embeddings = (
         await embedding_client.embed(all_facet_texts) if all_facet_texts else []
     )
-
-    # 写回组合向量
-    for node, vec in zip(nodes, embeddings):
-        node.content_vector = vec
 
     # 写回 facets：先按节点批量删旧行，再插入新行
     node_ids = [n.id for n in nodes]
@@ -580,10 +582,11 @@ async def batch_insert_requirements(
 
     镜像 batch_regenerate_vectors 的批量 embed 模式，但面向创建：
     - 可选为每节点原子分配可读需求主键（HIS-0001）
-    - 主向量（content）与全部节点的所有 facet 文本分别一次批量 embed
-    - session.add_all + flush 落 PG，写 NodeEmbedding facet 行，同步 AGE 图
-      节点与审计日志
+    - 全部节点的所有 facet 文本一次批量 embed，写 NodeEmbedding facet 行
+    - session.add_all + flush 落 PG，同步 AGE 图节点与审计日志
     - 返回 {"created": len(nodes)}
+
+    FIX-08：content_vector 停写，单主向量 embed 一并消除，仅写 facet 多向量。
     """
     if not nodes:
         return {"created": 0}
@@ -595,18 +598,6 @@ async def batch_insert_requirements(
         for node in nodes:
             seq = await _alloc_requirement_sequence(session, system_id)
             node.requirement_key = f"{prefix}-{seq:04d}"
-
-    # 主向量（content_vector）：一次批量 embed 全部节点文本
-    texts = [
-        build_embed_text(n.type, n.title, n.content, n.properties) for n in nodes
-    ]
-    vectors = (
-        await embedding_client.embed(texts)
-        if embedding_client
-        else [None] * len(nodes)
-    )
-    for node, vec in zip(nodes, vectors):
-        node.content_vector = vec
 
     # 多向量 facet（32k 适配 D）：汇集所有节点所有 facet 文本，一次批量 embed。
     # facet 文本按 node_index 归组，node_id 需在 flush 后解析。
@@ -652,7 +643,7 @@ async def batch_insert_requirements(
             target_type="node",
             target_id=node.id,
             project_id=node.project_id,
-            detail=_node_write_audit_detail(node),
+            detail=await _node_write_audit_detail(session, node),
         )
 
     await session.flush()

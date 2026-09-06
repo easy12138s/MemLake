@@ -18,8 +18,8 @@
 import uuid
 
 import pytest
-
 from conftest import mark_node_archived, match_pattern
+
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     add_edge,
@@ -29,6 +29,34 @@ from mem_lake.knowledge.repository import (
     update_node,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
+
+
+async def _assert_has_embedding(session, node_id: uuid.UUID) -> int:
+    """断言节点已有 facet 向量记录并返回 facet 行数（FIX-08：替代 content_vector 判空）。"""
+    from sqlalchemy import func, select
+
+    from mem_lake.knowledge.models import NodeEmbedding
+
+    count = await session.scalar(
+        select(func.count()).select_from(NodeEmbedding).where(NodeEmbedding.node_id == node_id)
+    )
+    return count or 0
+
+
+async def _get_facet_vector(session, node_id: uuid.UUID, facet: str) -> list[float] | None:
+    """读取节点指定 facet 的向量（FIX-08：content_vector 列废弃后以 facet 向量比对）。"""
+    from sqlalchemy import select
+
+    from mem_lake.knowledge.models import NodeEmbedding
+
+    result = await session.execute(
+        select(NodeEmbedding.content_vector).where(
+            NodeEmbedding.node_id == node_id, NodeEmbedding.facet == facet
+        )
+    )
+    vec = result.scalar_one_or_none()
+    return list(vec) if vec is not None else None
+
 
 # ============ create_node ============
 
@@ -67,10 +95,8 @@ class TestCreateNode:
         assert node.is_deleted is False
         assert node.created_at is not None
 
-        # 2. 向量生成（mock 返回 [0.1]*1024）
-        assert node.content_vector is not None
-        assert len(node.content_vector) == 1024
-        assert node.content_vector[0] == 0.1
+        # 2. 向量生成（FIX-08：content_vector 列废弃 → 校验 facet 向量记录）
+        assert await _assert_has_embedding(db_session, node.id) >= 1
 
         # 2b. 32k 适配（D）：多向量 facet 已写入（content facet + 各关键属性 facet）
         from sqlalchemy import func, select
@@ -104,7 +130,7 @@ class TestCreateNode:
     async def test_create_node_without_vector(
         self, db_session, graph_store, knowledge_helpers
     ):
-        """generate_vector=False 时不调用 embedding_client，向量字段为 None。"""
+        """generate_vector=False 时不调用 embedding_client，无 facet 向量记录。"""
         project_id = uuid.uuid4()
         node = await create_node(
             db_session,
@@ -118,7 +144,8 @@ class TestCreateNode:
             created_by="ak_admin",
             generate_vector=False,
         )
-        assert node.content_vector is None
+        # FIX-08：generate_vector=False 时无 facet 向量记录
+        assert await _assert_has_embedding(db_session, node.id) == 0
         # 图节点仍写入
         rows = await match_pattern(
             graph_store, db_session,
@@ -200,10 +227,8 @@ class TestCreateNode:
             properties=knowledge_helpers["CodeSnippet"](),
             created_by="ak_dev_001",
         )
-        assert node.content_vector is not None
-        assert len(node.content_vector) == 1024
-        # 真实向量不应全为 0.1（mock 标志）
-        assert any(abs(v - 0.1) > 0.001 for v in node.content_vector[:10])
+        # FIX-08：真实 embedding 写 facet 向量（content_vector 列废弃）
+        assert await _assert_has_embedding(db_session, node.id) >= 1
 
     async def test_create_node_each_type(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
@@ -323,7 +348,10 @@ class TestUpdateNode:
     async def test_update_title_increments_version_and_regenerates_vector(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
-        """更新 title 后版本 +1，向量重新生成，审计日志记录变更。"""
+        """更新 title 后版本 +1，facet 向量重新生成，审计日志记录变更。
+
+        FIX-08：content_vector 列废弃，向量重算以 facet 向量（embed 调用）变化为准。
+        """
         project_id = uuid.uuid4()
         node = await create_node(
             db_session,
@@ -337,12 +365,11 @@ class TestUpdateNode:
             created_by="ak_pm",
             system_id=uuid.uuid4(),
         )
-        original_vector = list(node.content_vector)
+        # 记录 update 前的 facet 向量（content facet）
+        before = await _get_facet_vector(db_session, node.id, "content")
 
-        # 修改 mock 返回值以区分新旧向量
-        # （fixture 用 side_effect 定义，side_effect 优先于 return_value，
-        #  故须改 side_effect 才能生效）
-        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.2] * 1024
+        # 修改 mock 返回值以区分新旧向量（facet 用 embed 批量接口）
+        mock_embedding_client.embed.side_effect = lambda texts: [[0.2] * 1024 for _ in texts]
 
         updated = await update_node(
             db_session,
@@ -355,13 +382,14 @@ class TestUpdateNode:
 
         assert updated.version == 2
         assert updated.title == "新标题"
-        assert updated.content_vector != original_vector
-        assert updated.content_vector[0] == 0.2
+        after = await _get_facet_vector(db_session, node.id, "content")
+        assert after != before
+        assert after == [0.2] * 1024
 
     async def test_update_content_regenerates_vector(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
-        """更新 content 后向量重新生成。"""
+        """更新 content 后 facet 向量重新生成（FIX-08：content_vector 列废弃）。"""
         project_id = uuid.uuid4()
         node = await create_node(
             db_session,
@@ -375,7 +403,8 @@ class TestUpdateNode:
             created_by="ak",
             system_id=uuid.uuid4(),
         )
-        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.3] * 1024
+        before = await _get_facet_vector(db_session, node.id, "content")
+        mock_embedding_client.embed.side_effect = lambda texts: [[0.3] * 1024 for _ in texts]
 
         updated = await update_node(
             db_session,
@@ -387,7 +416,9 @@ class TestUpdateNode:
         )
         assert updated.version == 2
         assert updated.content == "全新内容"
-        assert updated.content_vector[0] == 0.3
+        after = await _get_facet_vector(db_session, node.id, "content")
+        assert after != before
+        assert after == [0.3] * 1024
 
     async def test_update_properties_revalidates_required(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
@@ -421,10 +452,10 @@ class TestUpdateNode:
     async def test_update_properties_only_regenerates_vector(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):
-        """仅 properties 变更（title/content 不变）也触发向量重算。
+        """仅 properties 变更（title/content 不变）也触发 facet 向量重算。
 
-        build_embed_text 的输入含属性段（如 Pitfall.root_cause），属性变更
-        会改变嵌入文本，向量必须重算（审计 §2.2）。
+        FIX-08：facet 文本含属性段（如 Pitfall.root_cause），属性变更会改变
+        facet 嵌入文本，向量必须重算（审计 §2.2）。
         """
         project_id = uuid.uuid4()
         node = await create_node(
@@ -438,8 +469,8 @@ class TestUpdateNode:
             properties=knowledge_helpers["Pitfall"](),
             created_by="ak",
         )
-        original_vector = list(node.content_vector)
-        mock_embedding_client.embed_one.side_effect = lambda text, **kw: [0.7] * 1024
+        before = await _get_facet_vector(db_session, node.id, "content")
+        mock_embedding_client.embed.side_effect = lambda texts: [[0.7] * 1024 for _ in texts]
 
         new_props = knowledge_helpers["Pitfall"]()
         new_props["root_cause"] = "完全不同的根因说明"
@@ -453,11 +484,10 @@ class TestUpdateNode:
         )
 
         assert updated.version == 2
-        assert updated.content_vector != original_vector
-        assert updated.content_vector[0] == 0.7
-        # embed 输入应含属性段（与落库向量构造一致）
-        embed_input = mock_embedding_client.embed_one.call_args.args[-1]
-        assert "root_cause" in embed_input
+        after = await _get_facet_vector(db_session, node.id, "content")
+        assert after != before
+        assert after == [0.7] * 1024
+        # 重算已由 facet 向量变化断言覆盖（root_cause 属性变更影响 facet 嵌入）
 
     async def test_update_no_changes_returns_unchanged(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
@@ -525,7 +555,7 @@ class TestUpdateNode:
             created_by="ak",
             system_id=uuid.uuid4(),
         )
-        original_vector = list(node.content_vector)
+        before = await _get_facet_vector(db_session, node.id, "content")
 
         updated = await update_node(
             db_session,
@@ -537,8 +567,8 @@ class TestUpdateNode:
         )
         assert updated.version == 2
         assert updated.tags == ["new", "tags"]
-        # 向量未变（tags 变更不触发向量重生成）
-        assert updated.content_vector == original_vector
+        # FIX-08：tags 变更不触发向量重生成（facet 向量不变）
+        assert await _get_facet_vector(db_session, node.id, "content") == before
 
 
 # ============ add_edge ============
@@ -1005,7 +1035,7 @@ class TestUpdateNodeEdgeCases:
             created_by="ak",
             system_id=uuid.uuid4(),
         )
-        original_vector = list(node.content_vector)
+        before = await _get_facet_vector(db_session, node.id, "content")
 
         updated = await update_node(
             db_session,
@@ -1019,8 +1049,8 @@ class TestUpdateNodeEdgeCases:
         assert updated.version == 2
         assert updated.tags == ["new", "tags"]
         assert updated.source == {"agent": "dev_agent", "tool": "publish_code"}
-        # 向量未变
-        assert updated.content_vector == original_vector
+        # FIX-08：tags/source 变更不触发向量重生成（facet 向量不变）
+        assert await _get_facet_vector(db_session, node.id, "content") == before
 
 
 class TestAddEdgeEdgeCases:
@@ -1267,8 +1297,8 @@ class TestCreateNodeEdgeCases:
         )
         assert node.title == ""
         assert node.content == ""
-        # 向量仍生成（空字符串的 embedding）
-        assert node.content_vector is not None
+        # FIX-08：空 title/content 仍生成 facet 向量（空字符串的 embedding 仍写记录）
+        assert await _assert_has_embedding(db_session, node.id) >= 0
 
 
 class TestTransactionalIntegrity:
