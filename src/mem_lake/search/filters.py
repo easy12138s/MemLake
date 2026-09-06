@@ -24,7 +24,9 @@ class FilterSpec:
     默认值对齐 PDD：
     - status="approved"：未审批内容不参与检索（PDD 3.4）
     - exclude_deleted=True：软删除节点不可见
-    - project_id：项目隔离（RLS 已强制，此处冗余校验保证一致性）
+    - project_id：检索侧项目隔离（应用层 validate_project_access 之外的过滤维度）。
+      None 表示该维度不过滤——悬浮需求（project_id 为空）的冲突检测依赖此语义，
+      新增检索接口必须显式传入 filters 以明确隔离边界。
     """
 
     project_id: uuid.UUID | None = None

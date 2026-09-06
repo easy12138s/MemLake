@@ -54,7 +54,7 @@ async def init_tables():
         await create_tables(session)
         await session.commit()
 
-    # 触发器与 RLS 策略必须在表创建后建立，独立 session + commit
+    # 触发器必须在表创建后建立，独立 session + commit
     async with AsyncSessionLocal() as session:
         await init_knowledge_schema(session)
         await session.commit()

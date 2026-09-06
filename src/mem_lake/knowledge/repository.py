@@ -9,7 +9,8 @@
   审批流场景 generate_vector=False 延迟生成，由 reindex worker 后续补写）。
 - 图操作委托给 GraphStore 抽象，AGEGraphStore 为 v1.0 实现。
 - 审计写入委托给 audit.service.write_audit_log，与业务操作同事务。
-- RLS 上下文（project_id/actor）由调用方在事务前注入（auth/rls.py）。
+- 项目隔离由应用层 validate_project_access + 检索侧 FilterSpec（project_id 过滤）实现，
+  不做数据库行级隔离策略（部署连接用户为表 owner 会天然绕过；见 db/init.py 设计说明）。
 
 设计权衡：
 - 不在 repository 内 commit，保证审批流可整体回滚。
