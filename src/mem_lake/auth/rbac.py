@@ -50,6 +50,9 @@ ADMIN_ONLY_TOOLS: frozenset[str] = frozenset({
     "manage_project_profile",
     "reindex_project_vectors",
     "get_reindex_status",
+    "get_graph_stats",
+    "get_graph_quality_report",
+    "generate_rule_edges",
 })
 
 # admin 拥有全部工具（含 pm 与 dev 工具集）
