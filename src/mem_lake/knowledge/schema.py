@@ -4,6 +4,8 @@
 Mem Lake 负责校验。校验在 repository 写入前执行，不合规抛 SchemaValidationError。
 """
 
+from typing import Any
+
 NODE_TYPES: frozenset[str] = frozenset({
     "ProjectProfile",
     "Requirement",
@@ -73,6 +75,10 @@ ALLOWED_FIELDS: dict[str, set[str]] = {
 # Pitfall 严重级合法枚举（描述承诺 P0~P3，schema 层枚举校验）
 SEVERITY_ENUM: frozenset[str] = frozenset({"P0", "P1", "P2", "P3"})
 
+# 图遍历深度上界（FIX-15 纵深防御）：与工具层校验同值（query_tools 5），
+# 存储/检索层 clamp 防止稠密图组合爆炸。所有遍历入口共享此常量。
+MAX_TRAVERSAL_DEPTH = 5
+
 
 class SchemaValidationError(Exception):
     """节点属性或边类型校验失败时抛出。"""
@@ -138,4 +144,31 @@ def validate_edge_type(edge_type: str) -> None:
     if edge_type not in EDGE_TYPES:
         raise SchemaValidationError(
             f"非法边类型: {edge_type}，合法类型: {sorted(EDGE_TYPES)}"
+        )
+
+
+def validate_attribution(
+    node_type: str,
+    *,
+    system_id: Any = None,
+    project_id: Any = None,
+) -> None:
+    """校验节点 system/project 归属约束（FIX-17 单一实现）。
+
+    规则（system 维度建模）：
+    - Requirement：system_id 必填，project_id 可空（悬浮需求）
+    - 其余资产类型：project_id 必填（不可悬浮）
+
+    不合规抛 SchemaValidationError。此前该逻辑散落于 repository.create_node /
+    gateway.tools._shared / approval._validate_item_payload 三处独立实现且异常
+    类型不一致，统一收敛于此；调用方如需对外分层包装（如转 PayloadValidationError），
+    自行捕获本异常。
+    """
+    if node_type == "Requirement" and system_id is None:
+        raise SchemaValidationError(
+            "Requirement 必须归属 system（system_id 必填）"
+        )
+    if node_type != "Requirement" and project_id is None:
+        raise SchemaValidationError(
+            f"节点类型 {node_type} 必须归属 project（project_id 必填）"
         )

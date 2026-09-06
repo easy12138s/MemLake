@@ -209,6 +209,62 @@ class TestSubmitBatch:
 
         assert batch1.id == batch2.id
 
+    async def test_submit_batch_savepoint_preserves_outer_transaction(
+        self, db_session, sample_batch_payloads, monkeypatch
+    ):
+        """FIX-13：IntegrityError 竞态回滚至 SAVEPOINT，外事务未被废弃。
+
+        模拟并发竞态：预查询 miss（强制走 _create_batch）→ 撞唯一约束
+        uq_approval_batch_idempotency → begin_nested 回滚至 savepoint →
+        回查命中首次批次。断言返回同一 batch 且 db_session 外事务仍可用
+        （未被手动 rollback 废弃，可继续执行查询）。
+        """
+        import mem_lake.approval.service as svc
+
+        project_id = uuid.uuid4()
+        operation_id = f"op-savepoint-{uuid.uuid4().hex[:8]}"
+        items = sample_batch_payloads["publish_requirement"](project_id)
+
+        batch1 = await submit_batch(
+            db_session,
+            project_id=project_id,
+            batch_type="publish_requirement",
+            submitted_by="ak_pm_svp",
+            submitter_role="pm",
+            items=items,
+            operation_id=operation_id,
+        )
+
+        # 竞态路径：第一次预查询强制 miss（进入 _create_batch 撞唯一约束），
+        # 第二次（except 内的回查）走真实实现命中 batch1。
+        real_find = svc._find_by_idempotency_key
+        calls: list[int] = []
+
+        async def _fake_find(session, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return None
+            return await real_find(session, **kwargs)
+
+        monkeypatch.setattr(svc, "_find_by_idempotency_key", _fake_find)
+
+        batch2 = await submit_batch(
+            db_session,
+            project_id=project_id,
+            batch_type="publish_requirement",
+            submitted_by="ak_pm_svp",
+            submitter_role="pm",
+            items=items,
+            operation_id=operation_id,
+        )
+        assert batch1.id == batch2.id
+
+        # 外事务未被废弃：db_session 仍可执行查询（手动 rollback 会令其 aborted）
+        from sqlalchemy import text
+
+        row = await db_session.execute(text("SELECT 1"))
+        assert row.scalar() == 1
+
     async def test_submit_batch_invalid_batch_type_raises(
         self, db_session, sample_batch_payloads
     ):

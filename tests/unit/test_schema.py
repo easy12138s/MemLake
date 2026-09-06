@@ -18,6 +18,7 @@ from mem_lake.knowledge.schema import (
     EDGE_TYPES,
     NODE_TYPES,
     SchemaValidationError,
+    validate_attribution,
     validate_edge_type,
     validate_node,
 )
@@ -324,3 +325,43 @@ class TestValidateEdgeType:
         assert len(EDGE_TYPES) == 12
         assert "implements" in EDGE_TYPES
         assert "references" in EDGE_TYPES
+
+
+# ============ FIX-17 归属约束统一校验 ============
+
+class TestAttributionValidation:
+    """validate_attribution：两类归属错误统一抛 SchemaValidationError。"""
+
+    def test_requirement_requires_system_id(self):
+        """Requirement 缺 system_id 抛 SchemaValidationError。"""
+        with pytest.raises(SchemaValidationError, match="system_id 必填"):
+            validate_attribution("Requirement", project_id=None)
+
+    def test_requirement_with_system_id_passes(self):
+        """Requirement 带 system_id 通过（project_id 可空=悬浮）。"""
+        validate_attribution("Requirement", system_id=object(), project_id=None)
+
+    def test_non_requirement_requires_project_id(self):
+        """其余类型缺 project_id 抛 SchemaValidationError。"""
+        for node_type in [
+            "ProjectProfile",
+            "CodeSnippet",
+            "Solution",
+            "DesignIntent",
+            "Decision",
+            "Pitfall",
+        ]:
+            with pytest.raises(SchemaValidationError, match="project_id 必填"):
+                validate_attribution(node_type, project_id=None)
+
+    def test_non_requirement_with_project_id_passes(self):
+        """其余类型带 project_id 通过。"""
+        for node_type in [
+            "ProjectProfile",
+            "CodeSnippet",
+            "Solution",
+            "DesignIntent",
+            "Decision",
+            "Pitfall",
+        ]:
+            validate_attribution(node_type, project_id=object())

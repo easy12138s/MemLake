@@ -24,7 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.config import get_settings
 from mem_lake.knowledge.graph_store import EdgeTargetNotFoundError, GraphStore
-from mem_lake.knowledge.schema import validate_edge_type, validate_node_type
+from mem_lake.knowledge.schema import (
+    MAX_TRAVERSAL_DEPTH,
+    validate_edge_type,
+    validate_node_type,
+)
 
 # agtype 返回值类型后缀（::vertex / ::edge / ::path）
 # AGE 嵌套结构（path、subgraph）内含多个后缀，需全局移除（非仅末尾）。
@@ -35,6 +39,10 @@ _AGE_TYPE_SUFFIX_RE = re.compile(r"::(vertex|edge|path)\b")
 # 边属性键白名单正则：仅允许字母/数字/下划线，首字符为字母或下划线
 # 用于动态构建 SET 子句时防止 Cypher 注入（属性键拼入 Cypher 语法部分）
 _EDGE_PROP_KEY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# 边属性键保留字（FIX-16）：与 _exec_cypher 的 params 命名空间冲突的键，
+# 允许覆盖会静默替换端点参数（from_id/to_id），必须拒绝。
+_RESERVED_EDGE_PROP_KEYS = frozenset({"from_id", "to_id"})
 
 logger = logging.getLogger("mem_lake.knowledge.age_store")
 
@@ -133,6 +141,9 @@ class AGEGraphStore(GraphStore):
         try:
             return json.loads(s)
         except (json.JSONDecodeError, ValueError):
+            # FIX-14：解析失败留痕（原始值前 200 字符），避免静默丢数据无日志可查；
+            # 返回 None 的优雅降级保留（调用方判空）。
+            logger.warning("agtype 解析失败，返回 None：%.200s", s)
             return None
 
     async def add_node(
@@ -186,6 +197,12 @@ class AGEGraphStore(GraphStore):
 
         # 校验属性键安全性（拼入 Cypher 语法部分，非参数值）
         for key in properties:
+            if key in _RESERVED_EDGE_PROP_KEYS:
+                # FIX-16：保留字检查——from_id/to_id 已在 params 命名空间占用，
+                # 允许覆盖会静默替换端点参数，抛 ValueError 拒绝。
+                raise ValueError(
+                    f"非法边属性键: {key}，from_id/to_id 为保留字（防参数覆盖）"
+                )
             if not _EDGE_PROP_KEY_RE.match(key):
                 raise ValueError(
                     f"非法边属性键: {key}，仅允许字母/数字/下划线且首字符为字母或下划线"
@@ -264,6 +281,8 @@ class AGEGraphStore(GraphStore):
         - edge_type 已由 validate_edge_type 白名单校验（12 种合法类型），
           安全拼入 Cypher 字符串字面量（非用户输入）
         """
+        # FIX-15 纵深防御：depth 上界 clamp（稠密图无向变长遍历组合增长，所有分支生效）
+        depth = min(depth, MAX_TRAVERSAL_DEPTH)
         if edge_type is not None:
             validate_edge_type(edge_type)
             if depth == 1:
@@ -330,8 +349,8 @@ class AGEGraphStore(GraphStore):
         去重：同一目标节点若经多条路径到达，保留跳数最小者（并列取首次遇见）。
         图遍历为无向（-[r]-），direction 无第一语义，故本方法不返回方向。
         """
-        if depth < 1:
-            depth = 1
+        # FIX-15 纵深防御：depth clamp 下界 1 / 上界 MAX_TRAVERSAL_DEPTH
+        depth = min(max(depth, 1), MAX_TRAVERSAL_DEPTH)
         cypher = (
             f"MATCH (n {{id: $node_id}})-[r*1..{depth}]-(m) "
             f"RETURN {{node: m, edges: r}} AS result"
@@ -371,16 +390,6 @@ class AGEGraphStore(GraphStore):
                 "depth": hop,
             }
         return [v for v in seen.values()]
-
-    async def delete_node(
-        self,
-        session: AsyncSession,
-        node_id: uuid.UUID,
-    ) -> None:
-        """删除节点及其关联边（DETACH DELETE）。幂等。"""
-        cypher = "MATCH (n {id: $node_id}) DETACH DELETE n"
-        params = {"node_id": str(node_id)}
-        await self._exec_cypher(session, cypher, params)
 
 
 @lru_cache
