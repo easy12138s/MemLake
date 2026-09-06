@@ -1,10 +1,15 @@
-"""批量导入需求文档：入库驱动。
+"""批量导入需求文档：存量需求迁移工具（免审批直写路径）。
 
-source_doc（=原始相对路径）幂等：project+system 范围内匹配 properties.source_doc，
-命中跳过；同一运行内重复 source_doc 也跳过（先到先得）。
-复用 repository.batch_insert_requirements 直写（带向量、不进审批），
-每 batch_size 切片 commit：已提交批次在崩溃后保留，下次运行靠 source_doc 去重跳过，
-实现断点续跑。
+本 CLI 定位为存量需求的一站式迁移工具：把历史需求文档批量灌入图谱，
+供后续演进过程中由审批流维护增量。与 MCP 写工具路径不同：
+
+- 免审批直写：复用 repository.batch_insert_requirements 直接写入
+  （status=approved、带向量），不走审批工作流。
+- 重复防护：source_doc（=原始相对路径）幂等——project+system 范围内匹配
+  properties.source_doc，命中跳过；同一运行内重复 source_doc 也跳过（先到先得），
+  据此实现断点续跑（每 batch_size 切片 commit，已提交批次在崩溃后保留）。
+- 冲突检测：批量直写本身不触发 L0-L3 四层冲突检测；迁移后如需判重，由检索侧
+  （check_requirement_conflicts 等）按需发起。
 """
 
 from __future__ import annotations

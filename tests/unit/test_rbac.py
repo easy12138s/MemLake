@@ -28,8 +28,14 @@ def test_reindex_tools_admin_only():
     assert "get_reindex_status" in ADMIN_ONLY_TOOLS
     assert "reindex_project_vectors" not in PM_TOOLS
     assert "reindex_project_vectors" not in DEV_TOOLS
-    assert "get_reindex_status" not in PM_TOOLS
-    assert "get_reindex_status" not in DEV_TOOLS
+
+
+def test_graph_tools_admin_only():
+    """ENH-01 三个图能力工具仅 admin 可调用（不落入 pm/dev）。"""
+    graph_tools = {"get_graph_stats", "get_graph_quality_report", "generate_rule_edges"}
+    assert graph_tools <= ADMIN_ONLY_TOOLS
+    assert not (graph_tools & PM_TOOLS)
+    assert not (graph_tools & DEV_TOOLS)
 
 
 def test_pm_tools_exact():

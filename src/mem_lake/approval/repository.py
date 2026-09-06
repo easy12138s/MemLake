@@ -30,6 +30,7 @@ BATCH_TYPES: frozenset[str] = frozenset({
     "submit_dev_artifacts",
     "update_requirement_relations",
     "update_node",
+    "generate_rule_edges",  # ENH-01：规则边生成器提交的边批次
 })
 
 # 状态机常量

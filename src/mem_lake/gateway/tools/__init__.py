@@ -23,6 +23,9 @@ PDD 6.1 工具表分组：
 - query_tools：查询类（只读）
   - get_role_skills（三角色共享）
   - get_project_profile, get_project_info, get_requirement_context, query_audit_log
+- graph_tools：图能力管理类（Admin 专属）
+  - get_graph_stats, get_graph_quality_report（图统计/质量基线，只读）
+  - generate_rule_edges（规则边生成，走审批批次）
 """
 
 from fastmcp import FastMCP
@@ -33,6 +36,7 @@ def register_all_tools(mcp: FastMCP) -> None:
 
     注册顺序无要求（FastMCP 内部按 name 索引），为可读性按类型分组注册。
     """
+    from mem_lake.gateway.tools.graph_tools import register_graph_tools
     from mem_lake.gateway.tools.manage_tools import register_manage_tools
     from mem_lake.gateway.tools.query_tools import register_query_tools
     from mem_lake.gateway.tools.review_tools import register_review_tools
@@ -44,3 +48,4 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_manage_tools(mcp)
     register_search_tools(mcp)
     register_query_tools(mcp)
+    register_graph_tools(mcp)
