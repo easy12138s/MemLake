@@ -163,12 +163,15 @@ def validate_attribution(
     gateway.tools._shared / approval._validate_item_payload 三处独立实现且异常
     类型不一致，统一收敛于此；调用方如需对外分层包装（如转 PayloadValidationError），
     自行捕获本异常。
+
+    判空用 falsy（非 is None）：合法值为 UUID 对象（恒真值），payload 原始
+    JSON 中的空串/缺失统一视为未填，在提交时点即拦截（而非推迟到审批执行）。
     """
-    if node_type == "Requirement" and system_id is None:
+    if node_type == "Requirement" and not system_id:
         raise SchemaValidationError(
             "Requirement 必须归属 system（system_id 必填）"
         )
-    if node_type != "Requirement" and project_id is None:
+    if node_type != "Requirement" and not project_id:
         raise SchemaValidationError(
             f"节点类型 {node_type} 必须归属 project（project_id 必填）"
         )
