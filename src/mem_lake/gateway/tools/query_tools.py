@@ -38,6 +38,7 @@ from mem_lake.gateway.dependencies import (
 from mem_lake.gateway.tools._shared import (
     INSTALLATION_GUIDE,
     READ_TOOL_ANNOTATIONS,
+    ROLE_REFERENCE_MD,
     ROLE_SKILLS_MD,
     ROLE_SKILLS_VERSION,
     get_lifespan_context,
@@ -70,6 +71,10 @@ class GetRoleSkillsOutput(BaseModel):
     role: str = Field(description="角色：admin/pm/dev")
     skills_markdown: str = Field(
         description="角色 Skills 指导文档（Markdown 格式，可直接保存为 SKILL.md）"
+    )
+    reference_guide: str | None = Field(
+        default=None,
+        description="角色参考文档（详细工具参数表和示例，按需加载以节省 context token）"
     )
     version: str = Field(description="Skills 文档版本")
     installation_guide: str = Field(
@@ -220,6 +225,7 @@ def register_query_tools(mcp: FastMCP) -> None:
         return GetRoleSkillsOutput(
             role=target_role,
             skills_markdown=ROLE_SKILLS_MD[target_role],
+            reference_guide=ROLE_REFERENCE_MD.get(target_role),
             version=ROLE_SKILLS_VERSION,
             installation_guide=INSTALLATION_GUIDE,
         )

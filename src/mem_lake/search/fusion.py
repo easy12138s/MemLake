@@ -35,6 +35,11 @@ class SearchResult:
     向量/全文引擎的 score 是原始分数（cosine 相似度 0~1 / ts_rank_cd 0.x），
     图遍历的 score 为 None（图遍历无相似度概念）。
     RRF 融合后 score 替换为 RRF 分数，source 替换为 "fused"。
+
+    数据信任字段（v1.1 新增）：
+    - version：节点版本号，用于判断数据是否为最新
+    - vector_generated_at：向量生成时间，用于判断向量新鲜度
+    - data_age_hours：数据年龄（小时），便于调用方判断是否过期
     """
 
     node_id: uuid.UUID
@@ -48,6 +53,10 @@ class SearchResult:
     # 图遍历上下文（仅 get_requirement_context 路径填充，其他来源为 None）：
     edge_types: list[str] | None = None  # 路径边类型列表（从起点出发每一跳一个）
     graph_depth: int | None = None  # 路径跳数（1=直接关联）
+    # 数据信任字段（v1.1 新增）：
+    version: int | None = None  # 节点版本号
+    vector_generated_at: str | None = None  # 向量生成时间（ISO 8601）
+    data_age_hours: float | None = None  # 数据年龄（小时）
 
     # 注意：fused 结果的 score 为向量余弦分（0~1，来自 vector 引擎），便于判相关性；
     # 排序仍由 RRF 排名决定。RRF 原始分数仅用于融合排序，不直接透出。

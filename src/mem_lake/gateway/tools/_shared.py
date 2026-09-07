@@ -372,6 +372,17 @@ def _load_skill_file(role: str) -> tuple[str, str]:
     return content, "0.0.0"
 
 
+def _load_reference_file(role: str) -> str | None:
+    """从文件系统加载角色 REFERENCE.md，返回 markdown 内容或 None（文件不存在时）。
+
+    REFERENCE.md 包含详细的工具参数表和示例，按需加载以节省 context token。
+    """
+    ref_file = _SKILLS_DIR / role / "REFERENCE.md"
+    if ref_file.exists():
+        return ref_file.read_text(encoding="utf-8")
+    return None
+
+
 # 模块级加载（首次导入时执行，启动后缓存）
 _ROLE_SKILLS_DATA: dict[str, tuple[str, str]] = {
     role: _load_skill_file(role) for role in ("pm", "dev", "admin")
@@ -380,6 +391,9 @@ ROLE_SKILLS_MD: dict[str, str] = {
     role: data[0] for role, data in _ROLE_SKILLS_DATA.items()
 }
 ROLE_SKILLS_VERSION = max(data[1] for data in _ROLE_SKILLS_DATA.values())
+ROLE_REFERENCE_MD: dict[str, str | None] = {
+    role: _load_reference_file(role) for role in ("pm", "dev", "admin")
+}
 
 
 # ============================================================================
