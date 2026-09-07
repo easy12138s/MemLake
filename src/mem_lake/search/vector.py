@@ -151,6 +151,8 @@ class VectorSearcher:
                     source="vector",
                     properties=node.properties or {},
                     tags=node.tags or [],
+                    # 数据信任字段
+                    version=node.version,
                 )
             )
 

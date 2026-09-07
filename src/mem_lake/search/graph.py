@@ -132,6 +132,8 @@ class GraphSearcher:
                     source="graph",
                     properties=node.properties or {},
                     tags=node.tags or [],
+                    # 数据信任字段
+                    version=node.version,
                 )
             )
 
@@ -193,6 +195,8 @@ class GraphSearcher:
                     tags=node.tags or [],
                     edge_types=ctx.get("edge_types") if ctx else None,
                     graph_depth=ctx.get("depth") if ctx else None,
+                    # 数据信任字段
+                    version=node.version,
                 )
             )
         return search_results
