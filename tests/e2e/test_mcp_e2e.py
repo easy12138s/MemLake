@@ -172,16 +172,16 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
                 f"key_id={r.get('key_id', 'N/A')}",
             )
             mcp_cfg = r.get("mcp_config")
-            prompt = r.get("onboarding_prompt")
+            hint = r.get("user_hint")
             result.check(
                 bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
                 "1.2 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
             )
             result.check(
-                bool(prompt)
-                and "get_role_skills" in prompt
-                and ctx.pm_key not in prompt,
-                "1.2 验证返回 onboarding_prompt(含技能指引, 不含 Key)",
+                bool(hint)
+                and "get_role_skills" in hint
+                and ctx.pm_key not in hint,
+                "1.2 验证返回 user_hint(指向技能安装, 不含 Key)",
             )
         else:
             result.fail("1.2 创建 PM Key", err or "未知错误")
@@ -200,16 +200,16 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
                 f"key_id={r.get('key_id', 'N/A')}",
             )
             mcp_cfg = r.get("mcp_config")
-            prompt = r.get("onboarding_prompt")
+            hint = r.get("user_hint")
             result.check(
                 bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
                 "1.3 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
             )
             result.check(
-                bool(prompt)
-                and "get_role_skills" in prompt
-                and ctx.dev_key not in prompt,
-                "1.3 验证返回 onboarding_prompt(含技能指引, 不含 Key)",
+                bool(hint)
+                and "get_role_skills" in hint
+                and ctx.dev_key not in hint,
+                "1.3 验证返回 user_hint(指向技能安装, 不含 Key)",
             )
         else:
             result.fail("1.3 创建 Dev Key", err or "未知错误")

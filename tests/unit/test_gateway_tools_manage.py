@@ -13,7 +13,7 @@ import uuid
 from mem_lake.gateway.server import create_mcp_server
 from mem_lake.gateway.tools.manage_tools import (
     _build_mcp_config,
-    _build_onboarding_prompt,
+    _build_user_hint,
     _normalize_uuid_list,
     _resolve_profile_id,
 )
@@ -78,15 +78,14 @@ def test_build_mcp_config_contains_url_and_key():
     assert cfg["mcpServers"]["mem-lake"]["headers"]["X-MCP-Key"] == key
 
 
-def test_build_onboarding_prompt_references_skill_and_excludes_key():
-    """_build_onboarding_prompt 指引调用 get_role_skills 并写入 .agents/skills/，且不出现 Key。"""
+def test_build_user_hint_references_skill_and_excludes_key():
+    """_build_user_hint 产出给用户的一句话提示：指向 get_role_skills 且不出现 Key。"""
     role = "dev"
     key = "ak_secret_should_not_appear"
-    prompt = _build_onboarding_prompt(role)
-    assert f'get_role_skills(role="{role}")' in prompt
-    assert f".agents/skills/mem-lake-{role}/SKILL.md" in prompt
-    assert "## 3. 完成" in prompt
-    assert key not in prompt
+    hint = _build_user_hint(role)
+    assert "get_role_skills" in hint
+    assert f"{role} 角色" in hint
+    assert key not in hint
 
 
 def test_create_mcp_server_registers_manage_project_profile():

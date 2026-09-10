@@ -149,7 +149,7 @@
 | project_scope | list[UUID] | 是 | 项目范围限制（admin 传空列表 `[]` 表示不受限）|
 | lax_mode | bool | 否 | 初始审核模式：`true`=宽松，`false`=严格；默认 `false` |
 
-**返回** `CreateAccessKeyOutput`：`key_id` + `plaintext`（明文仅此一次）+ `role` + `project_scope` + `lax_mode` + `mcp_config` + `onboarding_prompt`。
+**返回** `CreateAccessKeyOutput`：`key_id` + `plaintext`（明文仅此一次）+ `role` + `project_scope` + `lax_mode` + `mcp_config` + `user_hint`。
 
 ---
 

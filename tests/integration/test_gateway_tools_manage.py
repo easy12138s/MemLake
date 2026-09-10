@@ -176,7 +176,7 @@ async def test_create_access_key_rotate(admin_app):
 
 
 def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
-    """断言 create/rotate 出参含 mcp_config（给用户）与 onboarding_prompt（不含 Key，给 Agent）。"""
+    """断言 create/rotate 出参含 mcp_config（给用户）与 user_hint（给用户，不含 Key）。"""
     import json as _json
 
     mcp_config = output["mcp_config"]
@@ -185,16 +185,15 @@ def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
     assert cfg["mcpServers"]["mem-lake"]["url"]
     assert cfg["mcpServers"]["mem-lake"]["headers"]["X-MCP-Key"] == plaintext
 
-    prompt = output["onboarding_prompt"]
-    assert isinstance(prompt, str) and prompt.strip()
-    assert f'get_role_skills(role="{role}")' in prompt
-    assert ".agents/skills/mem-lake-{role}/SKILL.md".replace("{role}", role) in prompt
-    # 安全：Key 不应出现在给 Agent 的提示词里
-    assert plaintext not in prompt
+    hint = output["user_hint"]
+    assert isinstance(hint, str) and hint.strip()
+    assert "get_role_skills" in hint
+    # 安全：Key 不应出现在给用户的提示词里
+    assert plaintext not in hint
 
 
 async def test_create_access_key_onboarding(admin_app):
-    """create_access_key 返回 mcp_config（JSON 给用户）与 onboarding_prompt（不含 Key，给 Agent）。"""
+    """create_access_key 返回 mcp_config（JSON 给用户）与 user_hint（给用户，不含 Key）。"""
     async with Client(admin_app) as client:
         created = await client.call_tool(
             "create_access_key",
