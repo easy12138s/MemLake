@@ -132,10 +132,11 @@ class CreateAccessKeyOutput(BaseModel):
             "MCP 客户端（Claude Desktop / Cursor / Codex 等），目标 Agent 不自行安装 MCP"
         ),
     )
-    onboarding_prompt: str | None = Field(
+    user_hint: str | None = Field(
         default=None,
         description=(
-            "给目标 Agent 的技能安装提示词（不含 Key，MCP 接通后复制给 Agent 执行一次性安装）"
+            "给用户的接入提示（一句话，不含 Key）：MCP 配置完成后转述给其 Agent，"
+            "引导 Agent 先调用 get_role_skills 安装角色技能"
         ),
     )
 
@@ -149,8 +150,8 @@ def _build_mcp_config(mcp_url: str, plaintext: str) -> str:
     """拼装给用户粘贴的 MCP 客户端配置（JSON 字符串）。
 
     目标 Agent 通常无法自行给自己安装 MCP，因此这部分交由用户处理：
-    用户把返回的 JSON 写入自己的 MCP 客户端（Claude Desktop / Cursor / Codex 等），
-    Agent 侧只需在 MCP 接通后执行技能安装（见 _build_onboarding_prompt）。
+    用户把返回的 JSON 写入自己的 MCP 客户端（Claude Desktop / Cursor / Codex 等）。
+    技能安装由目标 Agent 接通 MCP 后自助完成（见 _build_user_hint），无需 admin 转接。
     """
     import json
 
@@ -165,26 +166,17 @@ def _build_mcp_config(mcp_url: str, plaintext: str) -> str:
     return json.dumps(cfg, ensure_ascii=False, indent=2)
 
 
-def _build_onboarding_prompt(role: str) -> str:
-    """给目标 Agent 的技能安装提示词（不含 Key，MCP 已接通后执行）。
+def _build_user_hint(role: str) -> str:
+    """生成给【用户】的一句话接入提示（不含 Key）。
 
-    仅指导 Agent 调用 get_role_skills 取回 SKILL.md 并写入其客户端约定目录，
-    安全相关提醒不在 Agent 侧（Key 仅出现在 mcp_config 的 JSON 里，由用户保管）。
+    只引导用户配置完 MCP 后对自己 Agent 说一句话，指向 get_role_skills；
+    具体安装教程由目标 Agent 调 get_role_skills 自助获取，不再经 admin 转手
+    大段提示词，从而消除「admin Agent → admin 人 → 目标用户 → 目标 Agent」的接力损耗。
     """
     return (
-        f"你是当前项目的 {role}。MemLake MCP 已接通，现在执行一次性操作："
-        "安装团队知识共享技能。\n\n"
-        "## 1. 获取技能\n"
-        f'调用 get_role_skills(role="{role}")，读取返回的 skills_markdown'
-        "（完整 SKILL.md，含你的角色工具用法、最佳实践与字段规范）和 installation_guide。\n\n"
-        "## 2. 安装技能\n"
-        "将 skills_markdown 写入 installation_guide 中对应你当前客户端的目录；"
-        "不确定时用通用路径：\n"
-        f".agents/skills/mem-lake-{role}/SKILL.md\n"
-        "若无文件写入权限或写入失败，将 skills_markdown 完整输出给用户手动保存。\n\n"
-        "## 3. 完成\n"
-        "写入成功后告知用户：技能已安装，重启或刷新当前会话后生效。生效后该技能会指导你在"
-        "日常工作中使用 MemLake 工具检索和沉淀团队知识。"
+        f"已生成 {role} 角色的 MCP 配置（见 mcp_config）。将它粘贴进你的 MCP 客户端后，"
+        "对你的 Agent 说一句「先调用 get_role_skills 安装角色技能，再开始使用 MemLake」即可。"
+        "技能由 Agent 自行安装一次，后续会话自动生效。"
     )
 
 
@@ -342,8 +334,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
         （admin 为空列表表示不受限）。同时返回两部分初始化产物，请按需分发给对应接收方：
           · mcp_config：拼装好的 MCP 客户端配置 JSON，交【用户】粘贴到其
             MCP 客户端（Claude Desktop / Cursor / Codex 等），Agent 不自行安装 MCP；
-          · onboarding_prompt：给【目标 Agent】的技能安装提示词（不含 Key），
-            MCP 接通后复制给 Agent 执行一次性技能安装。
+          · user_hint：给【用户】的一句话接入提示（不含 Key），告诉用户
+            MCP 接通后对自己 Agent 说一句「先调 get_role_skills」即可。
         """
         try:
             key_id_actor = get_current_key_id()
@@ -370,7 +362,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     project_scope=[str(pid) for pid in project_scope],
                     lax_mode=bool(lax_mode),
                     mcp_config=_build_mcp_config(mcp_url, plaintext),
-                    onboarding_prompt=_build_onboarding_prompt(role),
+                    user_hint=_build_user_hint(role),
                 )
         except Exception as e:
             raise to_tool_error(e) from e
@@ -467,7 +459,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
         """轮换指定 key_id 的 Key 密钥（保留 Key ID，旧明文立即失效），返回新明文（仅此一次）。
 
         Admin 工具。用于密钥疑似泄露时主动作废，无需吊销重建（Key ID 不变）。
-        同样附带 mcp_config 与 onboarding_prompt。
+        同样附带 mcp_config 与 user_hint。
         """
         try:
             key_id_actor = get_current_key_id()
@@ -489,7 +481,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     project_scope=_proj_list,
                     lax_mode=bool(ak.lax_mode),
                     mcp_config=_build_mcp_config(mcp_url, plaintext),
-                    onboarding_prompt=_build_onboarding_prompt(ak.role),
+                    user_hint=_build_user_hint(ak.role),
                 )
         except Exception as e:
             raise to_tool_error(e) from e
