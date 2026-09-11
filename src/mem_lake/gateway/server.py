@@ -160,7 +160,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[Any]:
     # embedding 模型一致性检测：比对本次启动的 embedding 签名与上次记录，切换则告警。
     # 仅提醒（打 WARNING 日志），不阻断、不强制，由 admin 自行决定重嵌或回退。
     # 检测失败不阻断启动（与 embedding 依赖可降级的语义一致）。
-    await _detect_embedding_change(embedding_client, settings)
+    await _detect_embedding_change(embedding_client)
 
     try:
         yield LifespanContext(
