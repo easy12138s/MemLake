@@ -48,6 +48,56 @@ class LifespanContext:
     vector_searcher: VectorSearcher
 
 
+async def _detect_embedding_change(embedding_client: EmbeddingClient) -> None:
+    """启动时检测 embedding 模型/provider 是否切换，切换则告警并留痕。
+
+    读 embedding 服务 /health 的 provider+model 构造当前签名，与 embedding_state
+    表最近一条比对：无历史写基线；一致跳过；不一致打 WARNING 并写入新记录。
+    任何异常静默降级（不阻断启动）。
+    """
+    from sqlalchemy import select
+
+    from mem_lake.db.session import AsyncSessionLocal
+    from mem_lake.embedding.consistency import (
+        compute_signature,
+        decide_embedding_change,
+    )
+    from mem_lake.knowledge.models import EmbeddingState
+
+    try:
+        health = await embedding_client.health()
+    except Exception as exc:  # noqa: BLE001 - 健康检查失败不阻断启动
+        logger.warning("embedding 健康检查失败，跳过模型一致性检测: %s", exc)
+        return
+
+    current_sig = compute_signature(health)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(EmbeddingState).order_by(EmbeddingState.detected_at.desc()).limit(1)
+            )
+            latest_row = result.scalar_one_or_none()
+        latest = latest_row.signature if latest_row is not None else None
+
+        action, changed = decide_embedding_change(latest, current_sig)
+
+        if changed:
+            logger.warning(
+                "检测到 embedding 模型/提供商变更：%s -> %s。存量向量由旧模型生成、"
+                "检索可能不准；请用 reindex_project_vectors 逐项目重嵌，或切回原 provider。",
+                latest,
+                current_sig,
+            )
+
+        if action != "unchanged":
+            async with AsyncSessionLocal() as session:
+                session.add(EmbeddingState(signature=current_sig))
+                await session.commit()
+    except Exception as exc:  # noqa: BLE001 - 检测失败不阻断启动
+        logger.warning("embedding 模型一致性检测失败，跳过: %s", exc)
+
+
 @lifespan
 async def app_lifespan(server: FastMCP) -> AsyncIterator[Any]:
     """应用生命周期：启动时初始化共享资源，关闭时清理。
@@ -106,6 +156,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[Any]:
     )
     graph_store = get_graph_store()
     vector_searcher = VectorSearcher(embedding_client)
+
+    # embedding 模型一致性检测：比对本次启动的 embedding 签名与上次记录，切换则告警。
+    # 仅提醒（打 WARNING 日志），不阻断、不强制，由 admin 自行决定重嵌或回退。
+    # 检测失败不阻断启动（与 embedding 依赖可降级的语义一致）。
+    await _detect_embedding_change(embedding_client, settings)
 
     try:
         yield LifespanContext(
