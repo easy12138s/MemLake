@@ -1,53 +1,63 @@
 # Embedding 服务镜像
-# 基于 Python slim，内置 sentence-transformers + Qwen3-Embedding-0.6B 模型
+# 两种模式（EMBEDDING_PROVIDER）：
+#   local（默认）：内置 sentence-transformers + Qwen3-Embedding-0.6B 本地推理
+#   remote：不装 torch/模型，转发 OpenAI 兼容 embedding API（低配硬件/免大内存场景）
 FROM python:3.11-slim
 
 # torch 构建类型：false=cpu（默认，无 CUDA 运行时，镜像小约省4G）；true=cuda（镜像大，需 GPU 推理）。
-# 由 docker-compose 通过 build arg TORCH_CUDA 传递。GPU 时 DEVICE 应配为 cuda（见 compose）。
+# 仅 local 模式生效。
 ARG TORCH_CUDA=false
+# provider：local=本地推理（默认）/ remote=第三方 API 转发（不下载模型）
+ARG EMBEDDING_PROVIDER=local
+# 模型下载开关（仅 local 模式生效）
+ARG DOWNLOAD_MODEL=true
+ARG DOWNLOAD_RERANK_MODEL=true
 
 # 使用清华 PyPI 镜像加速
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-    && if [ "$TORCH_CUDA" = "true" ]; then \
-          pip install --no-cache-dir \
-          sentence-transformers==6.0.0 \
-          transformers==5.15.1 \
-          fastapi>=0.115.0 \
-          uvicorn[standard]>=0.30.0 \
-          modelscope; \
-      else \
-          # CPU 版：torch 本体从官方 cpu index 拉（--no-deps，只有它在这里发布），
-          # 其传递依赖交由第 2 步从清华统一解析（download.pytorch.org 国内极慢）。
-          # --timeout/--retries 容忍慢网络。
-          pip install --no-cache-dir --timeout 120 --retries 10 --no-deps "torch>=2.2" \
-              --index-url https://download.pytorch.org/whl/cpu \
-          && pip install --no-cache-dir --timeout 120 --retries 10 \
-              --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-              sentence-transformers==6.0.0 \
-              transformers==5.15.1 \
-              fastapi>=0.115.0 \
-              uvicorn[standard]>=0.30.0 \
-              modelscope; \
-      fi
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# ---------------------------------------------------------------------------
+# 依赖安装：remote 模式只装轻量转发栈（httpx），local 模式装 torch + sentence-transformers。
+# local CPU 版：torch 本体从官方 cpu index 拉（--no-deps），传递依赖交由 python 分支解析。
+# ---------------------------------------------------------------------------
+RUN if [ "$EMBEDDING_PROVIDER" = "remote" ]; then \
+        pip install --no-cache-dir \
+        fastapi>=0.115.0 \
+        uvicorn[standard]>=0.30.0 \
+        httpx>=0.27.0; \
+    elif [ "$TORCH_CUDA" = "true" ]; then \
+        pip install --no-cache-dir \
+        sentence-transformers==6.0.0 \
+        transformers==5.15.1 \
+        fastapi>=0.115.0 \
+        uvicorn[standard]>=0.30.0 \
+        modelscope; \
+    else \
+        pip install --no-cache-dir --timeout 120 --retries 10 --no-deps "torch>=2.2" \
+            --index-url https://download.pytorch.org/whl/cpu \
+        && pip install --no-cache-dir --timeout 120 --retries 10 \
+            --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+            sentence-transformers==6.0.0 \
+            transformers==5.15.1 \
+            fastapi>=0.115.0 \
+            uvicorn[standard]>=0.30.0 \
+            modelscope; \
+    fi
 
 # 默认在构建期从 modelscope 下载模型并软链到 MODEL_PATH，保证「克隆即部署」可用。
-# 若宿主机已存在本地模型（如仓库内 models/ 目录），可传 DOWNLOAD_MODEL=false 跳过下载，
-# 并用 docker-compose.local.yml 将本地模型挂载进容器（见部署文档）。
-ARG DOWNLOAD_MODEL=true
-RUN if [ "$DOWNLOAD_MODEL" = "true" ]; then \
+# 仅 local 模式下载；remote 模式跳过（无本地模型）。若宿主机已存在本地模型，
+# 可传 DOWNLOAD_MODEL=false 并用 docker-compose.local.yml 挂载进容器。
+RUN if [ "$EMBEDDING_PROVIDER" != "remote" ] && [ "$DOWNLOAD_MODEL" = "true" ]; then \
       python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3-Embedding-0.6B', cache_dir='/models')" \
       && ln -s /models/models/Qwen--Qwen3-Embedding-0.6B/snapshots/master /models/Qwen3-Embedding-0.6B \
       && rm -f /models/Qwen3-Embedding-0.6B/pytorch_model.bin; \
     fi
 
-# 精排模型（bge-reranker-base，CrossEncoder）。默认构建期下载，可用 DOWNLOAD_RERANK_MODEL=false
-# 跳过（不启用精排，服务仍可运行）；宿主机有本地模型时也可经 compose 挂载。
-#
+# 精排模型（bge-reranker-base，CrossEncoder）。仅 local 模式下载；remote 模式禁用精排。
 # 体积说明：ModelScope 仓库自带同一权重的多份副本（model.safetensors + pytorch_model.bin +
 # onnx 导出，各 ~1.1G）。CrossEncoder 运行时只用 model.safetensors，故构建后删除
-# pytorch_model.bin 与 onnx/，避免把冗余 ~2.2G 打进镜像（无需手动清，新环境部署即干净）。
-ARG DOWNLOAD_RERANK_MODEL=true
-RUN if [ "$DOWNLOAD_RERANK_MODEL" = "true" ]; then \
+# pytorch_model.bin 与 onnx/，避免把冗余 ~2.2G 打进镜像。
+RUN if [ "$EMBEDDING_PROVIDER" != "remote" ] && [ "$DOWNLOAD_RERANK_MODEL" = "true" ]; then \
       python -c "from modelscope import snapshot_download; snapshot_download('BAAI/bge-reranker-base', cache_dir='/models')" \
       && ln -s /models/models/BAAI--bge-reranker-base/snapshots/master /models/bge-reranker-base \
       && rm -f /models/models/BAAI--bge-reranker-base/snapshots/master/pytorch_model.bin \
@@ -56,14 +66,16 @@ RUN if [ "$DOWNLOAD_RERANK_MODEL" = "true" ]; then \
 
 WORKDIR /app
 COPY embedding_server.py /app/
+COPY embedding_remote.py /app/
 
-# /metrics Prometheus 指标 + 结构化日志（structlog，与 mem-lake 网关同构）依赖
-#（独立 RUN：不改动上方模型下载层，构建复用层缓存，
-#  避免安装依赖导致已下载模型层失效重下）
+# /metrics Prometheus 指标 + 结构化日志（structlog，与 mem-lake 网关同构）依赖。
+# 独立 RUN：不改动上方模型下载层，构建复用层缓存，避免安装依赖导致已下载模型层失效重下。
 RUN pip install --no-cache-dir "prometheus-client>=0.20.0" "structlog>=24.1.0"
 
 ENV MODEL_PATH=/models/Qwen3-Embedding-0.6B
 ENV RERANK_MODEL_PATH=/models/bge-reranker-base
+# 固化 provider 默认值（docker-compose environment 会以相同值覆盖）
+ENV EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
 
 EXPOSE 8001
 # --no-access-log：关闭每请求的 HTTP access 日志（health 每 10s + embed 的 GET/POST 噪音），

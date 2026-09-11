@@ -47,6 +47,32 @@ docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 
 > 注意：该文件不会被 `docker compose up` 自动加载，必须显式 `-f` 指定。宿主机不存在该模型目录时**不要**使用，否则 embedding 容器会因加载不到模型而启动失败。普通首次部署直接 `docker compose up -d --build` 即可。
 
+### 2.2 第三方 Embedding API 模式（remote，可选）
+
+硬件不足（内存 <8GB）或希望省去模型下载与本地推理时，可改用第三方 OpenAI 兼容 embedding API，embedding 容器不再下载/加载本地模型，`/embed` 转发到第三方。
+
+```bash
+# .env
+EMBEDDING_PROVIDER=remote
+EMBEDDING_API_BASE=https://api.openai.com/v1   # 或 https://dashscope.aliyuncs.com/compatible-mode/v1 等
+EMBEDDING_API_KEY=sk-xxx
+EMBEDDING_API_MODEL=text-embedding-3-small
+```
+
+```bash
+cd deploy
+docker compose up -d --build   # remote 模式下不下载模型，构建更快、镜像更小
+```
+
+`remote` 模式下 embedding 容器只装轻量转发依赖（无 torch/模型）；精排（rerank）禁用，检索自动回退 RRF 原序。
+
+需要注意：
+
+- **维度必须 1024**：模型须输出 1024 维。`text-embedding-3-small` 等默认非 1024 维的需借助 `dimensions=1024` 参数（本项目已自动携带）；或直接选原生 1024 维模型（如智谱 embedding-2/3、硅基流动 BGE-M3、通义 text-embedding-v3 配 1024）。
+- **切换即重嵌**：本地 Qwen3 与第三方向量不在同一语义空间，切换后必须 `reindex_project_vectors` 全量重嵌，并用 `scripts/calibrate_conflict_threshold.py` 重新标定冲突阈值（默认 `CONFLICT_SIMILARITY_THRESHOLD=0.85` 标定于本地 Qwen3）。
+- **指令感知丢失**：本地模式 query 侧使用 Qwen3 非对称指令（`prompt_name="query"`），第三方 API 多不支持，会退化为对称编码，可能影响召回质量，建议切换后实测。
+- **隐私边界**：embedding 文本会外发至第三方服务，与默认的「全自托管」定位相悖；默认仍 `local`，仅在明确知情下启用 `remote`。
+
 ### 3. 验证
 
 ```bash

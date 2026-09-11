@@ -19,7 +19,17 @@ from prometheus_client import (
     generate_latest,
 )
 from pydantic import BaseModel
-from sentence_transformers import CrossEncoder, SentenceTransformer
+
+# provider 分流：local（本地 sentence-transformers 推理，默认）／ remote（OpenAI 兼容 API 转发）
+PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local")
+# remote 模式目标向量维度（与 app 侧 config.EMBEDDING_DIMENSION 对齐）
+REMOTE_DIMENSION = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))
+
+if PROVIDER == "remote":
+    import httpx
+    from embedding_remote import build_embed_request, parse_embeddings_response
+else:
+    from sentence_transformers import CrossEncoder, SentenceTransformer
 
 # 结构化日志：与 mem-lake 网关（observability/logging.py configure_logging）保持同构——
 # 相同 structlog stdlib 桥接、相同 OBS_LOG_FORMAT 驱动（json / console）。
@@ -87,7 +97,21 @@ EMBED_DURATION = Histogram(
 
 model_path = os.environ.get("MODEL_PATH", "/models/Qwen3-Embedding-0.6B")
 device = os.environ.get("DEVICE", "cpu")
-model = SentenceTransformer(model_path, device=device)
+
+# remote 模式：不加载本地模型，/embed 转发第三方 API（同步 httpx 客户端延迟初始化）。
+# local 模式：加载 SentenceTransformer 本地推理（现状）。
+if PROVIDER == "remote":
+    model = None
+    _remote_client = None
+    _remote_base = os.environ.get("EMBEDDING_API_BASE", "").rstrip("/")
+    _remote_key = os.environ.get("EMBEDDING_API_KEY", "")
+    _remote_model = os.environ.get("EMBEDDING_API_MODEL", "")
+else:
+    _remote_client = None
+    _remote_base = ""
+    _remote_key = ""
+    _remote_model = ""
+    model = SentenceTransformer(model_path, device=device)
 
 # OOM 防护（2026-09-02 小批量导入实测：10 条 8k-token 文档单次 encode >6min 未完成，
 # 内存一路涨到 6.2GiB 逼近容器上限）。两处调参：
@@ -95,23 +119,30 @@ model = SentenceTransformer(model_path, device=device)
 #    注意：截断口径变化会使超长文本的向量与旧口径不可复现——已有存量向量需重建（reindex）。
 # 2) encode batch_size 默认 32→8：encode 内部按批 pad 推理，批越大峰值激活内存越高，
 #    CPU 低配机器上直接压垮容器。吞吐不足时优先迁移 embedding 容器，而非调大批量。
-model.max_seq_length = int(os.environ.get("EMBEDDING_MAX_SEQ_LENGTH", "2048"))
+if PROVIDER != "remote":
+    model.max_seq_length = int(os.environ.get("EMBEDDING_MAX_SEQ_LENGTH", "2048"))
 ENCODE_BATCH_SIZE = int(os.environ.get("EMBEDDING_ENCODE_BATCH_SIZE", "8"))
 
 
 def _model_dimension() -> int:
-    """模型输出维度。优先新方法名 get_embedding_dimension（sentence-transformers 已弃用旧名），
-    旧版本兜底用 get_sentence_embedding_dimension，避免 FutureWarning。"""
+    """模型输出维度。remote 模式返回配置的 REMOTE_DIMENSION；local 模式从模型取。
+
+    local 优先新方法名 get_embedding_dimension（sentence-transformers 已弃用旧名），
+    旧版本兜底用 get_sentence_embedding_dimension，避免 FutureWarning。
+    """
+    if PROVIDER == "remote":
+        return REMOTE_DIMENSION
     getter = getattr(model, "get_embedding_dimension", None) or getattr(
         model, "get_sentence_embedding_dimension"
     )
     return int(getter())
 
 
-# 可选 rerank 模型：仅当 RERANK_MODEL_PATH 非空时加载（不阻断启动）
+# 可选 rerank 模型：仅 local 模式且 RERANK_MODEL_PATH 非空时加载（不阻断启动）。
+# remote 模式无本地 CrossEncoder，禁用精排（has_rerank 恒 False，app 侧回退 RRF 原序）。
 rerank_model_path = os.environ.get("RERANK_MODEL_PATH", "")
 _reranker = None
-if rerank_model_path:
+if PROVIDER != "remote" and rerank_model_path:
     try:
         _reranker = CrossEncoder(rerank_model_path, device=device)
     except Exception as exc:  # noqa: BLE001 - 加载失败不阻断启动，health 反映不可用
@@ -162,7 +193,8 @@ def metrics():
 def health():
     return {
         "status": "ok",
-        "model": model_path,
+        "provider": PROVIDER,
+        "model": _remote_model if PROVIDER == "remote" else model_path,
         "dimension": _model_dimension(),
         "has_rerank": _reranker is not None,
     }
@@ -219,16 +251,69 @@ def embed(req: EmbedRequest):
         EMBED_DURATION.labels(op="embed").observe(time.time() - t)
 
 
+def _ensure_remote_client() -> "httpx.Client":
+    """延迟初始化 remote 同步 HTTP 客户端（进程单例，惰性避免 local 模式引入开销）。"""
+    global _remote_client
+    if _remote_client is None:
+        _remote_client = httpx.Client(timeout=600.0)
+    return _remote_client
+
+
+def _remote_embed(texts: list[str]) -> EmbedResponse:
+    """remote 模式：转发 OpenAI 兼容 /embeddings，按 index 还原顺序并校验维度。"""
+    if not _remote_base or not _remote_key or not _remote_model:
+        raise HTTPException(
+            status_code=503,
+            detail="remote 模式缺少 EMBEDDING_API_BASE/EMBEDDING_API_KEY/EMBEDDING_API_MODEL 配置",
+        )
+
+    # 字符硬上限兜底（第三方 API 自截断，无需本地 tokenizer）
+    clipped = [t[:MAX_TEXT_CHARS] for t in texts]
+    body = build_embed_request(_remote_model, clipped, REMOTE_DIMENSION)
+    try:
+        resp = _ensure_remote_client().post(
+            f"{_remote_base}/embeddings",
+            headers={"Authorization": f"Bearer {_remote_key}"},
+            json=body,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"第三方 embedding 请求失败: {exc}"
+        ) from exc
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"第三方 embedding 返回 {resp.status_code}: {resp.text[:200]}",
+        )
+
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"第三方 embedding 响应非 JSON: {exc}"
+        ) from exc
+
+    try:
+        embeddings = parse_embeddings_response(payload, len(clipped), REMOTE_DIMENSION)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return EmbedResponse(embeddings=embeddings, dimension=REMOTE_DIMENSION)
+
+
 def _embed_impl(req: EmbedRequest) -> EmbedResponse:
     if not req.texts:
         # 空列表短路：encode([]) 返回 (0,) 无第二维，embs.shape[1] 会 IndexError
-        return EmbedResponse(
-            embeddings=[], dimension=_model_dimension()
-        )
+        return EmbedResponse(embeddings=[], dimension=_model_dimension())
     if len(req.texts) > MAX_EMBED_TEXTS:
         raise HTTPException(
             status_code=422, detail=f"texts 数量超过上限 {MAX_EMBED_TEXTS}"
         )
+
+    if PROVIDER == "remote":
+        return _remote_embed(req.texts)
+
     texts = [_truncate_to_tokens(t) for t in req.texts]
     embs = model.encode(
         texts,
