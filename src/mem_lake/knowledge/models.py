@@ -218,3 +218,32 @@ class RequirementCounter(Base):
     last_value: Mapped[int] = mapped_column(
         default=0, server_default=text("0"), comment="该 system 下需求序号当前值"
     )
+
+
+class EmbeddingState(Base):
+    """embedding 模型/provider 变更记录（每检测到一次切换插入一行，留历史审计）。
+
+    签名格式 "provider:model"（如 "local:/models/Qwen3-Embedding-0.6B" /
+    "remote:text-embedding-3-small"）。应用启动时比对最近一条 signature 与当前
+    embedding 服务 /health 的 provider+model：不同则告警提醒重嵌或回退（见
+    embedding/consistency.py）。
+    """
+
+    __tablename__ = "embedding_state"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    signature: Mapped[str] = mapped_column(
+        String(256), comment="embedding 签名，格式 provider:model"
+    )
+    detected_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), comment="检测到该签名的时间"
+    )
+
+    __table_args__ = (
+        Index("idx_embedding_state_detected_at", "detected_at"),
+    )
