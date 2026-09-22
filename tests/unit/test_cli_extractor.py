@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from mem_lake.cli.adapters import AxureCleanedAdapter, MarkdownHtmlAdapter, get_adapter
-from mem_lake.cli.extractor import RequirementAdapter, extract_directory
+from mem_lake.cli.extractor import ParsedRequirement, RequirementAdapter, extract_directory
 
 
 @pytest.fixture
@@ -97,3 +97,35 @@ def test_get_adapter_registry() -> None:
     assert isinstance(get_adapter("axure"), AxureCleanedAdapter)
     with pytest.raises(ValueError):
         get_adapter("nope")
+
+
+def test_multi_item_adapter_yields_all_items(tmp_path: Path) -> None:
+    """parse 返回多条时全部收集（一文件多需求），条序与 parse 返回序一致。"""
+
+    class _MultiAdapter:
+        def accepts(self, file: Path) -> bool:
+            return file.suffix == ".md"
+
+        def parse(self, file: Path, rel_path: str):
+            return [
+                ParsedRequirement(title=f"{file.stem} #1", content="一", rel_path=f"{rel_path}#1"),
+                ParsedRequirement(title=f"{file.stem} #2", content="二", rel_path=f"{rel_path}#2"),
+            ]
+
+    (tmp_path / "a.md").write_text("x", encoding="utf-8")
+    parsed = extract_directory(tmp_path, adapter=_MultiAdapter())
+    assert [p.title for p in parsed] == ["a #1", "a #2"]
+
+
+def test_adapter_returning_empty_list_skips_file(tmp_path: Path) -> None:
+    """parse 返回空列表 = 跳过该文件。"""
+
+    class _EmptyAdapter:
+        def accepts(self, file: Path) -> bool:
+            return file.suffix == ".md"
+
+        def parse(self, file: Path, rel_path: str):
+            return []
+
+    (tmp_path / "a.md").write_text("x", encoding="utf-8")
+    assert extract_directory(tmp_path, adapter=_EmptyAdapter()) == []
