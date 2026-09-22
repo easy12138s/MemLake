@@ -43,7 +43,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--adapter",
         default="markdown",
         choices=sorted(ADAPTERS),
-        help="解析适配器（%s；默认 markdown，向后兼容）" % ", ".join(sorted(ADAPTERS)),
+        help="解析适配器（%s；默认 markdown 向后兼容；notes=.md 笔记："
+        "文件名=标题，>500 字按两个空行拆分并建链边）" % ", ".join(sorted(ADAPTERS)),
     )
     parser.add_argument("--priority", default="P3", help="默认优先级（默认 P3）")
     parser.add_argument("--module", default="导入", help="默认模块（默认 '导入'）")
@@ -102,7 +103,7 @@ async def main(argv: list[str] | None = None) -> int:
 
     print(
         f"\n导入完成: 新增 {len(summary.created)}，跳过 {len(summary.skipped)}，"
-        f"失败 {len(summary.failed)}"
+        f"失败 {len(summary.failed)}，链边 {summary.edges_created}"
     )
     for rel in summary.skipped:
         print(f"  跳过: {rel}（source_doc 已存在）")

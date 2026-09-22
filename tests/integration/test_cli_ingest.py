@@ -276,3 +276,235 @@ async def test_run_import_batch_dedups_same_source_doc_within_run(
         assert summary.skipped == ["D/x.html"]
     finally:
         await _cleanup_batch_scope(system_id=system.id)
+
+
+@pytest.mark.asyncio
+async def test_failed_batch_rolls_back_and_later_batch_commits_clean(
+    db_session, graph_store, mock_embedding_client, tmp_path
+):
+    """失败路径：第 1 批 embed 失败 rollback，第 2 批成功时不得带上第 1 批数据。
+
+    回归用例：无 rollback 时同一会话内失败批次已 flush 的行会被后续成功批次的
+    commit 一并落库（缺向量/图/审计的残缺节点）。
+    """
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from mem_lake.cli.ingest import run_import_batch
+    from mem_lake.knowledge.models import System
+
+    system = System(name=f"FB-{uuid.uuid4().hex[:8]}", code=f"FB-{uuid.uuid4().hex[:8]}")
+    db_session.add(system)
+    await db_session.flush()
+
+    parsed = [_parsed(f"F/{i}.html") for i in range(3)]  # 3 条，batch_size=2 → 2 批
+
+    # embed 首次调用失败（第 1 批），其后成功
+    call_count = {"n": 0}
+
+    async def flaky_embed(texts, prompt=None, prompt_name=None, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("embedding 服务 500")
+        return [[0.1] * 1024 for _ in texts]
+
+    mock_embedding_client.embed = AsyncMock(side_effect=flaky_embed)
+
+    try:
+        summary = await run_import_batch(
+            session=db_session,
+            project_id=None,
+            system=system,
+            directory="unused",
+            parsed=parsed,
+            embedding_client=mock_embedding_client,
+            graph_store=graph_store,
+            created_by="cli-import",
+            batch_size=2,
+        )
+        assert summary.failed == ["F/0.html", "F/1.html"]
+        assert summary.created == ["F/2.html"]
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(KnowledgeNode).where(
+                        KnowledgeNode.type == "Requirement",
+                        KnowledgeNode.system_id == system.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [(r.properties or {}).get("source_doc") for r in rows] == ["F/2.html"]
+    finally:
+        await _cleanup_batch_scope(system_id=system.id)
+
+
+@pytest.mark.asyncio
+async def test_run_import_batch_prints_progress(
+    db_session, graph_store, mock_embedding_client, tmp_path, capsys
+):
+    """每批 commit 后打印一行进度（实时进度给运维看）。"""
+    from mem_lake.cli.ingest import run_import_batch
+    from mem_lake.knowledge.models import System
+
+    system = System(name=f"PG-{uuid.uuid4().hex[:8]}", code=f"PG-{uuid.uuid4().hex[:8]}")
+    db_session.add(system)
+    await db_session.flush()
+
+    parsed = [_parsed(f"P/{i}.html") for i in range(3)]
+
+    try:
+        await run_import_batch(
+            session=db_session,
+            project_id=None,
+            system=system,
+            directory="unused",
+            parsed=parsed,
+            embedding_client=mock_embedding_client,
+            graph_store=graph_store,
+            created_by="cli-import",
+            batch_size=2,
+        )
+        out = capsys.readouterr().out
+        # 2 批 → 2 行进度，含已提交节点累计数
+        assert out.count("[进度]") == 2
+        assert "2/2" in out
+    finally:
+        await _cleanup_batch_scope(system_id=system.id)
+
+
+# ============================================================================
+# notes 适配器：拆分条目库内建 relates_to 链边
+# ============================================================================
+
+
+def _write_notes_md(path, segments):
+    """写 notes 格式 .md（需求点之间以两个空行分隔）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n\n\n".join(segments), encoding="utf-8")
+
+
+async def _requirement_relates_edges(db_session, graph_store) -> set:
+    """返回 (from_id, to_id) 的 relates_to 有向边集合（AGE，测试断言用）。"""
+    from conftest import match_pattern
+
+    rows = await match_pattern(
+        graph_store,
+        db_session,
+        "MATCH (a:Requirement)-[r:relates_to]->(b:Requirement) "
+        "RETURN {from_id: a.id, to_id: b.id}",
+    )
+    return {(r["from_id"], r["to_id"]) for r in rows}
+
+
+@pytest.mark.asyncio
+async def test_run_import_batch_notes_split_creates_chain_edges(
+    db_session, graph_store, mock_embedding_client, tmp_path
+):
+    """notes 拆分入库：每段一条 Requirement（title={stem} #N，source_doc={file}#N），
+    同文件条目按文档序建 relates_to 链边 n1→n2→n3。"""
+    from sqlalchemy import select
+
+    from mem_lake.cli.ingest import run_import_batch
+    from mem_lake.knowledge.models import System
+
+    system = System(name=f"NOTES-{uuid.uuid4().hex[:8]}", code=f"NT{uuid.uuid4().hex[:6]}")
+    db_session.add(system)
+    await db_session.flush()
+
+    _write_notes_md(
+        tmp_path / "处方单.md",
+        ["需求点一：" + "甲" * 300, "需求点二：" + "乙" * 200, "需求点三"],
+    )
+
+    try:
+        summary = await run_import_batch(
+            session=db_session,
+            project_id=None,
+            system=system,
+            directory=str(tmp_path),
+            adapter="notes",
+            embedding_client=mock_embedding_client,
+            graph_store=graph_store,
+            created_by="cli-import",
+        )
+        assert summary.failed == []
+        assert len(summary.created) == 3
+        assert summary.edges_created == 2
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(KnowledgeNode)
+                    .where(
+                        KnowledgeNode.type == "Requirement",
+                        KnowledgeNode.system_id == system.id,
+                    )
+                    .order_by(KnowledgeNode.title)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [r.title for r in rows] == ["处方单 #1", "处方单 #2", "处方单 #3"]
+        assert [(r.properties or {}).get("source_doc") for r in rows] == [
+            "处方单.md#1",
+            "处方单.md#2",
+            "处方单.md#3",
+        ]
+
+        id_of = {r.title: str(r.id) for r in rows}
+        want = {
+            (id_of["处方单 #1"], id_of["处方单 #2"]),
+            (id_of["处方单 #2"], id_of["处方单 #3"]),
+        }
+        assert want <= await _requirement_relates_edges(db_session, graph_store)
+    finally:
+        await _cleanup_batch_scope(system_id=system.id)
+
+
+@pytest.mark.asyncio
+async def test_notes_rerun_no_duplicate_edges(
+    db_session, graph_store, mock_embedding_client, tmp_path
+):
+    """重跑幂等：节点全 skipped、edges_created=0，链边不重复不新增。"""
+    from mem_lake.cli.ingest import run_import_batch
+    from mem_lake.knowledge.models import System
+
+    system = System(name=f"NOTES2-{uuid.uuid4().hex[:8]}", code=f"N2{uuid.uuid4().hex[:6]}")
+    db_session.add(system)
+    await db_session.flush()
+
+    _write_notes_md(
+        tmp_path / "登录.md",
+        ["段一" + "甲" * 300, "段二" + "乙" * 300, "段三"],
+    )
+    kwargs = dict(
+        session=db_session,
+        project_id=None,
+        system=system,
+        directory=str(tmp_path),
+        adapter="notes",
+        embedding_client=mock_embedding_client,
+        graph_store=graph_store,
+        created_by="cli-import",
+    )
+
+    try:
+        first = await run_import_batch(**kwargs)
+        assert len(first.created) == 3
+        assert first.edges_created == 2
+        before = await _requirement_relates_edges(db_session, graph_store)
+        assert len(before) == 2
+
+        second = await run_import_batch(**kwargs)
+        assert second.created == []
+        assert len(second.skipped) == 3
+        assert second.edges_created == 0
+        assert await _requirement_relates_edges(db_session, graph_store) == before
+    finally:
+        await _cleanup_batch_scope(system_id=system.id)
