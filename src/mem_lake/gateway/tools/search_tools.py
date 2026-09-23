@@ -30,6 +30,8 @@ from pydantic import BaseModel, Field
 
 from mem_lake.config import get_settings
 from mem_lake.gateway.dependencies import (
+    get_current_role,
+    get_current_system_scope,
     get_readonly_session,
     validate_project_access,
     validate_system_access,
@@ -152,8 +154,43 @@ class ListKnowledgeOutput(BaseModel):
     offset: int = Field(description="当前分页偏移")
 
 
+def _resolve_search_scope_fallback(
+    role: str,
+    system_scope: list[str],
+    *,
+    project_id: uuid.UUID | None,
+    system_id: uuid.UUID | None,
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """检索 scope 兜底：调用方未传 scope 时按 Key 的 system_scope 回收。
+
+    规则（局促性收敛——绝不隐式跨 system 检索）：
+    - 任传一个 ID → 原样返回（调用方的显式选择，不做放大）
+    - admin → 维持「至少提供一个」的硬错误（admin 无 system scope 概念，
+      避免 accidental 全库检索）
+    - 非 admin + claims 恰好绑定 1 个 system → 默认按该 system 检索
+    - 非 admin + claims 0 个 system → 报错「未绑定 system，请显式传入」
+    - 非 admin + claims >1 个 system → 报错列出候选（id），不聚合检索防混叠
+    """
+    if project_id is not None or system_id is not None:
+        return project_id, system_id
+
+    if role == "admin":
+        raise ValueError("project_id 与 system_id 至少提供一个")
+
+    if not system_scope:
+        raise ValueError(
+            "当前 Access Key 未绑定任何 system，请显式传入 system_id（或 project_id）"
+        )
+    if len(system_scope) == 1:
+        return project_id, uuid.UUID(system_scope[0])
+    raise ValueError(
+        f"当前 Access Key 绑定多个 system（{len(system_scope)} 个），"
+        f"请显式传入 system_id 二选一；候选: {sorted(system_scope)}"
+    )
+
+
 # ============================================================================
-# 工具注册
+# 检索工具注册
 # ============================================================================
 
 
@@ -164,10 +201,11 @@ def register_search_tools(mcp: FastMCP) -> None:
     async def search_similar_requirements(
         query: str = Field(description="查询文本（需求描述/关键词）"),
         system_id: uuid.UUID | None = Field(
-            default=None, description="归属 system 域（可选；有值则检索该系统全部需求含悬浮）"
+            default=None, description="归属 system 域（可选；与 project_id 均不传时按"
+            " Access Key 绑定的 system 兜底——仅绑定唯一 system 时自动用之，多个则报错列出候选）"
         ),
         project_id: uuid.UUID | None = Field(
-            default=None, description="归属项目 ID（与 system_id 至少其一必填）"
+            default=None, description="归属项目 ID（与 system_id 至少其一必填或走 Key 兜底）"
         ),
         top_n: int = Field(default=10, description="融合后返回数量上限"),
         tags: list[str] | None = Field(
@@ -203,8 +241,12 @@ def register_search_tools(mcp: FastMCP) -> None:
         用 get_requirement_context；要做"改这个需求会影响哪些代码"的影响分析，用 analyze_impact_scope。
         """
         try:
-            if project_id is None and system_id is None:
-                raise ValueError("project_id 与 system_id 至少提供一个")
+            project_id, system_id = _resolve_search_scope_fallback(
+                get_current_role(),
+                get_current_system_scope(),
+                project_id=project_id,
+                system_id=system_id,
+            )
             if project_id is not None:
                 validate_project_access(project_id)
             if system_id is not None:

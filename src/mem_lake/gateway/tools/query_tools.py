@@ -31,6 +31,7 @@ from mem_lake.audit.service import query_audit_logs
 from mem_lake.gateway.dependencies import (
     get_current_project_scope,
     get_current_role,
+    get_current_system_scope,
     get_readonly_session,
     validate_project_access,
     validate_system_access,
@@ -50,6 +51,7 @@ from mem_lake.knowledge.repository import (
     get_node,
     list_nodes_by_project,
     list_project_profiles,
+    list_systems,
 )
 from mem_lake.search.graph import GraphSearcher
 
@@ -120,6 +122,14 @@ class ProjectInfo(BaseModel):
     )
 
 
+class VisibleSystemInfo(BaseModel):
+    """scope_meta 中列出的可见 system 摘要。"""
+
+    system_id: str = Field(description="System UUID")
+    name: str = Field(description="system 名称")
+    code: str | None = Field(default=None, description="System.code（可能为 NULL）")
+
+
 class ScopeMeta(BaseModel):
     """key 可见范围自证信息（include_scope_meta=true 时返回）。"""
 
@@ -127,6 +137,13 @@ class ScopeMeta(BaseModel):
     visible_count: int = Field(description="可见项目数量")
     visible_uuids: list[str] = Field(
         default=[], description="可见项目 UUID 列表（scope_type=all 时为空）"
+    )
+    system_scope_type: str = Field(
+        default="all", description="system 维度范围类型：all（admin）/ scoped"
+    )
+    visible_system_count: int = Field(default=0, description="可见 system 数量")
+    visible_systems: list[VisibleSystemInfo] = Field(
+        default=[], description="可见 system 列表（id+name+code）"
     )
 
 
@@ -288,7 +305,8 @@ def register_query_tools(mcp: FastMCP) -> None:
         ),
         include_scope_meta: bool = Field(
             default=False,
-            description="为 true 时附 scope 自证信息（scope_type/visible_count/visible_uuids）",
+            description="为 true 时附 scope 自证信息（scope_type/visible_count/visible_uuids"
+            "，另含 system 维度 visible_systems：dev/pm 自查可见 system 用）",
         ),
     ) -> GetProjectInfoOutput:
         """枚举/查询项目画像（PM/Dev/Admin 共享，只读）。
@@ -296,12 +314,15 @@ def register_query_tools(mcp: FastMCP) -> None:
         list：枚举当前 key 可见的项目（admin 全量；pm/dev 仅 scope 内），
         每项含 name/work_dir/repo/description/tags/updated_at。
         get：按 project_id 查询单个项目；越权（pm/dev 访问 scope 外）返回权限拒绝错误。
-        include_scope_meta=true 回显 key 的可见范围，用于自证项目隔离边界。
+        include_scope_meta=true 回显 key 的可见范围，用于自证项目隔离边界；
+        scope_meta 还含 visible_systems（可见 system 的 id+name+code 列表），
+        dev/pm 可用于确认自身能检索哪些 system。
         同一项目存在多个画像节点时取最新一条。
         """
         try:
             role = get_current_role()
             scope = get_current_project_scope()
+            system_scope = get_current_system_scope()
             session = await get_readonly_session()
             try:
                 return await _get_project_info_core(
@@ -311,8 +332,10 @@ def register_query_tools(mcp: FastMCP) -> None:
                     include_scope_meta=include_scope_meta,
                     role=role,
                     scope=scope,
+                    system_scope=system_scope,
                     list_fn=lambda **kw: list_project_profiles(session, **kw),
                     validate_fn=validate_project_access,
+                    list_systems_fn=lambda: list_systems(session),
                 )
             finally:
                 await session.close()
@@ -511,18 +534,44 @@ def _to_project_info(node: KnowledgeNode, include_profile: bool = False) -> Proj
     )
 
 
-def _build_scope_meta(is_admin: bool, scope: list[str], projects: list[ProjectInfo]) -> ScopeMeta:
-    """构造 scope 自证信息。
+def _build_scope_meta(
+    is_admin: bool,
+    scope: list[str],
+    projects: list[ProjectInfo],
+    *,
+    system_scope: list[str],
+    systems: list[Any],
+) -> ScopeMeta:
+    """构造 scope 自证信息（含 project 与 system 双维度）。
 
-    admin（不受限）：scope_type="all"，visible_uuids 置空，visible_count 取实际可见项目数。
-    非 admin：scope_type="scoped"，visible_uuids 为 scope 列表，visible_count 为 scope 长度。
+    - admin（不受限）：scope_type="all"，visible_uuids 置空，visible_count 取项目数；
+      system 维度 system_scope_type="all"，可见 system = 全量 systems（不按 claims 过滤）
+    - 非 admin：scope_type="scoped"，project 维度回显 claims；system 维度按 claims
+      的 system_scope 过滤出对应 System（dev/pm 可查可见 system 自证边界）
     """
+    visible_systems = (
+        systems
+        if is_admin
+        else [s for s in systems if str(s.id) in set(system_scope)]
+    )
+    base_fields: dict[str, Any] = {
+        "system_scope_type": "all" if is_admin else "scoped",
+        "visible_system_count": len(visible_systems),
+        "visible_systems": [
+            VisibleSystemInfo(
+                system_id=str(s.id), name=s.name, code=s.code
+            )
+            for s in visible_systems
+        ],
+    }
     if is_admin:
         return ScopeMeta(
-            scope_type="all", visible_count=len(projects), visible_uuids=[]
+            scope_type="all", visible_count=len(projects), visible_uuids=[],
+            **base_fields,
         )
     return ScopeMeta(
-        scope_type="scoped", visible_count=len(scope), visible_uuids=list(scope)
+        scope_type="scoped", visible_count=len(scope), visible_uuids=list(scope),
+        **base_fields,
     )
 
 
@@ -536,13 +585,18 @@ async def _get_project_info_core(
     scope: list[str],
     list_fn: Callable[..., Awaitable[list[KnowledgeNode]]],
     validate_fn: Callable[[uuid.UUID], None],
+    system_scope: list[str] | None = None,
+    list_systems_fn: Callable[[], Awaitable[list[Any]]] | None = None,
 ) -> GetProjectInfoOutput:
     """get_project_info 的核心逻辑（与 FastMCP 上下文解耦，便于单测）。
 
     list_fn(session 无关)：list_project_profiles 的封装（接收 project_ids/limit/offset）。
     validate_fn：validate_project_access 的封装（越权抛 ToolError）。
+    include_scope_meta 且 list_systems_fn 提供时，scope_meta 还会回显 system 维度
+    （可见 system id+name+code 列表），供 dev/pm 自查能否检索哪些 system。
     """
     is_admin = role == "admin"
+    system_scope = system_scope or []
 
     if action == "list":
         visible_ids = None if is_admin else [uuid.UUID(s) for s in scope]
@@ -556,7 +610,15 @@ async def _get_project_info_core(
             seen[pid] = _to_project_info(n, include_profile)
         projects = list(seen.values())
         scope_meta = (
-            _build_scope_meta(is_admin, scope, projects) if include_scope_meta else None
+            _build_scope_meta(
+                is_admin,
+                scope,
+                projects,
+                system_scope=system_scope,
+                systems=await list_systems_fn() if list_systems_fn else [],
+            )
+            if include_scope_meta
+            else None
         )
         return GetProjectInfoOutput(action="list", scope=scope_meta, projects=projects)
 
@@ -567,7 +629,13 @@ async def _get_project_info_core(
         nodes = await list_fn(project_ids=[project_id], limit=1)
         project = _to_project_info(nodes[0], include_profile) if nodes else None
         scope_meta = (
-            _build_scope_meta(is_admin, scope, [project] if project else [])
+            _build_scope_meta(
+                is_admin,
+                scope,
+                [project] if project else [],
+                system_scope=system_scope,
+                systems=await list_systems_fn() if list_systems_fn else [],
+            )
             if include_scope_meta
             else None
         )

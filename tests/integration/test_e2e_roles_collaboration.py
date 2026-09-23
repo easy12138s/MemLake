@@ -58,26 +58,28 @@ class _FakeRequest:
         self.scope: dict = {}
 
 
-def _make_role_app(monkeypatch, *, role: str, project_id: str):
+def _make_role_app(monkeypatch, *, role: str, project_id: str, system_scope: list[str] | None = None):
     """构造一个以指定角色身份运行的 app（create_mcp_server() 内存实例）。
 
     通过 patch 认证链路注入角色身份：
     - middleware.extract_access_key_from_headers / authenticate_access_key / get_http_request
     - middleware.get_access_token 与 dependencies.get_access_token 两个命名空间
     role ∈ admin/pm/dev。pm/dev 注入 project_scope=[project_id] 以通过项目权限校验；
-    admin 注入空 scope（不受限）。
+    admin 注入空 scope（不受限）。system_scope 可注入 dev/pm 的 system 绑定（数据回传
+    测试需求检索的 system 兜底等）。
     """
     req = _FakeRequest()
     # 同一 role+project 派生稳定 key_id，保证同角色多次调用使用同一 actor
     #（幂等键依赖 submitted_by，若每次随机会造成同 operation_id 二次提交判为不同 key）
     key_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"memlake-e2e/{role}/{project_id}"))
+    system_scope = system_scope or []
 
     async def _fake_auth(_session, _key):
         return {
             "key_id": key_id,
             "role": role,
             "project_scope": ([] if role == "admin" else [project_id]),
-            "system_scope": [],
+            "system_scope": system_scope,
             "lax_mode": False,
         }
 
@@ -90,7 +92,7 @@ def _make_role_app(monkeypatch, *, role: str, project_id: str):
                 "role": role,
                 "key_id": key_id,
                 "project_scope": ([] if role == "admin" else [project_id]),
-                "system_scope": [],
+                "system_scope": system_scope,
                 "lax_mode": False,
             },
         )
@@ -563,3 +565,41 @@ class TestRolesCollaboration:
             first = await _call(pm, "publish_requirement", req_payload)
             second = await _call(pm, "publish_requirement", req_payload)
             assert str(first["batch_id"]) == str(second["batch_id"])
+
+    async def test_dev_system_scope_meta_and_search_fallback(self, monkeypatch):
+        """dev 身份可见自身 system scope：枚举+检索兜底（UX 修复回归）。
+
+        - get_project_info(include_scope_meta=true)：scope_meta 含 system 维度可见清单
+        - search_similar_requirements 不传 system/project：绑定唯一 system 时自动兜底
+        """
+        system_id = self.__class__._system_id
+        assert system_id
+
+        system_id = str(system_id)
+        async with Client(
+            _make_role_app(
+                monkeypatch,
+                role="dev",
+                project_id=str(uuid.uuid4()),
+                system_scope=[system_id],
+            )
+        ) as dev:
+            # enumerate 入口：scope_meta 可见 system 回显
+            info = await _call(
+                dev, "get_project_info",
+                {"action": "list", "include_scope_meta": True},
+            )
+            assert info["scope"] is not None
+            assert info["scope"]["system_scope_type"] == "scoped"
+            names = [s["name"] for s in info["scope"]["visible_systems"]]
+            assert len(names) >= 1, "scope_meta 应回显 dev 绑定的 system"
+
+            # 检索兜底：不传 system_id/project_id，用 binding 的唯一 system 兜底
+            search_result = await _call(
+                dev,
+                "search_similar_requirements",
+                {"query": "登录认证", "top_n": 5},
+            )
+            assert search_result["total"] > 0 or len(search_result["fused"]) > 0, (
+                "system 兜底应能召回到该 system 下的需求节点"
+            )

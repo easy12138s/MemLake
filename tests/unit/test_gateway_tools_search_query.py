@@ -173,6 +173,43 @@ class TestValidateAndThreshold:
 
 
 # ============================================================================
+# 兜底逻辑：search_similar_requirements 省略 scope 时按 Key claims 回退
+# ============================================================================
+
+
+class TestResolveSearchScopeFallback:
+    """_resolve_search_scope_fallback 三分支 + admin 不接收。"""
+
+    def setup_method(self):
+        from mem_lake.gateway.tools.search_tools import _resolve_search_scope_fallback
+        self.resolve = _resolve_search_scope_fallback
+
+    def test_explicit_ids_pass_through(self):
+        p, s = uuid.uuid4(), uuid.uuid4()
+        out = self.resolve("dev", ["sys-a"], project_id=p, system_id=s)
+        assert out == (p, s)
+
+    def test_single_system_fallback(self):
+        sid = uuid.uuid4()
+        pid, sid_out = self.resolve("dev", [str(sid)], project_id=None, system_id=None)
+        assert pid is None
+        assert sid_out == sid
+
+    def test_no_system_bound_error(self):
+        with pytest.raises(ValueError, match="未绑定"):
+            self.resolve("dev", [], project_id=None, system_id=None)
+
+    def test_multiple_systems_error_lists_candidates(self):
+        s1, s2 = str(uuid.uuid4()), str(uuid.uuid4())
+        with pytest.raises(ValueError, match="多个 system"):
+            self.resolve("dev", [s1, s2], project_id=None, system_id=None)
+
+    def test_admin_no_fallback(self):
+        with pytest.raises(ValueError, match="至少提供一个"):
+            self.resolve("admin", [], project_id=None, system_id=None)
+
+
+# ============================================================================
 # _to_audit_log_item_output 转换测试
 # ============================================================================
 

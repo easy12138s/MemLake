@@ -388,16 +388,29 @@ def _write_notes_md(path, segments):
     path.write_text("\n\n\n".join(segments), encoding="utf-8")
 
 
-async def _requirement_relates_edges(db_session, graph_store) -> set:
-    """返回 (from_id, to_id) 的 relates_to 有向边集合（AGE，测试断言用）。"""
+async def _requirement_relates_edges(db_session, graph_store, system_id=None) -> set:
+    """返回 relates_to 有向边 (from_id, to_id) 集合。
+
+    system_id 非空时按 AGE 节点 system_id 属性过滤——共享测试库可能含生产数据的
+    同类型边（如存量导入的链边），不能全图计数。
+    """
     from conftest import match_pattern
 
-    rows = await match_pattern(
-        graph_store,
-        db_session,
-        "MATCH (a:Requirement)-[r:relates_to]->(b:Requirement) "
-        "RETURN {from_id: a.id, to_id: b.id}",
-    )
+    if system_id is not None:
+        rows = await match_pattern(
+            graph_store,
+            db_session,
+            "MATCH (a:Requirement {system_id: $sid})-[r:relates_to]->(b:Requirement) "
+            "RETURN {from_id: a.id, to_id: b.id}",
+            {"sid": str(system_id)},
+        )
+    else:
+        rows = await match_pattern(
+            graph_store,
+            db_session,
+            "MATCH (a:Requirement)-[r:relates_to]->(b:Requirement) "
+            "RETURN {from_id: a.id, to_id: b.id}",
+        )
     return {(r["from_id"], r["to_id"]) for r in rows}
 
 
@@ -462,7 +475,7 @@ async def test_run_import_batch_notes_split_creates_chain_edges(
             (id_of["处方单 #1"], id_of["处方单 #2"]),
             (id_of["处方单 #2"], id_of["处方单 #3"]),
         }
-        assert want <= await _requirement_relates_edges(db_session, graph_store)
+        assert want <= await _requirement_relates_edges(db_session, graph_store, system.id)
     finally:
         await _cleanup_batch_scope(system_id=system.id)
 
@@ -498,13 +511,13 @@ async def test_notes_rerun_no_duplicate_edges(
         first = await run_import_batch(**kwargs)
         assert len(first.created) == 3
         assert first.edges_created == 2
-        before = await _requirement_relates_edges(db_session, graph_store)
+        before = await _requirement_relates_edges(db_session, graph_store, system.id)
         assert len(before) == 2
 
         second = await run_import_batch(**kwargs)
         assert second.created == []
         assert len(second.skipped) == 3
         assert second.edges_created == 0
-        assert await _requirement_relates_edges(db_session, graph_store) == before
+        assert await _requirement_relates_edges(db_session, graph_store, system.id) == before
     finally:
         await _cleanup_batch_scope(system_id=system.id)
