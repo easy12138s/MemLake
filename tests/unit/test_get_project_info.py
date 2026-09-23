@@ -73,17 +73,63 @@ def test_to_project_info_name_fallback_to_title():
 
 
 def test_build_scope_meta_admin():
-    m = _build_scope_meta(True, [], [1, 2, 3])
+    m = _build_scope_meta(True, [], [1, 2, 3], system_scope=[], systems=[])
     assert m.scope_type == "all"
     assert m.visible_uuids == []
     assert m.visible_count == 3
 
 
+class FakeSystem:
+    def __init__(self, name, code=None):
+        self.id = uuid.uuid4()
+        self.name = name
+        self.code = code
+
+
+def test_build_scope_meta_admin_includes_all_systems():
+    """admin 的 scope_meta 含 system 维度：system_scope_type=all，列出全部 System。"""
+    s1, s2 = FakeSystem("系统甲", "SA"), FakeSystem("系统乙")
+    m = _build_scope_meta(True, [], [1], system_scope=[], systems=[s1, s2])
+    assert m.system_scope_type == "all"
+    assert m.visible_system_count == 2
+    assert [s.name for s in m.visible_systems] == ["系统甲", "系统乙"]
+    assert m.visible_systems[0].system_id == str(s1.id)
+    assert m.visible_systems[0].code == "SA"
+    assert m.visible_systems[1].code is None
+
+
 def test_build_scope_meta_scoped():
-    m = _build_scope_meta(False, ["p1", "p2"], [1])
+    m = _build_scope_meta(False, ["p1", "p2"], [1], system_scope=[], systems=[])
     assert m.scope_type == "scoped"
     assert m.visible_uuids == ["p1", "p2"]
     assert m.visible_count == 2
+    assert m.system_scope_type == "scoped"
+    assert m.visible_system_count == 0
+
+
+def test_build_scope_meta_scoped_includes_bound_systems():
+    """scoped key 的 scope_meta 列出其绑定的 system（dev/pm 自查入口）。"""
+    s1 = FakeSystem("中方系统", "ZH")
+    m = _build_scope_meta(
+        False, ["p1"], [1],
+        system_scope=[str(s1.id)], systems=[s1],
+    )
+    assert m.system_scope_type == "scoped"
+    assert m.visible_system_count == 1
+    assert m.visible_systems[0].system_id == str(s1.id)
+    assert m.visible_systems[0].name == "中方系统"
+
+
+def test_build_scope_meta_scoped_filters_systems_to_scope():
+    """scoped key 只列出 claims 内的 system，越权项不进 visible_systems。"""
+    s_in = FakeSystem("在权限内")
+    s_out = FakeSystem("不在权限内")
+    m = _build_scope_meta(
+        False, [], [1],
+        system_scope=[str(s_in.id)], systems=[s_in, s_out],
+    )
+    assert m.visible_system_count == 1
+    assert m.visible_systems[0].name == "在权限内"
 
 
 async def test_core_list_admin_all():
