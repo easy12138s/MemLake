@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, requirement, PRD."
-version: 1.6.0
+version: 1.7.0
 ---
 
 # PM Skills（产品经理）
@@ -26,6 +26,7 @@ version: 1.6.0
 
 ### 使用建议
 - 检索时注意向量可能有短暂延迟（刚提交的内容可能检索不到）
+- **验证写入用 `get_requirement_context(requirement_id, depth=1)`**——图遍历不读向量索引，审批通过（或宽松模式入库）后即时可见
 - 如需确保数据最新，可先用 get_project_info 检查项目状态
 - 发现数据问题可用 update_node 修正（需重新审批）
 

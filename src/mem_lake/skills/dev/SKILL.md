@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.6.0
+version: 1.7.0
 ---
 
 # Dev Skills（开发者）
@@ -49,7 +49,9 @@ version: 1.6.0
 
 核心价值：**让你的开发经验被团队所有 AI 共享**。没有 Mem Lake，你踩过的坑只有你的 AI 知道；有了 Mem Lake，其他开发者的 AI 能检索到你记录的坑和解决方案，新人 AI 也能快速了解项目的设计意图。
 
-关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。提交后**不要立即检索**刚提交的内容——宽松模式向量在后台异步生成，刚提交瞬间可能检索不到；严格模式需等 admin 审批通过后才会写入图谱。
+关键原则：你只负责提交，不负责审批。默认提交后获得 batch_id，等待 admin 审批通过；宽松模式下返回 approved 即已生效。
+
+> **验证写入请用图遍历，不要用 search_***：`get_requirement_context(requirement_id, depth=1)` 走图遍历、不读向量索引，写入（宽松模式）或审批通过后**即时可见**；而 `search_code_snippets` / `search_similar_requirements` 依赖后台异步生成的向量，刚写入可能短暂检索不到——这不是「没写进去」。
 
 ## 核心工作流：先检索后提交
 
@@ -57,6 +59,10 @@ version: 1.6.0
 1. 用 `search_code_snippets(query=..., project_id=...)`（查代码/方案/意图/坑）和 `search_similar_requirements(...)`（查关联需求）检索已有相似内容；
 2. 若命中已有节点：不要重复提交新节点，改用 `submit_dev_artifacts(...)` 的 `relations`（from_ref/to_ref 引用命中节点 UUID 或批次内 ref）建立 `depends_on`/`realized_by`/`embodies`/`traces_to`/`described_by` 等引用边，让新产物挂接到既有知识上；
 3. 若未命中：再提交新产物。
+
+> **多需求锚定**：一条知识要挂到多个需求时，省略 `requirement_id`（其自动建边仅对 CodeSnippet 生效），在 `relations` 中显式声明全部需求→产物边——省略 `requirement_id` 时 `relations` **照常解析生效**，可放心使用。
+
+> **单次检索 ≠ 全集**：检索结果受 top_n 截断与 min_score 过滤影响，清单类任务（"列出某批次全部需求"）不可依赖单次调用；可用 `min_score=0.99`（只留全文精确命中）+ 较大 `top_n` + 多组关键词取并集，出参的 `candidates_total` 是阈值过滤前的候选数、`returned` 是实际返回条数。
 
 > **实现前先看需求（system 维度）**：需求可按 `system_id` 隔离、且可能是"悬浮"（project 为空、先于实现）。要定位可见的 System 需求，用 `search_similar_requirements(project_id=...)` 或加 `system_id=...`（你被 admin 通过 `manage_system.bind_keys` 绑定的 system），拿到需求 UUID 后 `submit_dev_artifacts(requirement_id=UUID, ...)` 建 implements 边。
 

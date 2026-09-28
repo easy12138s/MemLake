@@ -253,6 +253,16 @@ async def test_embed_timeout_not_retried(monkeypatch):
     assert len(fake.requests) == 1  # 仅尝试一次
 
 
+async def test_embed_error_message_includes_exception_type(monkeypatch):
+    """超时异常 str() 为空时，错误信息仍含异常类型（ISSUE-10：空信息无法定位）。"""
+    monkeypatch.setattr(embedding_client_module, "RETRY_BASE_DELAY", 0.0)
+    client, _ = _make_scripted_client(monkeypatch, [httpx.ReadTimeout("")])
+    assert str(httpx.ReadTimeout("")) == ""  # 前置证明：ReadTimeout 的 str 为空串
+
+    with pytest.raises(EmbeddingError, match="ReadTimeout"):
+        await client.embed(["a"])
+
+
 async def test_embed_retry_exhausted_raises(monkeypatch):
     """重试耗尽（MAX_RETRIES+1 次）后抛 EmbeddingError。"""
     monkeypatch.setattr(embedding_client_module, "RETRY_BASE_DELAY", 0.0)

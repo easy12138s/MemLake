@@ -105,8 +105,11 @@ class EmbeddingClient:
                 raise EmbeddingError(f"Embedding 服务连接失败: {exc}") from exc
             except httpx.HTTPError as exc:
                 # 超时/读中断等：请求可能已到达服务端并在计算，重试会造成服务端
-                # 同一请求并发叠压（实测 OOM 诱因），故不重试，直接失败
-                raise EmbeddingError(f"Embedding 服务请求失败: {exc}") from exc
+                # 同一请求并发叠压（实测 OOM 诱因），故不重试，直接失败。
+                # str(ReadTimeout) 为空串，须带异常类型定位（真实反馈 ISSUE-10）
+                raise EmbeddingError(
+                    f"Embedding 服务请求失败: {type(exc).__name__}: {exc!r}"
+                ) from exc
 
             if resp.status_code == 200:
                 data = resp.json()
@@ -158,7 +161,9 @@ class EmbeddingClient:
         try:
             resp = await self._client.get("/health")
         except httpx.HTTPError as exc:
-            raise EmbeddingError(f"Embedding 健康检查失败: {exc}") from exc
+            raise EmbeddingError(
+                f"Embedding 健康检查失败: {type(exc).__name__}: {exc!r}"
+            ) from exc
 
         if resp.status_code != 200:
             raise EmbeddingError(

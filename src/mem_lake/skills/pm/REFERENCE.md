@@ -120,7 +120,7 @@ PM/Dev 共享。向量+全文融合检索相似需求（Requirement 类型；按
 | query | str | 是 | 查询文本（需求描述/关键词）|
 | system_id | UUID | 否 | 归属 system 域；与 project_id 均不传时按 Key 绑定 system 兜底 |
 | project_id | UUID | 否 | 归属项目 ID |
-| top_n | int | 否 | 返回数量上限，默认 10 |
+| top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | 标签匹配语义：`all`=AND（默认）/`any`=OR |
 | min_score | float | 否 | 向量余弦相似度下限（0~1），默认 0.5；None 关闭阈值 |

@@ -26,7 +26,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from mem_lake.config import get_settings
 from mem_lake.gateway.dependencies import (
@@ -81,19 +81,43 @@ class SearchItemOutput(BaseModel):
 
 
 class HybridSearchOutput(BaseModel):
-    """search_similar_requirements / search_code_snippets 出参。"""
+    """search_similar_requirements / search_code_snippets 出参。
+
+    vector/fulltext 默认 None（序列化省略该键）——回传空数组会被误读为
+    「引擎候选池为空」（真实使用反馈 ISSUE-04）；仅 include_engine_details=true
+    的调试场景填充。
+    """
 
     query: str = Field(description="原始查询文本")
     fused: list[SearchItemOutput] = Field(
         description="RRF 融合结果（向量+全文），按分数降序"
     )
-    vector: list[SearchItemOutput] = Field(
-        description="向量引擎原始结果", default=[]
+    vector: list[SearchItemOutput] | None = Field(
+        description="向量引擎原始结果（仅 include_engine_details=true 时回传）",
+        default=None,
     )
-    fulltext: list[SearchItemOutput] = Field(
-        description="全文引擎原始结果", default=[]
+    fulltext: list[SearchItemOutput] | None = Field(
+        description="全文引擎原始结果（仅 include_engine_details=true 时回传）",
+        default=None,
     )
-    total: int = Field(description="融合结果数量")
+    candidates_total: int = Field(
+        default=0,
+        description="min_score 阈值过滤前的候选池条数——评估「命中总量」请以本字段为准",
+    )
+    total: int = Field(
+        description="历史字段，语义等同 returned（随 top_n 变化，非命中总数）"
+    )
+
+    @computed_field  # type: ignore[prop-decorator, untyped-decorator]
+    @property
+    def returned(self) -> int:
+        """实际返回条数，恒等于 len(fused)（computed，构造无需传参）。"""
+        return len(self.fused)
+
+    # 注意：不可用 model_serializer 裁剪 None 键——wrap/plain 模式都会使
+    # json_schema(mode="serialization") 退化为非 object，FastMCP 据此判定
+    # "x-fastmcp-wrap-result" 把出参包一层 {"result": ...}，破坏调用方平铺契约。
+    # None（输出为 null）语义已足够：null=未请求明细，与空数组的「候选池为空」相区分。
 
 
 class ImpactScopeOutput(BaseModel):
@@ -207,7 +231,10 @@ def register_search_tools(mcp: FastMCP) -> None:
         project_id: uuid.UUID | None = Field(
             default=None, description="归属项目 ID（与 system_id 至少其一必填或走 Key 兜底）"
         ),
-        top_n: int = Field(default=10, description="融合后返回数量上限"),
+        top_n: int = Field(
+            default=20,
+            description="融合后返回数量上限（默认 20；rerank 会把高相关项压到候选池后位，过小易挤出）",
+        ),
         tags: list[str] | None = Field(
             default=None, description="标签过滤（tags_op 控制 AND/OR）"
         ),
@@ -279,7 +306,10 @@ def register_search_tools(mcp: FastMCP) -> None:
     async def search_code_snippets(
         project_id: uuid.UUID = Field(description="归属项目 ID"),
         query: str = Field(description="查询文本（代码功能/关键词）"),
-        top_n: int = Field(default=10, description="融合后返回数量上限"),
+        top_n: int = Field(
+            default=20,
+            description="融合后返回数量上限（默认 20；rerank 会把高相关项压到候选池后位，过小易挤出）",
+        ),
         tags: list[str] | None = Field(
             default=None, description="标签过滤（tags_op 控制 AND/OR）"
         ),
@@ -588,12 +618,17 @@ async def _run_hybrid_search(
     fused_raw = result.get("fused", [])
     if min_score is not None:
         # 仅对"有向量分"的节点按 min_score 过滤；无向量分的全文命中节点予以保留
+        # candidates_total 记录过滤前条数（ISSUE-03：total/returned 随 top_n 变化，
+        # 非命中总数；评估命中总量以 candidates_total 为准）
+        candidates_total = len(fused_raw)
         fused_raw = [
             r
             for r in fused_raw
             if r.node_id not in vector_score_map
             or vector_score_map.get(r.node_id, -1) >= min_score
         ]
+    else:
+        candidates_total = len(fused_raw)
 
     return HybridSearchOutput(
         query=query,
@@ -601,13 +636,14 @@ async def _run_hybrid_search(
         vector=(
             [_to_search_item_output(r) for r in result.get("vector", [])]
             if include_engine_details
-            else []
+            else None
         ),
         fulltext=(
             [_to_search_item_output(r) for r in result.get("fulltext", [])]
             if include_engine_details
-            else []
+            else None
         ),
+        candidates_total=candidates_total,
         total=len(fused_raw),
     )
 

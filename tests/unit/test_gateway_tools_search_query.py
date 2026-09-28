@@ -237,7 +237,7 @@ class TestEngineDetailsToggle:
         }
 
     async def test_engine_details_omitted_by_default(self, monkeypatch):
-        """默认不回传引擎明细：vector/fulltext 为空，fused 正常返回（省 token）。"""
+        """默认不回传引擎明细：vector/fulltext 为 None（序列化后不出现该键），fused 正常返回。"""
         from types import SimpleNamespace
 
         from mem_lake.gateway.tools import search_tools
@@ -256,8 +256,12 @@ class TestEngineDetailsToggle:
             top_n=10, tags=None,
         )
         assert len(out.fused) == 1
-        assert out.vector == []
-        assert out.fulltext == []
+        assert out.vector is None
+        assert out.fulltext is None
+        # 序列化后不得出现误导性的空数组键（ISSUE-04：空列表像「候选池为空」）
+        dumped = out.model_dump(exclude_none=True)
+        assert "vector" not in dumped
+        assert "fulltext" not in dumped
 
     async def test_engine_details_included_when_flag(self, monkeypatch):
         """include_engine_details=True 时回传引擎明细（调试/评估用）。"""
@@ -281,6 +285,46 @@ class TestEngineDetailsToggle:
         assert len(out.fused) == 1
         assert len(out.vector) == 1
         assert len(out.fulltext) == 1
+
+    async def test_candidates_total_counts_pre_filter(self, monkeypatch):
+        """candidates_total=阈值过滤前候选数，returned/total=过滤后条数（ISSUE-03）。"""
+        from types import SimpleNamespace
+
+        from mem_lake.gateway.tools import search_tools
+        from mem_lake.search.fusion import SearchResult
+
+        fused_items = [
+            SearchResult(node_id=uuid.uuid4(), title="低分向量命中1", content="x",
+                         node_type="Requirement", score=0.31, source="fused", properties={}, tags=[]),
+            SearchResult(node_id=uuid.uuid4(), title="低分向量命中2", content="x",
+                         node_type="Requirement", score=0.25, source="fused", properties={}, tags=[]),
+            SearchResult(node_id=uuid.uuid4(), title="纯全文命中", content="x",
+                         node_type="Requirement", score=0.01, source="fused", properties={}, tags=[]),
+        ]
+        # vector 命中前 2 个（低分）——min_score 过滤依据 vector_score_map
+        vector_items = fused_items[:2]
+
+        async def fake_hybrid(**kw):
+            return {
+                "fused": fused_items,
+                "vector": vector_items,
+                "fulltext": [],
+                "graph": [],
+            }
+
+        monkeypatch.setattr(
+            search_tools, "get_lifespan_context",
+            lambda: SimpleNamespace(embedding_client=None, graph_store=None),
+        )
+        monkeypatch.setattr(search_tools, "hybrid_search", fake_hybrid)
+
+        out = await search_tools._run_hybrid_search(
+            project_id=uuid.uuid4(), query="q", node_types=("Requirement",),
+            top_n=10, tags=None, min_score=0.9,
+        )
+        assert out.candidates_total == 3  # 过滤前
+        assert len(out.fused) == 1  # 仅纯全文命中保留
+        assert out.total == out.returned == 1
 
 
 async def _async_return(value):
@@ -388,15 +432,33 @@ class TestOutputModels:
         assert item.source == "fused"
         assert item.score == 0.8
 
-    def test_hybrid_search_output_default_empty_lists(self):
-        """HybridSearchOutput 默认空列表。"""
+    def test_hybrid_search_output_default_omits_engine_lists(self):
+        """默认不回传 vector/fulltext（None，序列化省略）；returned/candidates_total 就位。"""
         output = HybridSearchOutput(
             query="测试",
             fused=[],
             total=0,
         )
-        assert output.vector == []
-        assert output.fulltext == []
+        assert output.vector is None
+        assert output.fulltext is None
+        assert output.returned == 0
+        assert output.candidates_total == 0
+        dumped = output.model_dump(exclude_none=True)
+        assert "vector" not in dumped and "fulltext" not in dumped
+
+    def test_hybrid_search_output_total_equals_returned(self):
+        """total 为历史字段，语义等同 returned（避免「命中总数」误读，ISSUE-03）。"""
+        from mem_lake.gateway.tools.search_tools import SearchItemOutput
+
+        items = [
+            SearchItemOutput(
+                node_id=uuid.uuid4(), title="t", content="c",
+                node_type="Requirement", score=0.9, source="fused",
+            )
+        ]
+        output = HybridSearchOutput(query="q", fused=items, total=1, candidates_total=7)
+        assert output.total == output.returned == len(output.fused)
+        assert output.candidates_total == 7
 
     def test_conflict_check_output_no_conflict(self):
         """ConflictCheckOutput 无冲突场景。"""

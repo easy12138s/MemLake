@@ -142,7 +142,9 @@ def validate_project_access(project_id: uuid.UUID) -> None:
     scope_str = [str(pid) for pid in scope]
     if str(project_id) not in scope_str:
         raise ToolError(
-            f"权限拒绝：项目 {project_id} 不在当前 Access Key 的项目范围内"
+            f"权限拒绝：项目 {project_id} 不在当前 Access Key 的项目范围内。"
+            "如近期 Key scope 有变更（或不确定项目是否已建/已删），"
+            "请联系 admin 用 list_access_keys / update_access_key_scope 核对授权"
         )
 
 
