@@ -210,6 +210,84 @@ class TestResolveSearchScopeFallback:
 
 
 # ============================================================================
+# 引擎明细开关：默认省 token 不回传 vector/fulltext，调试时显式打开
+# ============================================================================
+
+
+class TestEngineDetailsToggle:
+    """_run_hybrid_search 的 include_engine_details 三态。"""
+
+    def _make_result(self):
+        from mem_lake.search.fusion import SearchResult
+
+        nid = uuid.uuid4()
+        return {
+            "fused": [
+                SearchResult(node_id=nid, title="需求A", content="内容A", node_type="Requirement",
+                             score=0.9, source="fused", properties={}, tags=[]),
+            ],
+            "vector": [
+                SearchResult(node_id=nid, title="需求A", content="内容A", node_type="Requirement",
+                             score=0.9, source="vector", properties={}, tags=[]),
+            ],
+            "fulltext": [
+                SearchResult(node_id=nid, title="需求A", content="内容A", node_type="Requirement",
+                             score=0.01, source="fulltext", properties={}, tags=[]),
+            ],
+        }
+
+    async def test_engine_details_omitted_by_default(self, monkeypatch):
+        """默认不回传引擎明细：vector/fulltext 为空，fused 正常返回（省 token）。"""
+        from types import SimpleNamespace
+
+        from mem_lake.gateway.tools import search_tools
+
+        monkeypatch.setattr(
+            search_tools, "get_lifespan_context",
+            lambda: SimpleNamespace(embedding_client=None, graph_store=None),
+        )
+        monkeypatch.setattr(
+            search_tools, "hybrid_search",
+            lambda **kw: _async_return(self._make_result()),
+        )
+
+        out = await search_tools._run_hybrid_search(
+            project_id=uuid.uuid4(), query="登录", node_types=("Requirement",),
+            top_n=10, tags=None,
+        )
+        assert len(out.fused) == 1
+        assert out.vector == []
+        assert out.fulltext == []
+
+    async def test_engine_details_included_when_flag(self, monkeypatch):
+        """include_engine_details=True 时回传引擎明细（调试/评估用）。"""
+        from types import SimpleNamespace
+
+        from mem_lake.gateway.tools import search_tools
+
+        monkeypatch.setattr(
+            search_tools, "get_lifespan_context",
+            lambda: SimpleNamespace(embedding_client=None, graph_store=None),
+        )
+        monkeypatch.setattr(
+            search_tools, "hybrid_search",
+            lambda **kw: _async_return(self._make_result()),
+        )
+
+        out = await search_tools._run_hybrid_search(
+            project_id=uuid.uuid4(), query="登录", node_types=("Requirement",),
+            top_n=10, tags=None, include_engine_details=True,
+        )
+        assert len(out.fused) == 1
+        assert len(out.vector) == 1
+        assert len(out.fulltext) == 1
+
+
+async def _async_return(value):
+    return value
+
+
+# ============================================================================
 # _to_audit_log_item_output 转换测试
 # ============================================================================
 

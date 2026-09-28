@@ -182,13 +182,14 @@ update_node(
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | query | str | 是 | 查询文本 |
-| system_id | UUID | 否 | 归属 system 域 |
+| system_id | UUID | 否 | 归属 system 域；与 project_id 均不传时按 Key 绑定 system 兜底 |
 | project_id | UUID | 否 | 归属项目 ID |
 | top_n | int | 否 | 返回数量上限，默认 10 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
 | min_score | float | 否 | 向量相似度下限，默认 0.5 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
+| include_engine_details | bool | 否 | 回传 vector/fulltext 引擎明细（调试用），默认 False 仅回 fused 省 token |
 
 ```python
 search_similar_requirements(
@@ -211,6 +212,7 @@ search_similar_requirements(
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
 | min_score | float | 否 | 向量相似度下限，默认 0.5 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
+| include_engine_details | bool | 否 | 回传 vector/fulltext 引擎明细（调试用），默认 False 仅回 fused 省 token |
 
 ```python
 search_code_snippets(
