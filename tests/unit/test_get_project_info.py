@@ -165,6 +165,31 @@ async def test_core_list_dedup_latest():
     assert out.projects[0].name == "new"
 
 
+async def test_core_list_includes_placeholder_for_scope_without_profile():
+    """ISSUE-07：scope 内但未建 ProjectProfile 的项目返回占位条目（name=None），不再消失。"""
+    p1, p2 = uuid.uuid4(), uuid.uuid4()
+    nodes = [FakeNode(p1, "A", "da")]  # 仅 p1 有画像
+    out = await _get_project_info_core(
+        action="list", project_id=None, include_profile=False, include_scope_meta=False,
+        role="dev", scope=[str(p1), str(p2)], list_fn=fake_list(nodes), validate_fn=lambda x: None,
+    )
+    by_id = {i.project_id: i for i in out.projects}
+    assert p1 in by_id and by_id[p1].name == "A"
+    assert p2 in by_id, "scope 内无画像的项目应返回占位条目而非消失"
+    assert by_id[p2].name is None
+
+
+async def test_core_list_admin_no_placeholder_leak():
+    """admin 无 scope 概念：不虚构占位条目，仅列实际存在的画像。"""
+    p1 = uuid.uuid4()
+    nodes = [FakeNode(p1, "A", "da")]
+    out = await _get_project_info_core(
+        action="list", project_id=None, include_profile=False, include_scope_meta=False,
+        role="admin", scope=[], list_fn=fake_list(nodes), validate_fn=lambda x: None,
+    )
+    assert [i.project_id for i in out.projects] == [p1]
+
+
 async def test_core_get_success():
     p = uuid.uuid4()
     nodes = [FakeNode(p, "A", "da", {"work_dir": "/x"})]

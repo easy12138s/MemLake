@@ -17,6 +17,8 @@
 | relations | list[dict] | 否 | 节点间关系（用 ref 引用）|
 | operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
 
+> **多需求锚定**：一条知识涉及多个需求时省略 `requirement_id`（其仅对 CodeSnippet 自动建边），在 `relations` 中显式声明需求→产物边——省略 `requirement_id` 时 `relations` **照常解析生效**。
+
 **artifacts 内部结构**：
 
 ```python
@@ -184,7 +186,7 @@ update_node(
 | query | str | 是 | 查询文本 |
 | system_id | UUID | 否 | 归属 system 域；与 project_id 均不传时按 Key 绑定 system 兜底 |
 | project_id | UUID | 否 | 归属项目 ID |
-| top_n | int | 否 | 返回数量上限，默认 10 |
+| top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
 | min_score | float | 否 | 向量相似度下限，默认 0.5 |
@@ -207,7 +209,7 @@ search_similar_requirements(
 |------|------|------|------|
 | project_id | UUID | 是 | 归属项目 ID |
 | query | str | 是 | 查询文本 |
-| top_n | int | 否 | 返回数量上限，默认 10 |
+| top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
 | min_score | float | 否 | 向量相似度下限，默认 0.5 |

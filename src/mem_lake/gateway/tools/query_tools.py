@@ -107,15 +107,26 @@ class GetProjectProfileOutput(BaseModel):
 
 
 class ProjectInfo(BaseModel):
-    """单个项目摘要信息（get_project_info 返回单元）。"""
+    """单个项目摘要信息（get_project_info 返回单元）。
+
+    name/description/updated_at 为 None 表示该项目在 Key scope 内但尚未创建
+    ProjectProfile 画像（占位条目，ISSUE-07：此前这类项目直接从结果中消失）。
+    """
 
     project_id: uuid.UUID = Field(description="项目 ID")
-    name: str = Field(description="项目名称（ProjectProfile.title）")
+    name: str | None = Field(
+        default=None,
+        description="项目名称（ProjectProfile.title）；None=scope 内但尚未创建画像",
+    )
     work_dir: str | None = Field(default=None, description="项目本地工作目录")
     repo: str | None = Field(default=None, description="代码仓库标识/名称")
-    description: str = Field(description="项目描述（ProjectProfile.content）")
+    description: str | None = Field(
+        default=None, description="项目描述（ProjectProfile.content）"
+    )
     tags: list[str] = Field(default=[], description="标签数组")
-    updated_at: Any = Field(description="更新时间（ISO 8601，取画像节点 created_at）")
+    updated_at: Any = Field(
+        default=None, description="更新时间（ISO 8601，取画像节点 created_at）"
+    )
     profile: dict[str, Any] | None = Field(
         default=None,
         description="完整画像属性（仅 include_profile=true 时返回，否则 null）",
@@ -609,6 +620,13 @@ async def _get_project_info_core(
                 continue  # ProjectProfile 必归属项目，None 仅防御性跳过
             seen[pid] = _to_project_info(n, include_profile)
         projects = list(seen.values())
+        # ISSUE-07：scope 内但尚未创建 ProjectProfile 的项目补占位条目
+        # （name=None），避免「visible_uuids 有 id 但 projects 查不到任何项目名」
+        if not is_admin:
+            for pid in visible_ids or []:
+                if pid not in seen:
+                    seen[pid] = ProjectInfo(project_id=pid)
+                    projects.append(seen[pid])
         scope_meta = (
             _build_scope_meta(
                 is_admin,
