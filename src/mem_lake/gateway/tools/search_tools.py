@@ -224,19 +224,27 @@ def register_search_tools(mcp: FastMCP) -> None:
             description="标签语义扩展：开启后用 embedding 将给定标签扩展为项目中语义相近的标签"
             "（如「性能」≈「N+1」），放宽精确匹配；关闭时仅做精确 AND/OR 匹配",
         ),
+        include_engine_details: bool = Field(
+            default=False,
+            description="回传 vector/fulltext 引擎原始明细（调试/评估检索质量用）。"
+            "默认 false 仅回 fused 最终结果——明细每页约 30KB，会显著增加 token 消耗",
+        ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索相似需求（Requirement 类型；按 system 或 project 隔离）。
 
         PM/Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
         system 维度：传 system_id 检索该系统全部需求（含悬浮，project 可空）；dev 可用
-        system_id 定位可见 system 的需求 UUID，再引用实现建边。
+        system_id 定位可见 system 的需求 UUID，再引用实现建边。与 project_id 均不传时，
+        按 Access Key 绑定的 system 兜底（绑定唯一 system 时自动用之，否则报错提示）。
         注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
         无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）；
         fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
         query 不能为空（空查询下全文引擎无排序依据）。
+        出参默认仅含 fused（省 token）；仅调试/评估时设 include_engine_details=true
+        取回 vector/fulltext 引擎明细。
         用途边界：本工具检索**需求节点(Requirement)**。要查某需求的关联代码/方案/意图，
         用 get_requirement_context；要做"改这个需求会影响哪些代码"的影响分析，用 analyze_impact_scope。
         """
@@ -262,6 +270,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 tags_op=tags_op,
                 min_score=min_score,
                 semantic_tags=semantic_tags,
+                include_engine_details=include_engine_details,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e) from e
@@ -287,6 +296,11 @@ def register_search_tools(mcp: FastMCP) -> None:
             description="标签语义扩展：开启后用 embedding 将给定标签扩展为项目中语义相近的标签"
             "（如「性能」≈「N+1」），放宽精确匹配；关闭时仅做精确 AND/OR 匹配",
         ),
+        include_engine_details: bool = Field(
+            default=False,
+            description="回传 vector/fulltext 引擎原始明细（调试/评估检索质量用）。"
+            "默认 false 仅回 fused 最终结果——明细每页约 30KB，会显著增加 token 消耗",
+        ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索研发资产（同项目内 CodeSnippet/Pitfall/Solution/DesignIntent 类型）。
 
@@ -300,6 +314,8 @@ def register_search_tools(mcp: FastMCP) -> None:
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
         query 不能为空（空查询下全文引擎无排序依据）。
+        出参默认仅含 fused（省 token）；仅调试/评估时设 include_engine_details=true
+        取回 vector/fulltext 引擎明细。
         用途边界：本工具检索**研发资产**(CodeSnippet/Solution/DesignIntent/Pitfall)。
         要找需求本身用 search_similar_requirements；要拿某需求关联的实现/方案/坑用 get_requirement_context。
         """
@@ -315,6 +331,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 tags_op=tags_op,
                 min_score=min_score,
                 semantic_tags=semantic_tags,
+                include_engine_details=include_engine_details,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e) from e
@@ -509,6 +526,7 @@ async def _run_hybrid_search(
     tags_op: str = "all",
     min_score: float | None = None,
     semantic_tags: bool = False,
+    include_engine_details: bool = False,
 ) -> HybridSearchOutput:
     """执行三引擎融合检索的共享辅助函数。
 
@@ -518,6 +536,11 @@ async def _run_hybrid_search(
 
     system 维度：传 project_id 检索该 project 资产；传 system_id 检索该系统全部需求
     （含悬浮需求）。二者都不传时用 project_scope 内全部 project 检索。
+
+    include_engine_details=false（默认）时出参仅含 fused（RRF+精排后的最终结果），
+    vector/fulltext 引擎明细不回传——明细单项 ~600B、每页 50 条，默认回传会把单次
+    调用撑到 ~30KB 量级（约 97% 为 Agent 无需的诊断数据，token 负担主要来源）；
+    调试/评估检索质量时显式传 true 取回。
     """
     lifespan_ctx = get_lifespan_context()
 
@@ -575,8 +598,16 @@ async def _run_hybrid_search(
     return HybridSearchOutput(
         query=query,
         fused=[_to_search_item_output(r, vector_score_map.get(r.node_id)) for r in fused_raw],
-        vector=[_to_search_item_output(r) for r in result.get("vector", [])],
-        fulltext=[_to_search_item_output(r) for r in result.get("fulltext", [])],
+        vector=(
+            [_to_search_item_output(r) for r in result.get("vector", [])]
+            if include_engine_details
+            else []
+        ),
+        fulltext=(
+            [_to_search_item_output(r) for r in result.get("fulltext", [])]
+            if include_engine_details
+            else []
+        ),
         total=len(fused_raw),
     )
 
