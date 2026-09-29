@@ -833,3 +833,55 @@ async def set_system_projects(
         session.add(SystemProject(system_id=system_id, project_id=pid))
     await session.flush()
     return len(project_ids)
+
+
+async def add_system_projects(
+    session: AsyncSession,
+    *,
+    system_id: uuid.UUID,
+    project_ids: list[uuid.UUID],
+) -> int:
+    """增量追加 system↔project 归属（幂等，不 commit）。
+
+    复合主键 (system_id, project_id) 冲突跳过——重复追加同一项目无副作用。
+    与 set_system_projects（全量重置）相对：agent「往系统挂一个项目」的
+    常用路径，不动既有归属。返回实际新增条数。
+    """
+    if not project_ids:
+        return 0
+    # RETURNING 只返回实际插入的行（冲突跳过的不返回）——精确计数新增条数；
+    # 不带 RETURNING 时 ON CONFLICT 的 rowcount 在 psycopg 下为 -1，不可用
+    result = await session.execute(
+        pg_insert(SystemProject)
+        .values([
+            {"system_id": system_id, "project_id": pid} for pid in project_ids
+        ])
+        .on_conflict_do_nothing()
+        .returning(SystemProject.project_id)
+    )
+    added = [r[0] for r in result.fetchall()]
+    await session.flush()
+    return len(added)
+
+
+async def remove_system_projects(
+    session: AsyncSession,
+    *,
+    system_id: uuid.UUID,
+    project_ids: list[uuid.UUID],
+) -> int:
+    """精确移除 system↔project 归属中的指定项（其余保留，不 commit）。
+
+    与 set_system_projects（全量重置）相对：只删传入的关联行，
+    system 下其他项目归属不受影响。返回实际删除条数。
+    """
+    if not project_ids:
+        return 0
+    result = await session.execute(
+        delete(SystemProject).where(
+            SystemProject.system_id == system_id,
+            SystemProject.project_id.in_(project_ids),
+        )
+    )
+    await session.flush()
+    return int(getattr(result, "rowcount", 0) or 0)

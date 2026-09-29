@@ -126,17 +126,19 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| action | str | 是 | `create` / `list` / `set_projects` / `bind_keys` |
+| action | str | 是 | `create` / `list` / `set_projects` / `add_projects` / `remove_projects` / `bind_keys` |
 | name | str | create 时必填 | 系统域名（唯一）|
 | description | str \| None | create 时可选 | 系统域描述 |
-| system_id | UUID | set_projects/bind_keys 时必填 | 目标 System ID |
-| project_ids | list[UUID] | set_projects 时 | 该系统下归属的 project 列表 |
+| system_id | UUID | set/add/remove_projects、bind_keys 时必填 | 目标 System ID |
+| project_ids | list[UUID] | set/add/remove_projects 时 | 归属项目 ID 列表 |
 | key_ids / role_filter / grant_all | - | bind_keys 时 | 定位目标 Key（优先级 key_ids > role_filter > grant_all）|
 
 **action 说明**：
 - `create`：建 System，返回 system_id
 - `list`：枚举所有 System（含其下项目数）
-- `set_projects`：定义 system↔project 归属
+- `set_projects`：**全量重置**归属清单（覆盖语义——未传入的既有归属会被清除；传完整列表）
+- `add_projects`：增量追加归属（幂等），返回 added_count——「往系统挂一个项目」用这个
+- `remove_projects`：精确移除传入项（其余保留），返回 removed_count
 - `bind_keys`：把该系统授权给目标 Key（进入其 scope.systems）
 
 ---

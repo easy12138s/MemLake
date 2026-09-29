@@ -66,11 +66,13 @@ from mem_lake.gateway.tools._shared import (
 )
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
+    add_system_projects,
     count_system_projects,
     create_node,
     create_system,
     get_system,
     list_systems,
+    remove_system_projects,
     set_system_projects,
     update_node,
 )
@@ -305,11 +307,21 @@ class ReindexStatusOutput(BaseModel):
 class ManageSystemOutput(BaseModel):
     """manage_system 工具出参。"""
 
-    action: str = Field(description="操作类型：create/list/set_projects/bind_keys")
+    action: str = Field(
+        description="操作类型：create/list/set_projects/add_projects/remove_projects/bind_keys"
+    )
     system_id: str | None = Field(default=None, description="system 域 ID")
     name: str | None = Field(default=None, description="系统域名（create 时）")
     description: str | None = Field(default=None, description="系统域描述（create 时）")
-    project_count: int | None = Field(default=None, description="归属项目数（set_projects/list 时）")
+    project_count: int | None = Field(
+        default=None, description="归属项目数（set_projects 重置后总数 / list 时）"
+    )
+    added_count: int | None = Field(
+        default=None, description="add_projects 实际新增条数（幂等，重复项计 0）"
+    )
+    removed_count: int | None = Field(
+        default=None, description="remove_projects 实际移除条数"
+    )
     systems: list[dict[str, Any]] | None = Field(default=None, description="系统域列表（list 时，含 project_count）")
     affected_key_ids: list[str] | None = Field(default=None, description="受影响 Key ID 列表（bind_keys 时）")
 
@@ -530,9 +542,9 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def manage_system(
-        action: Literal["create", "list", "set_projects", "bind_keys"] = Field(
-            description="操作类型"
-        ),
+        action: Literal[
+            "create", "list", "set_projects", "add_projects", "remove_projects", "bind_keys"
+        ] = Field(description="操作类型"),
         name: str | None = Field(
             default=None, description="create 时指定的系统域名（唯一）"
         ),
@@ -541,11 +553,14 @@ def register_manage_tools(mcp: FastMCP) -> None:
         ),
         system_id: uuid.UUID | None = Field(
             default=None,
-            description="set_projects / bind_keys 时指定的 system 域 ID",
+            description="set/add/remove_projects / bind_keys 时指定的 system 域 ID",
         ),
         project_ids: list[uuid.UUID] | None = Field(
             default=None,
-            description="set_projects 时指定该系统下归属的项目 ID 列表",
+            description=(
+                "set_projects=全量重置清单（覆盖语义！会清掉未传入的归属）；"
+                "add_projects=增量追加；remove_projects=精确移除传入项"
+            ),
         ),
         key_ids: str | list[uuid.UUID] | None = Field(
             default=None,
@@ -566,7 +581,10 @@ def register_manage_tools(mcp: FastMCP) -> None:
         PM 需求按 system 隔离；System 由 admin 统一建并签发。行为：
         - create：建一个 System 域，返回 system_id
         - list：枚举所有 System（含其下项目数）
-        - set_projects：定义该系统下挂哪些 project（决定 dev 对悬浮需求的可见性与影响评估聚合）
+        - set_projects：**全量重置**该系统的归属清单（覆盖语义，传入完整列表；
+          会清掉未传入的既有归属）——追加/移除单个项目请用 add_projects / remove_projects
+        - add_projects / remove_projects：增量维护归属（幂等），不动未传入的关联
+          （决定 dev 对悬浮需求的可见性与影响评估聚合）
         - bind_keys：把该系统授权给目标 Key（进入其 scope.systems；定位方式 key_ids > role_filter > grant_all）
         """
         try:
@@ -600,7 +618,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     return ManageSystemOutput(action="list", systems=result)
 
                 if not system_id:
-                    raise ValueError("set_projects / bind_keys 必须指定 system_id")
+                    raise ValueError("set_projects / add_projects / remove_projects / bind_keys 必须指定 system_id")
                 exists = await get_system(session, system_id)
                 if exists is None:
                     raise ValueError(f"system 不存在: {system_id}")
@@ -616,6 +634,28 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         action="set_projects",
                         system_id=str(system_id),
                         project_count=len(pids),
+                    )
+
+                if action == "add_projects":
+                    pid_uuids = [uuid.UUID(str(p)) for p in (project_ids or [])]
+                    added = await add_system_projects(
+                        session, system_id=system_id, project_ids=pid_uuids
+                    )
+                    return ManageSystemOutput(
+                        action="add_projects",
+                        system_id=str(system_id),
+                        added_count=added,
+                    )
+
+                if action == "remove_projects":
+                    pid_uuids = [uuid.UUID(str(p)) for p in (project_ids or [])]
+                    removed = await remove_system_projects(
+                        session, system_id=system_id, project_ids=pid_uuids
+                    )
+                    return ManageSystemOutput(
+                        action="remove_projects",
+                        system_id=str(system_id),
+                        removed_count=removed,
                     )
 
                 if action == "bind_keys":
