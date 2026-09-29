@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile."
-version: 1.9.0
+version: 1.10.0
 ---
 
 # Admin Skills（管理员）

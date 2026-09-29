@@ -350,3 +350,119 @@ async def test_list_access_keys_filter_by_lax_mode(admin_app):
         assert target_key not in strict_ids
         for k in strict_list:
             assert k["lax_mode"] is False
+
+
+# ============================================================================
+# manage_system 归属操作：add_projects / remove_projects 增量语义
+# 修复点：set_projects 为全量重置（覆盖语义），agent「挂一个项目」直觉传单项
+# 会清空既有关联——新增增量 action，set_projects 描述明示覆盖（真实用户质疑）
+# ============================================================================
+
+
+async def _create_system(client) -> str:
+    """建临时 System，返回 system_id（测试结束统一清理）。"""
+    r = await client.call_tool(
+        "manage_system", {"action": "create", "name": f"sys-{uuid.uuid4().hex[:8]}"}
+    )
+    return _parse(r)["system_id"]
+
+
+async def _bound_project_ids(db_session, system_id: str) -> set[str]:
+    """直查 system_project 表返回关联 project_id 集合（断言真相源）。"""
+    from sqlalchemy import select as sa_select
+
+    from mem_lake.knowledge.models import SystemProject
+
+    sid = uuid.UUID(system_id)
+    rows = (
+        await db_session.execute(
+            sa_select(SystemProject.project_id).where(SystemProject.system_id == sid)
+        )
+    ).scalars().all()
+    return {str(r) for r in rows}
+
+
+async def _cleanup_system(db_session, system_id: str) -> None:
+    """删除测试产生的 System 与其归属关联（工具内部已 commit，不随回滚）。"""
+    from sqlalchemy import delete
+
+    from mem_lake.knowledge.models import System, SystemProject
+
+    sid = uuid.UUID(system_id)
+    await db_session.execute(
+        delete(SystemProject).where(SystemProject.system_id == sid)
+    )
+    await db_session.execute(delete(System).where(System.id == sid))
+    await db_session.commit()
+
+
+async def test_manage_system_set_projects_is_full_reset(admin_app, db_session):
+    """set_projects=全量重置（覆盖语义锚点）：仅剩传入清单，既有关联被清。"""
+    async with Client(admin_app) as client:
+        sid = await _create_system(client)
+        try:
+            p1, p2, p3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            await client.call_tool("manage_system", {
+                "action": "set_projects", "system_id": sid, "project_ids": [p1, p2],
+            })
+            await client.call_tool("manage_system", {
+                "action": "set_projects", "system_id": sid, "project_ids": [p3],
+            })
+            assert await _bound_project_ids(db_session, sid) == {p3}
+        finally:
+            await _cleanup_system(db_session, sid)
+
+
+async def test_manage_system_add_projects_incremental(admin_app, db_session):
+    """add_projects 增量追加：不覆盖既有关联（语义陷阱修复的核心用例）。"""
+    async with Client(admin_app) as client:
+        sid = await _create_system(client)
+        try:
+            p1, p2, p3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            await client.call_tool("manage_system", {
+                "action": "set_projects", "system_id": sid, "project_ids": [p1, p2],
+            })
+            r = await client.call_tool("manage_system", {
+                "action": "add_projects", "system_id": sid, "project_ids": [p3],
+            })
+            out = _parse(r)
+            assert out.get("added_count") == 1
+            assert await _bound_project_ids(db_session, sid) == {p1, p2, p3}
+        finally:
+            await _cleanup_system(db_session, sid)
+
+
+async def test_manage_system_add_projects_idempotent(admin_app, db_session):
+    """重复 add 同一 project 幂等：不产生重复行，added_count 第二次为 0。"""
+    async with Client(admin_app) as client:
+        sid = await _create_system(client)
+        try:
+            p1 = str(uuid.uuid4())
+            await client.call_tool("manage_system", {
+                "action": "add_projects", "system_id": sid, "project_ids": [p1],
+            })
+            r2 = await client.call_tool("manage_system", {
+                "action": "add_projects", "system_id": sid, "project_ids": [p1],
+            })
+            assert _parse(r2).get("added_count") == 0
+            assert await _bound_project_ids(db_session, sid) == {p1}
+        finally:
+            await _cleanup_system(db_session, sid)
+
+
+async def test_manage_system_remove_projects_precise(admin_app, db_session):
+    """remove_projects 精确删除传入项，其余保留。"""
+    async with Client(admin_app) as client:
+        sid = await _create_system(client)
+        try:
+            p1, p2, p3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            await client.call_tool("manage_system", {
+                "action": "set_projects", "system_id": sid, "project_ids": [p1, p2, p3],
+            })
+            r = await client.call_tool("manage_system", {
+                "action": "remove_projects", "system_id": sid, "project_ids": [p2],
+            })
+            assert _parse(r).get("removed_count") == 1
+            assert await _bound_project_ids(db_session, sid) == {p1, p3}
+        finally:
+            await _cleanup_system(db_session, sid)
