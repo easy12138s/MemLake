@@ -123,9 +123,10 @@ PM/Dev 共享。向量+全文融合检索相似需求（Requirement 类型；按
 | top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | 标签匹配语义：`all`=AND（默认）/`any`=OR |
-| min_score | float | 否 | 向量余弦相似度下限（0~1），默认 0.5；None 关闭阈值 |
+| min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5；None 关闭阈值 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
 | include_engine_details | bool | 否 | 回传 vector/fulltext 引擎明细（调试用），默认 False 仅回 fused 省 token |
+| match_mode | str | 否 | 多词匹配语义：`all`=AND 全词命中（默认）/`any`=任一词命中即召回（宽召回） |
 
 **何时用**：你想"找出某类需求 / 某功能有哪些需求"时。返回仅含 fused（融合+精排后的最终结果）。
 

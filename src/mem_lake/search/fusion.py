@@ -188,6 +188,7 @@ async def hybrid_search(
     filters: FilterSpec | None = None,
     graph_node_id: uuid.UUID | None = None,
     graph_depth: int = 3,
+    fulltext_query: str | None = None,
 ) -> dict[str, Any]:
     """并行三引擎混合检索。
 
@@ -208,10 +209,15 @@ async def hybrid_search(
         filters: 统一过滤条件
         graph_node_id: 图遍历起点节点 ID，None 时不执行图遍历
         graph_depth: 图遍历深度，默认 3
+        fulltext_query: 全文引擎专用查询串（None 时用 query）——向量引擎仍用
+            原 query 保语义完整；match_mode=any 的 OR 连接串在此传入
 
     返回：
-        {"fused": [...], "vector": [...], "fulltext": [...], "graph": [...]}
-        fused 长度 <= top_n，vector/fulltext 长度 <= top_k，graph 长度取决于图遍历结果
+        {"fused": [...], "vector": [...], "fulltext": [...], "graph": [...],
+         "fulltext_tsquery": str}
+        fused 长度 <= top_n，vector/fulltext 长度 <= top_k，graph 长度取决于图遍历结果。
+        fulltext_tsquery 为 websearch_to_tsquery 的文本形态（分词自诊，供调用方
+        解析 query_terms 回显）。
     """
     # 延迟导入避免循环依赖：fusion 被 __init__ 导出，vector/fulltext/graph 也被导出
     from mem_lake.search.fulltext import FullTextSearcher
@@ -221,6 +227,7 @@ async def hybrid_search(
     vector_searcher = VectorSearcher(embedding_client)
     fulltext_searcher = FullTextSearcher()
     graph_searcher = GraphSearcher(graph_store)
+    ft_query = fulltext_query if fulltext_query is not None else query
 
     async def _vector_task() -> list[SearchResult]:
         t = time.time()
@@ -232,9 +239,13 @@ async def hybrid_search(
     async def _fulltext_task() -> list[SearchResult]:
         t = time.time()
         async with AsyncSessionLocal() as s:
-            result = await fulltext_searcher.search(s, query, top_k, filters)
+            result = await fulltext_searcher.search(s, ft_query, top_k, filters)
         SEARCH_ENGINE_DURATION.labels(engine="fulltext").observe(time.time() - t)
         return result
+
+    async def _fulltext_tsquery_task() -> str:
+        async with AsyncSessionLocal() as s:
+            return await fulltext_searcher.explain(s, ft_query)
 
     async def _graph_task() -> list[SearchResult]:
         if graph_node_id is None:
@@ -248,8 +259,10 @@ async def hybrid_search(
         return result
 
     # 并行执行三引擎检索，asyncio.gather 总延迟 ≈ max(三引擎延迟)
-    vector_results, fulltext_results, graph_results = await asyncio.gather(
-        _vector_task(), _fulltext_task(), _graph_task()
+    vector_results, fulltext_results, graph_results, fulltext_tsquery = (
+        await asyncio.gather(
+            _vector_task(), _fulltext_task(), _graph_task(), _fulltext_tsquery_task()
+        )
     )
 
     # 向量与全文 RRF 融合。启用精排时先融合出 ≥ RERANK_TOP_K 的候选池（而非直接截断到
@@ -277,4 +290,5 @@ async def hybrid_search(
         "vector": vector_results,
         "fulltext": fulltext_results,
         "graph": graph_results,
+        "fulltext_tsquery": fulltext_tsquery,
     }
