@@ -327,6 +327,65 @@ class TestEngineDetailsToggle:
         assert out.total == out.returned == 1
 
 
+# ============================================================================
+# match_mode 拆词 / tsquery lexeme 解析（批次二：召回稳定性）
+# ============================================================================
+
+
+class TestBuildFulltextQuery:
+    """_build_fulltext_query：match_mode=any 时查询词 OR 连接（websearch 原生语法）。"""
+
+    def setup_method(self):
+        from mem_lake.gateway.tools.search_tools import _build_fulltext_query
+
+        self.build = _build_fulltext_query
+
+    def test_mode_all_returns_query_asis(self):
+        """all 模式（默认）原样返回，不改变现有行为。"""
+        assert self.build("扫码枪 搜索药品", "all") == "扫码枪 搜索药品"
+
+    def test_mode_any_joins_terms_with_or(self):
+        """any 模式：空白拆词后用 OR 连接，交给 websearch_to_tsquery 做宽召回。"""
+        assert self.build("扫码枪 搜索药品", "any") == "扫码枪 OR 搜索药品"
+
+    def test_mode_any_single_term_unchanged(self):
+        """any 模式单词查询：无变化（OR 连接无意义）。"""
+        assert self.build("登录", "any") == "登录"
+
+    def test_mode_any_collapses_whitespace(self):
+        """多空格归一：拆词后重连接，容忍脏输入。"""
+        assert self.build("  甲    乙  丙 ", "any") == "甲 OR 乙 OR 丙"
+
+    def test_invalid_mode_raises(self):
+        """非法 match_mode 报错（由调用方 to_tool_error 转换）。"""
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="match_mode"):
+            self.build("x", "phrase")
+
+
+class TestParseTsqueryLexemes:
+    """_parse_tsquery_lexemes：从 websearch_to_tsquery 文本提取分词 lexeme 列表。"""
+
+    def test_phrase_and_conjunction(self):
+        from mem_lake.gateway.tools.search_tools import _parse_tsquery_lexemes
+
+        assert _parse_tsquery_lexemes("'扫' <-> '码' <-> '枪' & '搜索' <-> '药品'") == [
+            "扫", "码", "枪", "搜索", "药品",
+        ]
+
+    def test_plain_and(self):
+        from mem_lake.gateway.tools.search_tools import _parse_tsquery_lexemes
+
+        assert _parse_tsquery_lexemes("'甲' & '乙'") == ["甲", "乙"]
+
+    def test_empty_or_malformed_returns_empty(self):
+        from mem_lake.gateway.tools.search_tools import _parse_tsquery_lexemes
+
+        assert _parse_tsquery_lexemes("") == []
+        assert _parse_tsquery_lexemes("''") == []
+
+
 async def _async_return(value):
     return value
 

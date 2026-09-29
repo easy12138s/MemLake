@@ -189,9 +189,10 @@ update_node(
 | top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
-| min_score | float | 否 | 向量相似度下限，默认 0.5 |
+| min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
 | include_engine_details | bool | 否 | 回传 vector/fulltext 引擎明细（调试用），默认 False 仅回 fused 省 token |
+| match_mode | str | 否 | 多词匹配语义：`all`=AND 全词命中（默认）/`any`=任一词命中即召回（宽召回） |
 
 ```python
 search_similar_requirements(
@@ -212,9 +213,10 @@ search_similar_requirements(
 | top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
-| min_score | float | 否 | 向量相似度下限，默认 0.5 |
+| min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
 | include_engine_details | bool | 否 | 回传 vector/fulltext 引擎明细（调试用），默认 False 仅回 fused 省 token |
+| match_mode | str | 否 | 多词匹配语义：`all`=AND 全词命中（默认）/`any`=任一词命中即召回（宽召回） |
 
 ```python
 search_code_snippets(

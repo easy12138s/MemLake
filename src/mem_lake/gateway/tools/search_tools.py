@@ -22,8 +22,9 @@
 """
 
 import logging
+import re
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, computed_field
@@ -99,6 +100,11 @@ class HybridSearchOutput(BaseModel):
     fulltext: list[SearchItemOutput] | None = Field(
         description="全文引擎原始结果（仅 include_engine_details=true 时回传）",
         default=None,
+    )
+    query_terms: list[str] | None = Field(
+        default=None,
+        description="全文引擎实际分词结果（zhparser lexeme，保序去重）——"
+        "检索没命中时可据此自诊「实际用什么词在匹配」",
     )
     candidates_total: int = Field(
         default=0,
@@ -213,6 +219,41 @@ def _resolve_search_scope_fallback(
     )
 
 
+# 全文引擎查询构造：match_mode=any 时按空白拆词 OR 连接（websearch_to_tsquery
+# 原生支持 OR 关键字）；all 保持原样（空格即 AND/短语语义，现状不破坏）。
+def _build_fulltext_query(query: str, match_mode: str) -> str:
+    """按 match_mode 构造全文引擎的查询串。
+
+    - all（默认）：原样返回——websearch_to_tsquery 的空格分隔即 AND 语义
+    - any：空白拆词后用 OR 连接，多词任一命中即召回（多词宽召回场景，
+      直击「多词混合查询全文 0 贡献、被向量噪声占据」的反馈问题）
+    连续中文串不拆（无分隔信息），交由 zhparser 整体切词——与索引端口径一致。
+    """
+    if match_mode == "all":
+        return query
+    if match_mode == "any":
+        terms = [t for t in query.split() if t]
+        if len(terms) <= 1:
+            return query
+        return " OR ".join(terms)
+    raise ValueError(f"非法 match_mode: {match_mode!r}，合法值: all/any")
+
+
+# tsquery lexeme 解析：从 websearch_to_tsquery 的文本形态提取分词结果，
+# 回显 query_terms 供调用方自诊「实际用什么词在匹配」（反馈建议 3）。
+_LEXEME_RE = re.compile(r"'([^']+)'")
+
+
+def _parse_tsquery_lexemes(tsquery_text: str) -> list[str]:
+    """解析 tsquery 文本（如 '扫'<->'码' & '搜索'）为 lexeme 列表（保序去重）。"""
+    seen: list[str] = []
+    for m in _LEXEME_RE.finditer(tsquery_text or ""):
+        lex = m.group(1)
+        if lex and lex not in seen:
+            seen.append(lex)
+    return seen
+
+
 # ============================================================================
 # 检索工具注册
 # ============================================================================
@@ -256,6 +297,12 @@ def register_search_tools(mcp: FastMCP) -> None:
             description="回传 vector/fulltext 引擎原始明细（调试/评估检索质量用）。"
             "默认 false 仅回 fused 最终结果——明细每页约 30KB，会显著增加 token 消耗",
         ),
+        match_mode: Literal["all", "any"] = Field(
+            default="all",
+            description="多词匹配语义（仅影响全文引擎）：all=AND 全词命中（默认）；"
+            "any=任一词命中即召回（宽召回，适合多关键词清单式检索）。"
+            "出参 query_terms 回显实际分词结果",
+        ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索相似需求（Requirement 类型；按 system 或 project 隔离）。
 
@@ -264,8 +311,9 @@ def register_search_tools(mcp: FastMCP) -> None:
         system 维度：传 system_id 检索该系统全部需求（含悬浮，project 可空）；dev 可用
         system_id 定位可见 system 的需求 UUID，再引用实现建边。与 project_id 均不传时，
         按 Access Key 绑定的 system 兜底（绑定唯一 system 时自动用之，否则报错提示）。
-        注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
-        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）；
+        注意：min_score 仅过滤**纯向量命中**的弱相关噪声（默认 0.5）；
+        有全文命中的节点不受该阈值影响（关键词精确匹配始终保留）——
+        min_score=0.99 可用于「只要全文精确命中」的清单式穷举；
         fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
@@ -298,6 +346,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 min_score=min_score,
                 semantic_tags=semantic_tags,
                 include_engine_details=include_engine_details,
+                match_mode=match_mode,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e) from e
@@ -331,6 +380,12 @@ def register_search_tools(mcp: FastMCP) -> None:
             description="回传 vector/fulltext 引擎原始明细（调试/评估检索质量用）。"
             "默认 false 仅回 fused 最终结果——明细每页约 30KB，会显著增加 token 消耗",
         ),
+        match_mode: Literal["all", "any"] = Field(
+            default="all",
+            description="多词匹配语义（仅影响全文引擎）：all=AND 全词命中（默认）；"
+            "any=任一词命中即召回（宽召回，适合多关键词清单式检索）。"
+            "出参 query_terms 回显实际分词结果",
+        ),
     ) -> HybridSearchOutput:
         """向量+全文融合检索研发资产（同项目内 CodeSnippet/Pitfall/Solution/DesignIntent 类型）。
 
@@ -338,8 +393,9 @@ def register_search_tools(mcp: FastMCP) -> None:
         RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
         除代码片段外，踩坑(Pitfall)/方案(Solution)/设计意图(DesignIntent) 也会一并召回，
         便于「踩过的坑」「采用的方案」等经验类检索。返回项的 node_type 区分具体类型。
-        注意：默认 min_score=0.5 会滤除弱相关噪声（返回绝对更相关的结果）；
-        无向量分的全文命中结果不被该阈值过滤（保留关键词精确匹配）；
+        注意：min_score 仅过滤**纯向量命中**的弱相关噪声（默认 0.5）；
+        有全文命中的节点不受该阈值影响（关键词精确匹配始终保留）——
+        min_score=0.99 可用于「只要全文精确命中」的清单式穷举；
         fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
         fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
         tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
@@ -362,6 +418,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 min_score=min_score,
                 semantic_tags=semantic_tags,
                 include_engine_details=include_engine_details,
+                match_mode=match_mode,
             )
         except (SchemaValidationError, ValueError) as e:
             raise to_tool_error(e) from e
@@ -557,12 +614,18 @@ async def _run_hybrid_search(
     min_score: float | None = None,
     semantic_tags: bool = False,
     include_engine_details: bool = False,
+    match_mode: str = "all",
 ) -> HybridSearchOutput:
     """执行三引擎融合检索的共享辅助函数。
 
     search_similar_requirements 与 search_code_snippets 共用此函数，
-    仅 node_types 参数不同。min_score 按向量余弦分过滤融合结果。
+    仅 node_types 参数不同。min_score 过滤规则（ISSUE-02 修复）：**仅过滤
+    纯向量命中**——有全文命中的节点不受阈值影响（此前实现把向量低分捎带
+    召回的全文命中一并误杀，docstring 已声明的语义以本行为为准）。
     semantic_tags=true 时，先用 embedding 将 tags 扩展为项目内语义相近标签再过滤。
+
+    match_mode=any 时全文引擎按空白拆词 OR 连接（多词任一命中即召回），
+    向量引擎仍用原 query；默认 all 保持 websearch 的 AND 语义。
 
     system 维度：传 project_id 检索该 project 资产；传 system_id 检索该系统全部需求
     （含悬浮需求）。二者都不传时用 project_scope 内全部 project 检索。
@@ -601,30 +664,42 @@ async def _run_hybrid_search(
         tags_op=tags_op,
     )
 
+    # 引擎候选池联动 top_n（ISSUE-02 现象 A）：此前 top_k 恒默认 50，
+    # 用户请求 top_n=200/500 时候选池仍被 50 掐死、结果集莫名偏小。
+    # clamp 上限防极端 top_n 拖库。
+    engine_top_k = min(max(top_n, 50), 500)
+
     # hybrid_search 内部为每引擎自建独立 session（AsyncSession 非并发安全）
     result = await hybrid_search(
         query=query,
         embedding_client=lifespan_ctx.embedding_client,
         graph_store=lifespan_ctx.graph_store,
+        top_k=engine_top_k,
         top_n=top_n,
         filters=filters,
+        fulltext_query=_build_fulltext_query(query, match_mode),
     )
 
     # 向量 cosine 分映射，用于 min_score 过滤与 fused 结果附带 vector_score
     vector_score_map = {
         r.node_id: r.score for r in result.get("vector", []) if r.score is not None
     }
+    # 全文引擎命中集：min_score 豁免依据（ISSUE-02 现象 B/C 修复）——
+    # 有全文命中的节点不受阈值影响。此前实现只看 vector_score_map 归属，
+    # 把"向量低分捎带召回 + 精确全文命中"的节点一并误杀（0 召回的根因）。
+    fulltext_ids = {r.node_id for r in result.get("fulltext", [])}
 
     fused_raw = result.get("fused", [])
     if min_score is not None:
-        # 仅对"有向量分"的节点按 min_score 过滤；无向量分的全文命中节点予以保留
+        # 仅过滤"纯向量命中"节点；有全文命中或无向量分的节点予以保留
         # candidates_total 记录过滤前条数（ISSUE-03：total/returned 随 top_n 变化，
         # 非命中总数；评估命中总量以 candidates_total 为准）
         candidates_total = len(fused_raw)
         fused_raw = [
             r
             for r in fused_raw
-            if r.node_id not in vector_score_map
+            if r.node_id in fulltext_ids
+            or r.node_id not in vector_score_map
             or vector_score_map.get(r.node_id, -1) >= min_score
         ]
     else:
@@ -643,6 +718,7 @@ async def _run_hybrid_search(
             if include_engine_details
             else None
         ),
+        query_terms=_parse_tsquery_lexemes(result.get("fulltext_tsquery", "")),
         candidates_total=candidates_total,
         total=len(fused_raw),
     )

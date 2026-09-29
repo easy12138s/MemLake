@@ -96,3 +96,15 @@ class FullTextSearcher:
             )
 
         return search_results
+
+    async def explain(self, session: AsyncSession, query: str) -> str:
+        """返回 websearch_to_tsquery('chinese', query) 的文本形态（分词自诊）。
+
+        工具层据此解析 query_terms 回显给调用方：检索没命中时可以看到
+        「实际用什么词在匹配」（如 websearch 空格=AND、zhparser 切词结果）。
+        与 search 使用同一 tsquery 构造函数，保证口径一致。
+        """
+        row = await session.execute(
+            select(func.websearch_to_tsquery("chinese", query).label("tsq"))
+        )
+        return str(row.scalar_one())

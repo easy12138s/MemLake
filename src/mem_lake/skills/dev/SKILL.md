@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.7.0
+version: 1.8.0
 ---
 
 # Dev Skills（开发者）
@@ -62,7 +62,10 @@ version: 1.7.0
 
 > **多需求锚定**：一条知识要挂到多个需求时，省略 `requirement_id`（其自动建边仅对 CodeSnippet 生效），在 `relations` 中显式声明全部需求→产物边——省略 `requirement_id` 时 `relations` **照常解析生效**，可放心使用。
 
-> **单次检索 ≠ 全集**：检索结果受 top_n 截断与 min_score 过滤影响，清单类任务（"列出某批次全部需求"）不可依赖单次调用；可用 `min_score=0.99`（只留全文精确命中）+ 较大 `top_n` + 多组关键词取并集，出参的 `candidates_total` 是阈值过滤前的候选数、`returned` 是实际返回条数。
+> **单次检索 ≠ 全集**：检索结果受 top_n 截断与 min_score 过滤影响，清单类任务（"列出某批次全部需求"）不可依赖单次调用。两个可靠通道：
+> - `min_score=0.99`：只保留**有全文命中**的节点（关键词精确匹配，min_score 不再误杀全文命中）+ 较大 `top_n` + 多组关键词取并集
+> - `match_mode="any"`：多关键词任一命中即召回（宽召回），适合"把含这些词的都找出来"的场景
+> 出参 `query_terms` 回显全文引擎实际分词结果，检索没命中时可自诊；`candidates_total` 是阈值过滤前候选数、`returned` 是实际返回条数。
 
 > **实现前先看需求（system 维度）**：需求可按 `system_id` 隔离、且可能是"悬浮"（project 为空、先于实现）。要定位可见的 System 需求，用 `search_similar_requirements(project_id=...)` 或加 `system_id=...`（你被 admin 通过 `manage_system.bind_keys` 绑定的 system），拿到需求 UUID 后 `submit_dev_artifacts(requirement_id=UUID, ...)` 建 implements 边。
 

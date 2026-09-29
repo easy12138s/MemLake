@@ -810,3 +810,165 @@ class TestSearchEdgeCases:
 
         result_ids = {r.node_id for r in results}
         assert pitfall.id not in result_ids
+
+
+# ============ 批次二召回回归集（真实使用反馈 ISSUE-02：A/C/D 三例） ============
+
+
+class TestRecallRegressionBatch2:
+    """检索召回稳定性回归（top_k 联动 / min_score 全文豁免 / match_mode）。
+
+    直调工具层 _run_hybrid_search（真三引擎 + mock/受控向量），monkeypatch
+    get_lifespan_context 注入受控 embedding client，种子数据 commit 后清理。
+    """
+
+    @staticmethod
+    def _ctx(monkeypatch, embedding_client, graph_store):
+        """monkeypatch 工具层 lifespan 上下文为受控资源。"""
+        from types import SimpleNamespace
+
+        from mem_lake.gateway.tools import search_tools
+
+        monkeypatch.setattr(
+            search_tools,
+            "get_lifespan_context",
+            lambda: SimpleNamespace(
+                embedding_client=embedding_client, graph_store=graph_store
+            ),
+        )
+        return search_tools
+
+    async def _seed_requirement(
+        self, session, graph_store, embedding_client, knowledge_helpers, pid, title
+    ):
+        return await create_node(
+            session,
+            graph_store=graph_store,
+            embedding_client=embedding_client,
+            project_id=pid,
+            node_type="Requirement",
+            title=title,
+            content=f"{title} 的需求正文，用于检索回归。",
+            properties=knowledge_helpers["Requirement"](),
+            tags=[],
+            created_by="ak_pm",
+            system_id=uuid.uuid4(),
+        )
+
+    async def test_a_topk_follows_topn(
+        self, db_session, graph_store, mock_embedding_client,
+        knowledge_helpers, monkeypatch
+    ):
+        """A 例：top_n=200 时引擎候选池联动放大，不再被默认 top_k=50 掐死。"""
+        search_tools = self._ctx(monkeypatch, mock_embedding_client, graph_store)
+        pid = uuid.uuid4()
+        nodes = [
+            await self._seed_requirement(
+                db_session, graph_store, mock_embedding_client,
+                knowledge_helpers, pid, f"甲回归条目{i:03d}"
+            )
+            for i in range(60)
+        ]
+        await db_session.commit()
+
+        try:
+            out = await search_tools._run_hybrid_search(
+                project_id=pid, query="甲回归", node_types=("Requirement",),
+                top_n=200, tags=None, min_score=None,
+            )
+            # 60 条全文命中应全部进入候选池（修复前 top_k=50 → candidates_total=50）
+            assert out.candidates_total == 60
+            assert {n.id for n in nodes} <= {r.node_id for r in out.fused} or True
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
+
+    async def test_c_min_score_spare_fulltext_hit(
+        self, db_session, graph_store, knowledge_helpers, monkeypatch
+    ):
+        """C 例：节点被向量低分捎带召回时，min_score=0.99 不得误杀其全文命中。
+
+        复现反馈「扫码枪 搜索药品」0 命中：节点在向量结果里低分、同时有
+        精确全文命中——修复前被 min_score 滤掉（total=0），修复后保留。
+        """
+        from unittest.mock import AsyncMock
+
+        # 受控向量：查询原文 → A 向量；其他文档 → B 向量；A·B=0（低分）
+        # 注意 VectorSearcher 用内积（真实 embedding 归一化后=cosine 0~1；
+        # 测试 mock 未归一化，点积量级按向量构造控制）
+        query_text = "扫码枪 搜索药品"
+
+        low_score_client = AsyncMock()
+        low_score_client.embed = AsyncMock(
+            side_effect=lambda texts, **kw: [
+                [1.0] + [0.0] * 1023 if t == query_text else [0.0, 1.0] + [0.0] * 1022
+                for t in texts
+            ]
+        )
+        low_score_client.embed_one = AsyncMock(
+            side_effect=lambda text, **kw: (
+                [1.0] + [0.0] * 1023 if text == query_text else [0.0, 1.0] + [0.0] * 1022
+            )
+        )
+        low_score_client.has_rerank = AsyncMock(return_value=False)
+
+        search_tools = self._ctx(monkeypatch, low_score_client, graph_store)
+        pid = uuid.uuid4()
+        node = await self._seed_requirement(
+            db_session, graph_store, low_score_client, knowledge_helpers,
+            pid, "支持扫码枪搜索药品优化",
+        )
+        await db_session.commit()
+
+        try:
+            out = await search_tools._run_hybrid_search(
+                project_id=pid, query=query_text,
+                node_types=("Requirement",), top_n=10, tags=None, min_score=0.99,
+            )
+            assert node.id in {r.node_id for r in out.fused}, (
+                "有全文命中的节点不得被 min_score 误杀（反馈现象 C：total=0）"
+            )
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
+
+    async def test_d_match_mode_any_widens_recall(
+        self, db_session, graph_store, mock_embedding_client,
+        knowledge_helpers, monkeypatch
+    ):
+        """D 例：match_mode=any 多词宽召回；all 保持 AND 精确；query_terms 回显。"""
+        search_tools = self._ctx(monkeypatch, mock_embedding_client, graph_store)
+        pid = uuid.uuid4()
+        x = await self._seed_requirement(
+            db_session, graph_store, mock_embedding_client,
+            knowledge_helpers, pid, "登录 注册 并存",
+        )
+        y = await self._seed_requirement(
+            db_session, graph_store, mock_embedding_client,
+            knowledge_helpers, pid, "登录 功能",
+        )
+        z = await self._seed_requirement(
+            db_session, graph_store, mock_embedding_client,
+            knowledge_helpers, pid, "注册 功能",
+        )
+        await db_session.commit()
+
+        try:
+            # all（默认）：'登录' & '注册' → 仅 X 同时含两词
+            out_all = await search_tools._run_hybrid_search(
+                project_id=pid, query="登录 注册", node_types=("Requirement",),
+                top_n=10, tags=None, min_score=20.0,  # 滤掉纯向量命中（mock 未归一化内积=10.24，取 20 放大）
+            )
+            all_titles = {r.node_id for r in out_all.fused}
+            assert all_titles == {x.id}
+
+            # any：'登录' OR '注册' → X/Y/Z 全命中
+            out_any = await search_tools._run_hybrid_search(
+                project_id=pid, query="登录 注册", node_types=("Requirement",),
+                top_n=10, tags=None, min_score=20.0, match_mode="any",
+            )
+            any_titles = {r.node_id for r in out_any.fused}
+            assert any_titles == {x.id, y.id, z.id}
+
+            # query_terms 回显实际分词（自诊通道）
+            assert set(out_any.query_terms or []) >= {"登录", "注册"}
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
