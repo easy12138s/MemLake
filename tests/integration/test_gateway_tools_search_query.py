@@ -280,14 +280,88 @@ class TestAnalyzeImpactScope:
     async def test_impact_analysis_nonexistent_requirement(
         self, db_session, graph_store
     ):
-        """不存在需求节点的影响范围分析返回 requirement=None。"""
+        """不存在需求节点时明确报错（09-29 报告：静默全空结构导致 Agent 误判 not_found）。"""
+        import pytest as _pytest
+
+        from mem_lake.search.graph import GraphSearcher
+        searcher = GraphSearcher(graph_store)
+        with _pytest.raises(ValueError, match="不存在"):
+            await searcher.impact_analysis(
+                db_session, requirement_id=uuid.uuid4(), max_depth=5
+            )
+
+    async def test_impact_analysis_references_and_described_by_visible(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """09-29 报告 P0-1：references/described_by 挂载的资产对影响分析可见。
+
+        按官方写入契约沉淀的存量资产（references 边）+ described_by 挂载的
+        Pitfall 必须进入影响范围，且返回结构含 pitfalls 段。
+        """
+        project_id = uuid.uuid4()
+        req_node = await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="门诊收费需求",
+            content="收费单关单",
+            properties=knowledge_helpers["Requirement"](),
+            created_by="ak_pm",
+            system_id=uuid.uuid4(),
+        )
+        sol_node = await create_node(
+            db_session, graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id, node_type="Solution",
+            title="双锚点分离方案", content="跨代同步：双锚点分离",
+            properties=knowledge_helpers["Solution"](),
+            created_by="ak_dev",
+        )
+        intent_node = await create_node(
+            db_session, graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id, node_type="DesignIntent",
+            title="收费通道互斥门禁", content="互斥门禁意图",
+            properties=knowledge_helpers["DesignIntent"](),
+            created_by="ak_dev",
+        )
+        pit_node = await create_node(
+            db_session, graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id, node_type="Pitfall",
+            title="adjust_total_price 误判陷阱", content="退费行不含比例",
+            properties=knowledge_helpers["Pitfall"](),
+            created_by="ak_dev",
+        )
+        from mem_lake.knowledge.repository import add_edge
+        for target, etype in (
+            (sol_node, "references"),
+            (intent_node, "references"),
+            (pit_node, "described_by"),
+        ):
+            await add_edge(
+                db_session, graph_store=graph_store,
+                from_id=req_node.id, to_id=target.id,
+                edge_type=etype, actor="ak_dev",
+            )
+
         from mem_lake.search.graph import GraphSearcher
         searcher = GraphSearcher(graph_store)
         result = await searcher.impact_analysis(
-            db_session, requirement_id=uuid.uuid4(), max_depth=5
+            db_session, requirement_id=req_node.id, max_depth=5
         )
-        assert result["requirement"] is None
-        assert result["codes"] == []
+        def titles(seg):
+            return {
+                (d.get("properties") or {}).get("title")
+                for d in result.get(seg, [])
+            }
+        assert "双锚点分离方案" in titles("solutions"), "references 挂载的 Solution 必须可见"
+        assert "收费通道互斥门禁" in titles("design_intents"), "references 挂载的 DesignIntent 必须可见"
+        assert "adjust_total_price 误判陷阱" in titles("pitfalls"), (
+            "described_by 挂载的 Pitfall 必须进入新返回段 pitfalls"
+        )
 
 
 # ============================================================================

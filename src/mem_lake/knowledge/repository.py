@@ -797,6 +797,16 @@ async def get_system_by_code(session: AsyncSession, code: str) -> System | None:
     return result.scalar_one_or_none()
 
 
+async def get_system_ids_by_project(
+    session: AsyncSession, *, project_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """反查 project 归属的全部 system 域 ID（批次四：跨 project 冲突候选域）。"""
+    result = await session.execute(
+        select(SystemProject.system_id).where(SystemProject.project_id == project_id)
+    )
+    return list(result.scalars().all())
+
+
 async def count_system_projects(
     session: AsyncSession, *, system_id: uuid.UUID
 ) -> int:

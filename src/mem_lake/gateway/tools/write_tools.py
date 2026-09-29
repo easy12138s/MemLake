@@ -685,7 +685,10 @@ def _build_dev_items(
 
     结构：
     - code_snippets/solutions/design_intents/pitfalls 各项 → node item（含 ref）
-    - 自动构造：Requirement requirement_id --implements--> 每个 CodeSnippet
+    - 自动构造（requirement_id 存在时四类统一）：
+      CodeSnippet→implements / Solution→realized_by / DesignIntent→embodies /
+      Pitfall→described_by（09-29 报告 P0-1 修复：边类型与 analyze_impact_scope
+      遍历链对齐，方案/意图/坑不再需要显式 relations 声明）
     - relations 中每项 → edge item（from_ref/to_ref 直接用输入字符串）
     """
     items: list[dict[str, Any]] = []
@@ -751,16 +754,27 @@ def _build_dev_items(
             )
         )
 
-    # 2. 自动构造 Requirement --implements--> CodeSnippet 关系（仅当关联需求存在）
+    # 2. 自动构造 Requirement --> 产物 的语义边（仅当关联需求存在）。
+    #    批次四（09-29 报告 P0-1）：四类产物统一自动建边——此前仅 CodeSnippet
+    #    自动建 implements，坑/方案/意图按文档须显式 relations 声明，实践中
+    #    挂通用 references 边导致 analyze_impact_scope（implements/realized_by/
+    #    embodies/described_by 遍历链）永久不可见。
     if requirement_id is not None:
-        for code in artifacts.code_snippets:
-            items.append(
-                build_edge_item(
-                    from_ref=str(requirement_id),
-                    to_ref=code.ref,
-                    edge_type="implements",
+        auto_edge_map = (
+            (artifacts.code_snippets, "implements"),
+            (artifacts.solutions, "realized_by"),
+            (artifacts.design_intents, "embodies"),
+            (artifacts.pitfalls, "described_by"),
+        )
+        for art_list, edge_type in auto_edge_map:
+            for art in art_list:
+                items.append(
+                    build_edge_item(
+                        from_ref=str(requirement_id),
+                        to_ref=art.ref,
+                        edge_type=edge_type,
+                    )
                 )
-            )
 
     # 2b. 游离知识点（无需求）：自动挂到 ProjectProfile 节点（若该节点存在）
     if profile_id is not None:

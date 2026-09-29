@@ -52,6 +52,7 @@ async def detect_conflicts(
     *,
     vector_searcher: VectorSearcher,
     project_id: uuid.UUID | None = None,
+    project_ids: tuple[uuid.UUID, ...] | None = None,
     system_id: uuid.UUID | None = None,
     node_type: str,
     title: str,
@@ -76,6 +77,7 @@ async def detect_conflicts(
         session: 异步数据库会话
         vector_searcher: VectorSearcher 实例
         project_id: 项目 ID（L1 过滤；悬浮需求为 None）
+        project_ids: 跨 project 候选域（L1 过滤；asset 检测的 system 维度展开）
         system_id: 归属 system 域（L1 过滤；悬浮需求按此收口候选域），默认 None
         node_type: 节点类型（L1 过滤）
         title: 待检测节点标题
@@ -110,8 +112,14 @@ async def detect_conflicts(
     # 落库向量的构造一致（含属性段，属性富集提升"同实体"识别）。
     # query_vector 非空时跳过内部 embed，直接使用调用方批量预计算的查询向量（批量化优化）。
     # 悬浮需求（project_id=None）按 system_id 收口冲突候选域。
+    # project_ids（批次四）：跨 project 候选域——asset 检测时按 system 维度收口
+    # （09-29 报告场景 D 根因：旧 project 的同类节点不在单 project 候选域，
+    #  语义重复静默通过 → 知识库自我稀释）
     filters = FilterSpec(
-        project_id=project_id, system_id=system_id, node_types=(node_type,)
+        project_id=project_id,
+        project_ids=project_ids,
+        system_id=system_id,
+        node_types=(node_type,),
     )
     if query_vector is not None:
         vector_results = await vector_searcher.search_by_vector(
@@ -165,6 +173,7 @@ async def detect_conflicts(
     exact_conflicts = await _detect_exact_key_conflicts(
         session,
         project_id=project_id,
+        project_ids=project_ids,
         system_id=system_id,
         node_type=node_type,
         properties=properties,
@@ -191,6 +200,7 @@ async def _detect_exact_key_conflicts(
     session: AsyncSession,
     *,
     project_id: uuid.UUID | None = None,
+    project_ids: tuple[uuid.UUID, ...] | None = None,
     system_id: uuid.UUID | None = None,
     node_type: str,
     properties: dict[str, Any],
@@ -220,6 +230,10 @@ async def _detect_exact_key_conflicts(
     ]
     if project_id is not None:
         conditions.append(KnowledgeNode.project_id == project_id)
+    if project_ids:
+        # 批次四修复：签名早有 project_ids 但未使用——候选域交由 project_ids
+        #（system 维度展开）时 L0 失去 project 过滤，全库精确匹配误报历史节点
+        conditions.append(KnowledgeNode.project_id.in_(project_ids))
     if system_id is not None:
         conditions.append(KnowledgeNode.system_id == system_id)
     for field in key_fields:

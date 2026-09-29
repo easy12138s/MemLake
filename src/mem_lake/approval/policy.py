@@ -113,10 +113,42 @@ async def auto_process_batch(
         _conflict_pid = _to_uuid(_pid_raw) if _pid_raw else None
         _conflict_sid = _to_uuid(_sid_raw) if _sid_raw else None
 
+        # 批次四（09-29 报告场景 D 根因）：asset 类型节点（CodeSnippet/Solution/
+        # DesignIntent/Pitfall）的候选域扩为 system 维度——反查该 project 所属
+        # 的全部 system，取这些 system 下全部项目集。跨 project 同类语义重复
+        # 不再静默通过（此前单 project 候选域导致查重失效→知识库自我稀释）。
+        # 未挂载任何 system 的 project 行为不变（候选域=本 project）。
+        _conflict_pids: tuple[uuid.UUID, ...] | None = None
+        if (
+            _conflict_sid is None
+            and _conflict_pid is not None
+            and item.entity_type in ("CodeSnippet", "Solution", "DesignIntent", "Pitfall")
+        ):
+            # 候选域展开是「尽力扩大查重范围」：查询失败退化为单 project
+            #（原语义），不让审批主流程因查重增强而失败
+            try:
+                from mem_lake.knowledge.repository import (
+                    get_system_ids_by_project,
+                    get_system_project_ids,
+                )
+
+                related_systems = await get_system_ids_by_project(
+                    session, project_id=_conflict_pid
+                )
+                pid_set: set[uuid.UUID] = {_conflict_pid}
+                for sid in related_systems:
+                    pid_set.update(await get_system_project_ids(session, system_id=sid))
+                _conflict_pids = tuple(pid_set)
+            except Exception:  # noqa: BLE001 - 查重增强降级，不阻断审批
+                _conflict_pids = None
+
         conflict_result = await _svc.detect_conflicts(
             session,
             vector_searcher=vector_searcher,
-            project_id=_conflict_pid,
+            # project_ids 生效时单值 project_id 必须置 None——FilterSpec 两条件
+            # 为 AND 组合，同时传会把候选域锁回单 project（本批次实测抓出）
+            project_id=_conflict_pid if _conflict_pids is None else None,
+            project_ids=_conflict_pids,
             system_id=_conflict_sid,
             node_type=item.entity_type,
             title=payload["title"],
