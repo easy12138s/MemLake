@@ -49,10 +49,10 @@ class TestSkillsFiles:
             assert ".agents/skills/" in body
 
     def test_version_1_9_0(self):
-        """1.10.0：manage_system 增量归属 action（add/remove_projects）。"""
+        """1.11.0：批次四五——自动边四映射/system 维度检索/回执增强。"""
         for role in ("admin", "pm", "dev"):
             _, version = _load_skill(role)
-            assert version == "1.10.0"
+            assert version == "1.11.0"
 
     def test_github_distribution_note(self):
         """文件含 GitHub 分发说明（raw URL 指引）。"""

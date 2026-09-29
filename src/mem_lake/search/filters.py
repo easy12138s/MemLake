@@ -13,8 +13,10 @@ from datetime import datetime
 from sqlalchemy import ARRAY, Text, cast
 from sqlalchemy.sql.elements import ColumnElement
 
-from mem_lake.knowledge.models import KnowledgeNode
-from mem_lake.knowledge.schema import NODE_TYPES
+# 注意：mem_lake.knowledge 的任何模块级导入（含 schema）都会触发
+# knowledge.__init__ → repository → filters（部分初始化）的循环
+#（test_fusion 单独收集时实触发）——KnowledgeNode 与 NODE_TYPES
+# 均在函数体内延迟导入
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,8 @@ class FilterSpec:
     def __post_init__(self) -> None:
         """校验 node_types 必须在 NODE_TYPES 白名单内，非法类型立即抛错。"""
         if self.node_types is not None:
+            from mem_lake.knowledge.schema import NODE_TYPES
+
             invalid = set(self.node_types) - NODE_TYPES
             if invalid:
                 raise ValueError(
@@ -64,6 +68,8 @@ def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
     """
     if spec is None:
         return []
+
+    from mem_lake.knowledge.models import KnowledgeNode
 
     clauses: list[ColumnElement[bool]] = []
 
@@ -115,6 +121,8 @@ def node_active_approved() -> list[ColumnElement[bool]]:
     - 各调用点 `.where(*node_active_approved())` 组合到既有条件
     - 语义与 compile_sqlalchemy 默认 FilterSpec（status="approved" + exclude_deleted）一致
     """
+    from mem_lake.knowledge.models import KnowledgeNode
+
     return [
         KnowledgeNode.status == "approved",
         KnowledgeNode.is_deleted.is_(False),

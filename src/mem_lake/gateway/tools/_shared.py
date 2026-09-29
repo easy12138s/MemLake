@@ -102,18 +102,56 @@ class WriteToolOutput(BaseModel):
             "（有冲突，批次停在 pending 需 admin 处理）；严格模式为 None"
         ),
     )
+    created: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "已入库节点清单（宽松模式 auto_approved 时返回）："
+            "[{ref, node_id, node_type, title}]——写入回执的确定性依据"
+            "（09-29 报告 P1-2：此前不返回 node_id，写入最后一公里靠 Agent 反查）"
+        ),
+    )
+    edges_created: int | None = Field(
+        default=None,
+        description="已建立的边数量（宽松模式 auto_approved 时返回）",
+    )
 
     @classmethod
     def from_batch(
         cls, batch: "ApprovalBatch", decision: str | None = None
     ) -> "WriteToolOutput":
-        """从 ApprovalBatch ORM 对象构造输出。"""
+        """从 ApprovalBatch ORM 对象构造输出。
+
+        宽松模式 auto_approved：附 created（node 项 target_id 已回填）与
+        edges_created（批次内 edge 项数；建边失败即整批回滚，无部分失败态）。
+        """
+        created = None
+        edges_created = None
+        if decision == "auto_approved" and batch.items:
+            created = [
+                {
+                    "ref": (it.payload or {}).get("ref"),
+                    "node_id": str(it.target_id),
+                    "node_type": it.entity_type,
+                    "title": (it.payload or {}).get("title"),
+                }
+                for it in batch.items
+                if it.item_type == "node"
+                and it.action == "create"
+                and it.target_id is not None
+            ]
+            edges_created = sum(
+                1
+                for it in batch.items
+                if it.item_type == "edge"
+            )
         return cls(
             batch_id=batch.id,
             status=batch.status,
             submitted_at=batch.submitted_at,
             item_count=len(batch.items) if batch.items else 0,
             decision=decision,
+            created=created,
+            edges_created=edges_created,
         )
 
 

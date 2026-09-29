@@ -13,7 +13,7 @@
 |------|------|------|------|
 | project_id | UUID | 是 | 项目 ID |
 | artifacts | dict | 否 | 嵌套产物集合，结构见下 |
-| requirement_id | UUID | 否 | 关联的需求节点 ID（自动为每个 CodeSnippet 构造 implements 边） |
+| requirement_id | UUID | 否 | 关联的需求 ID（四类统一自动建边：CodeSnippet→implements / Solution→realized_by / DesignIntent→embodies / Pitfall→described_by） |
 | relations | list[dict] | 否 | 节点间关系（用 ref 引用）|
 | operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
 
@@ -207,8 +207,9 @@ search_similar_requirements(
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | 是 | 归属项目 ID |
 | query | str | 是 | 查询文本 |
+| project_id | UUID | 否 | 归属项目 ID（与 system_id 均不传时按 Key 绑定 system 兜底） |
+| system_id | UUID | 否 | 归属 system 域——检索该系统下全部项目的资产（症状式检索推荐） |
 | top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |

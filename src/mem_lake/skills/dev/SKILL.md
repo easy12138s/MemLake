@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.10.0
+version: 1.11.0
 ---
 
 # Dev Skills（开发者）
@@ -60,7 +60,7 @@ version: 1.10.0
 2. 若命中已有节点：不要重复提交新节点，改用 `submit_dev_artifacts(...)` 的 `relations`（from_ref/to_ref 引用命中节点 UUID 或批次内 ref）建立 `depends_on`/`realized_by`/`embodies`/`traces_to`/`described_by` 等引用边，让新产物挂接到既有知识上；
 3. 若未命中：再提交新产物。
 
-> **多需求锚定**：一条知识要挂到多个需求时，省略 `requirement_id`（其自动建边仅对 CodeSnippet 生效），在 `relations` 中显式声明全部需求→产物边——省略 `requirement_id` 时 `relations` **照常解析生效**，可放心使用。
+> **多需求锚定**：一条知识要挂到多个需求时，省略 `requirement_id`（自动建边语义见下），在 `relations` 中显式声明全部需求→产物边——省略 `requirement_id` 时 `relations` **照常解析生效**，可放心使用。
 
 > **单次检索 ≠ 全集**：检索结果受 top_n 截断与 min_score 过滤影响，清单类任务（"列出某批次全部需求"）不可依赖单次调用。两个可靠通道：
 > - `min_score=0.99`：只保留**有全文命中**的节点（关键词精确匹配，min_score 不再误杀全文命中）+ 较大 `top_n` + 多组关键词取并集

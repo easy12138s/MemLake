@@ -283,3 +283,19 @@ async def test_embed_422_not_retried(monkeypatch):
     with pytest.raises(EmbeddingError):
         await client.embed(["a"])
     assert len(fake.requests) == 1  # 仅尝试一次
+
+
+async def test_error_retryable_flags(monkeypatch):
+    """批次五（报告 P2-1）：ConnectError → retryable=True；ReadTimeout → False。"""
+    monkeypatch.setattr(embedding_client_module, "RETRY_BASE_DELAY", 0.0)
+    client, _ = _make_scripted_client(monkeypatch, [httpx.ReadTimeout("")])
+    with pytest.raises(EmbeddingError) as ei:
+        await client.embed(["a"])
+    assert ei.value.retryable is False
+
+    client2, _ = _make_scripted_client(
+        monkeypatch, [httpx.ConnectError("x")] * (embedding_client_module.MAX_RETRIES + 1)
+    )
+    with pytest.raises(EmbeddingError) as ei2:
+        await client2.embed(["a"])
+    assert ei2.value.retryable is True
