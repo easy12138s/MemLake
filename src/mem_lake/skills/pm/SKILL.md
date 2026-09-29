@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, requirement, PRD."
-version: 1.8.0
+version: 1.9.0
 ---
 
 # PM Skills（产品经理）
@@ -69,13 +69,12 @@ version: 1.8.0
 ### 检索类
 - **search_similar_requirements** — 检索相似需求（向量+全文融合）
 - **analyze_impact_scope** — 分析变更影响范围（需求→代码→依赖→方案→意图）
+- **list_requirements** — 清单式枚举需求（分页+module/source_doc 前缀过滤）
 - **get_requirement_context** — 查询需求上下文（关联节点+关系链）
 - **check_requirement_conflicts** — 排查需求冲突（向量相似度检测）
 
 ### 查询类
-- **get_project_profile** — 查询项目画像（技术栈/架构/约定）
 - **get_project_info** — 枚举/查询项目（list/get）
-- **get_role_skills** — 获取角色 Skills 文档
 
 > **详细参数表和示例见 `pm/REFERENCE.md`**
 
@@ -103,6 +102,29 @@ version: 1.8.0
 - **PM**: 参考 `pm/REFERENCE.md`
 
 按需加载方式：
-1. 使用 `get_role_skills(role="pm")` 获取主文件
-2. 如需详细工具参数或示例，加载 `pm/REFERENCE.md`
+1. 本文件与 `pm/REFERENCE.md` 均在 GitHub 仓库（raw.githubusercontent.com/easy12138s/MemLake/master/src/mem_lake/skills/pm/）
+2. 如需详细工具参数或示例，下载 REFERENCE.md 放到本文件同目录
 3. REFERENCE.md 仅在需要时加载，节省 context token
+
+## Skills 文件放置指南
+
+本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发（get_role_skills
+工具已在 v1.9.0 删除）。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
+
+### 跨客户端项目级（推荐，首选）
+- `.agents/skills/mem-lake-{role}/SKILL.md`（符合 Agent Skills 标准 agentskills.io，主流 Agent 通用）
+
+### Claude Code
+- 用户级：`~/.claude/skills/mem-lake-{role}/SKILL.md`；项目级：`.claude/skills/mem-lake-{role}/SKILL.md`
+
+### Cursor
+- `.cursor/rules/mem-lake-{role}.mdc`（包装为 .mdc 格式）
+
+### Codex CLI (OpenAI)
+- `.agents/skills/mem-lake-{role}/SKILL.md`（同首选）；或追加到 `AGENTS.md`
+
+### Gemini CLI
+- `.gemini/rules/mem-lake-{role}.md`
+
+`{role}` 替换为实际角色（admin/pm/dev）；放置后重启 Agent 会话生效；
+不确定目录格式请查阅你的 Agent 官方文档。

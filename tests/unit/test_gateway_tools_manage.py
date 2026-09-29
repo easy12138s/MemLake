@@ -79,12 +79,14 @@ def test_build_mcp_config_contains_url_and_key():
 
 
 def test_build_user_hint_references_skill_and_excludes_key():
-    """_build_user_hint 产出给用户的一句话提示：指向 get_role_skills 且不出现 Key。"""
+    """_build_user_hint：指向 GitHub 仓库的 skills 下载（不再指向已删除的工具），不含 Key。"""
     role = "dev"
     key = "ak_secret_should_not_appear"
     hint = _build_user_hint(role)
-    assert "get_role_skills" in hint
+    assert "raw.githubusercontent.com" in hint
+    assert f"skills/{role}/SKILL.md" in hint
     assert f"{role} 角色" in hint
+    assert "get_role_skills" not in hint
     assert key not in hint
 
 

@@ -1,4 +1,4 @@
-"""工具共享辅助：ToolAnnotations 常量 + 输出模型 + 异常转换 + items 构造 + 角色文档。
+"""工具共享辅助：ToolAnnotations 常量 + 输出模型 + 异常转换 + items 构造 + scope 兜底。
 
 本模块是 gateway/tools/ 下所有工具模块的共享基础设施，避免重复代码。
 对齐 PDD 6.1 工具表 + 8.3/8.4/8.5 Skills 文档。
@@ -7,10 +7,8 @@
 import logging
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-import yaml  # type: ignore[import-untyped]  # 无官方 stub；运行依赖 pyyaml，仅供 safe_load 使用
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_context
 from mcp_types import ToolAnnotations
@@ -334,103 +332,41 @@ def build_edge_item(
     }
 
 
-# ============================================================================
-# 角色 Skills 文档（从 src/mem_lake/skills/{role}/SKILL.md 加载）
-# 符合 Agent Skills 标准（agentskills.io）：YAML frontmatter + Markdown body
-# 基于PDD 8.3/8.4/8.5 表格生成
-# ============================================================================
+def resolve_search_scope_fallback(
+    role: str,
+    system_scope: list[str],
+    *,
+    project_id: uuid.UUID | None,
+    system_id: uuid.UUID | None,
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """检索 scope 兜底：调用方未传 scope 时按 Key 的 system_scope 回收。
 
-_SKILLS_DIR = Path(__file__).parent.parent.parent / "skills"
-
-
-def _load_skill_file(role: str) -> tuple[str, str]:
-    """从文件系统加载角色 SKILL.md，返回 (markdown_body, version)。
-
-    解析 YAML frontmatter 提取 version，返回 frontmatter 之后的 body。
-    文件格式符合 Agent Skills 标准（agentskills.io）：
-        ---
-        name: mem-lake-{role}
-        description: "..."
-        version: 1.0.0
-        ---
-        # {Role} Skills
-        ...
-
-    加载时机：模块级（首次 import _shared.py 时执行），启动后缓存在内存，
-    修改 skills 文件需重启服务。
+    规则（局促性收敛——绝不隐式跨 system 检索）：
+    - 任传一个 ID → 原样返回（调用方的显式选择，不做放大）
+    - admin → 维持「至少提供一个」的硬错误（admin 无 system scope 概念，
+      避免 accidental 全库检索）
+    - 非 admin + claims 恰好绑定 1 个 system → 默认按该 system 检索
+    - 非 admin + claims 0 个 system → 报错「未绑定 system，请显式传入」
+    - 非 admin + claims >1 个 system → 报错列出候选（id），不聚合检索防混叠
     """
-    skill_file = _SKILLS_DIR / role / "SKILL.md"
-    content = skill_file.read_text(encoding="utf-8")
-    # 解析 YAML frontmatter（首行 --- 开始，第二个 --- 结束）
-    parts = content.split("---", 2)
-    if len(parts) >= 3:
-        frontmatter = yaml.safe_load(parts[1])
-        body = parts[2].strip()
-        version = str(frontmatter.get("version", "0.0.0"))
-        return body, version
-    # 无 frontmatter 的降级处理（不应发生，保持健壮性）
-    return content, "0.0.0"
+    if project_id is not None or system_id is not None:
+        return project_id, system_id
+
+    if role == "admin":
+        raise ValueError("project_id 与 system_id 至少提供一个")
+
+    if not system_scope:
+        raise ValueError(
+            "当前 Access Key 未绑定任何 system，请显式传入 system_id（或 project_id）"
+        )
+    if len(system_scope) == 1:
+        return project_id, uuid.UUID(system_scope[0])
+    raise ValueError(
+        f"当前 Access Key 绑定多个 system（{len(system_scope)} 个），"
+        f"请显式传入 system_id 二选一；候选: {sorted(system_scope)}"
+    )
 
 
-def _load_reference_file(role: str) -> str | None:
-    """从文件系统加载角色 REFERENCE.md，返回 markdown 内容或 None（文件不存在时）。
-
-    REFERENCE.md 包含详细的工具参数表和示例，按需加载以节省 context token。
-    """
-    ref_file = _SKILLS_DIR / role / "REFERENCE.md"
-    if ref_file.exists():
-        return ref_file.read_text(encoding="utf-8")
-    return None
-
-
-# 模块级加载（首次导入时执行，启动后缓存）
-_ROLE_SKILLS_DATA: dict[str, tuple[str, str]] = {
-    role: _load_skill_file(role) for role in ("pm", "dev", "admin")
-}
-ROLE_SKILLS_MD: dict[str, str] = {
-    role: data[0] for role, data in _ROLE_SKILLS_DATA.items()
-}
-ROLE_SKILLS_VERSION = max(data[1] for data in _ROLE_SKILLS_DATA.values())
-ROLE_REFERENCE_MD: dict[str, str | None] = {
-    role: _load_reference_file(role) for role in ("pm", "dev", "admin")
-}
-
-
-# ============================================================================
-# Skills 安装指南（告知上游 agent 如何将 skills 放置到对应目录）
-# 基于互联网可搜索到的常见 agent 放置格式，Mem Lake 不保证覆盖所有 agent
-# ============================================================================
-
-INSTALLATION_GUIDE = """## Skills 文件放置指南
-
-将返回的 skills_markdown 内容保存为 SKILL.md 文件，根据你使用的 Agent 放置到对应目录。
-首选跨客户端项目级路径（Claude Code / Cursor / Codex / Gemini 等主流 Agent 均识别）：
-
-### 跨客户端项目级（推荐，首选）
-- `.agents/skills/mem-lake-{role}/SKILL.md`
-  （符合 Agent Skills 标准 agentskills.io，所有主流 Agent 通用；不确定就用这个）
-
-### Claude Code
-- 用户级（全局）：`~/.claude/skills/mem-lake-{role}/SKILL.md`
-- 项目级（仅当前项目）：`.claude/skills/mem-lake-{role}/SKILL.md`
-
-### Cursor
-- 项目规则目录：`.cursor/rules/mem-lake-{role}.mdc`（将内容包装为 .mdc 格式）
-- 或旧格式：`.cursorrules`（追加到现有文件）
-
-### Codex CLI (OpenAI)
-- 项目级技能目录：`.agents/skills/mem-lake-{role}/SKILL.md`（同首选）
-- 或项目根目录：`AGENTS.md`（追加到现有文件，或创建新文件）
-- 或 `.codex/rules/mem-lake-{role}.md`
-
-### Gemini CLI
-- 项目级：`.gemini/rules/mem-lake-{role}.md`
-
-### 通用说明
-- `{role}` 替换为你的实际角色（admin/pm/dev）
-- 放置后重启 Agent 会话即可生效
-- 如不确定你的 Agent 使用的目录格式，请查阅其官方文档或互联网搜索
-"""
 
 
 # ============================================================================

@@ -181,10 +181,12 @@ class TestRolesCollaboration:
         system_id = None
 
         async with Client(_make_role_app(monkeypatch, role="admin", project_id=project_id)) as admin:
-            # get_role_skills
-            skills = await _call(admin, "get_role_skills", {"role": "admin"})
-            assert skills.get("version") and "." in skills["version"]
-            assert skills.get("skills_markdown")
+            # 批次三：get_role_skills 已删除（skills 改 GitHub 分发），
+            # 同点位改为 list_requirements 冒烟（新枚举工具）
+            lst = await _call(
+                admin, "list_requirements", {"project_id": project_id, "limit": 1}
+            )
+            assert lst.get("total") >= 0 and isinstance(lst.get("items"), list)
 
             # 建 system（publish_requirement 需 system_id）
             sys_res = await _call(
@@ -234,8 +236,9 @@ class TestRolesCollaboration:
             )
             assert prof.get("node_id")
             # 查回
-            prof2 = await _call(admin, "get_project_profile", {"project_id": project_id})
-            assert prof2.get("profile") is not None
+            prof2 = await _call(admin, "get_project_info",
+                                 {"action": "get", "project_id": project_id, "include_profile": True})
+            assert prof2.get("project") is not None and prof2["project"].get("profile") is not None
 
         # 返回供后续用例使用（类属性跨用例传递）
         self.__class__._project_id = project_id
@@ -516,7 +519,7 @@ class TestRolesCollaboration:
 
         monkeypatch.setattr("mem_lake.gateway.middleware.get_access_token", _deny_token)
         async with Client(create_mcp_server()) as noauth:
-            err = await _expect_tool_error(noauth, "get_role_skills", {})
+            err = await _expect_tool_error(noauth, "review_pending_list", {})
             assert "认证" in err or "Access Key" in err
 
         # 8.3/8.4 PM 越权调用 admin 专属工具
@@ -600,6 +603,6 @@ class TestRolesCollaboration:
                 "search_similar_requirements",
                 {"query": "登录认证", "top_n": 5},
             )
-            assert search_result["total"] > 0 or len(search_result["fused"]) > 0, (
+            assert search_result["returned"] > 0 or len(search_result["fused"]) > 0, (
                 "system 兜底应能召回到该 system 下的需求节点"
             )

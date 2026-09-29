@@ -2,20 +2,22 @@
 
 工具职责：转发 knowledge/repository 与 audit/service 的只读查询，不写业务逻辑。
 
-包含工具（PDD 6.1）：
-- get_role_skills（三角色共享）：获取角色 Skills 指导文档
+包含工具：
+- list_requirements（PM/Dev/Admin）：清单式枚举需求（分页+module/source_doc 过滤）
 - get_project_info（PM/Dev/Admin）：枚举/查询项目画像 + scope 自证
-- get_project_profile（PM/Dev/Admin）：查询项目画像（ProjectProfile 节点）
 - get_requirement_context（PM/Dev/Admin）：查询需求上下文（关联节点+关系链）
 - query_audit_log（Admin）：查询审计日志
 
 设计要点：
 - 全部为只读工具（READ_TOOL_ANNOTATIONS）
 - 角色 RBAC 由中间件层控制，本文件不区分角色
-- get_role_skills 为元工具，指导 Agent 如何使用工具集
-- get_project_profile 直接调 repository.list_nodes_by_project 过滤 ProjectProfile
+- list_requirements 直查 repository.list_requirements（JSONB 属性过滤 + 分页 total）
 - get_requirement_context 调 graph.traverse 获取需求关联节点
 - query_audit_log 调 audit.service.query_audit_logs 多条件过滤
+
+批次三工具面治理：get_role_skills 已删除（skills 改 GitHub 分发，见
+manage_tools._build_user_hint）；get_project_profile 已删除（get_project_info
+的 action=get + include_profile=true 完整覆盖）。
 """
 
 import logging
@@ -37,21 +39,20 @@ from mem_lake.gateway.dependencies import (
     validate_system_access,
 )
 from mem_lake.gateway.tools._shared import (
-    INSTALLATION_GUIDE,
     READ_TOOL_ANNOTATIONS,
-    ROLE_REFERENCE_MD,
-    ROLE_SKILLS_MD,
-    ROLE_SKILLS_VERSION,
     get_lifespan_context,
+    resolve_search_scope_fallback,
     to_tool_error,
 )
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     get_node,
-    list_nodes_by_project,
     list_project_profiles,
     list_systems,
+)
+from mem_lake.knowledge.repository import (
+    list_requirements as list_requirements_repo,
 )
 from mem_lake.search.graph import GraphSearcher
 
@@ -67,78 +68,51 @@ logger = logging.getLogger("mem_lake.gateway.tools.query")
 # ============================================================================
 
 
-class GetRoleSkillsOutput(BaseModel):
-    """get_role_skills 工具出参。"""
-
-    role: str = Field(description="角色：admin/pm/dev")
-    skills_markdown: str = Field(
-        description="角色 Skills 指导文档（Markdown 格式，可直接保存为 SKILL.md）"
-    )
-    reference_guide: str | None = Field(
-        default=None,
-        description="角色参考文档（详细工具参数表和示例，按需加载以节省 context token）"
-    )
-    version: str = Field(description="Skills 文档版本")
-    installation_guide: str = Field(
-        description="常见 Agent 的 skills 文件放置目录格式（Claude Code/Cursor/Codex CLI/Gemini CLI）"
-    )
-
-
-class ProjectProfileOutput(BaseModel):
-    """项目画像详情。"""
-
-    node_id: uuid.UUID = Field(description="节点 ID")
-    title: str = Field(description="项目名称标题")
-    content: str = Field(description="项目描述")
-    properties: dict[str, Any] = Field(default={}, description="项目属性")
-    tags: list[str] = Field(default=[], description="标签数组")
-    version: int = Field(description="版本号")
-    created_at: Any = Field(description="创建时间（ISO 8601）")
-    created_by: str = Field(description="创建者")
-
-
-class GetProjectProfileOutput(BaseModel):
-    """get_project_profile 工具出参。"""
-
-    project_id: uuid.UUID = Field(description="项目 ID")
-    profile: ProjectProfileOutput | None = Field(
-        default=None, description="项目画像（None 表示尚未创建）"
-    )
-
-
 class ProjectInfo(BaseModel):
-    """单个项目摘要信息（get_project_info 返回单元）。
-
-    name/description/updated_at 为 None 表示该项目在 Key scope 内但尚未创建
-    ProjectProfile 画像（占位条目，ISSUE-07：此前这类项目直接从结果中消失）。
-    """
+    """项目摘要（name/description/updated_at 为 None=scope 内但尚未建画像）。"""
 
     project_id: uuid.UUID = Field(description="项目 ID")
-    name: str | None = Field(
-        default=None,
-        description="项目名称（ProjectProfile.title）；None=scope 内但尚未创建画像",
-    )
-    work_dir: str | None = Field(default=None, description="项目本地工作目录")
-    repo: str | None = Field(default=None, description="代码仓库标识/名称")
-    description: str | None = Field(
-        default=None, description="项目描述（ProjectProfile.content）"
-    )
-    tags: list[str] = Field(default=[], description="标签数组")
-    updated_at: Any = Field(
-        default=None, description="更新时间（ISO 8601，取画像节点 created_at）"
-    )
+    name: str | None = Field(default=None, description="项目名（None=未建画像）")
+    work_dir: str | None = Field(default=None, description="工作目录")
+    repo: str | None = Field(default=None, description="仓库标识")
+    description: str | None = Field(default=None, description="描述")
+    tags: list[str] = Field(default=[], description="标签")
+    updated_at: Any = Field(default=None, description="更新时间")
     profile: dict[str, Any] | None = Field(
-        default=None,
-        description="完整画像属性（仅 include_profile=true 时返回，否则 null）",
+        default=None, description="完整画像（include_profile=true 时）"
     )
 
 
 class VisibleSystemInfo(BaseModel):
-    """scope_meta 中列出的可见 system 摘要。"""
+    """可见 system 摘要。"""
 
-    system_id: str = Field(description="System UUID")
-    name: str = Field(description="system 名称")
-    code: str | None = Field(default=None, description="System.code（可能为 NULL）")
+    system_id: str = Field(description="ID")
+    name: str = Field(description="名称")
+    code: str | None = Field(default=None, description="code（可空）")
+
+
+class RequirementListItem(BaseModel):
+    """list_requirements 返回单元（条目不含正文，详情走 get_requirement_context）。"""
+
+    node_id: uuid.UUID = Field(description="节点 ID")
+    title: str = Field(description="需求标题")
+    module: str | None = Field(default=None, description="模块（properties.module）")
+    priority: str | None = Field(default=None, description="优先级")
+    requirement_key: str | None = Field(
+        default=None, description="需求主键（如 SYS-0001；悬浮未分配为 None）"
+    )
+    source_doc: str | None = Field(
+        default=None, description="来源文档路径（存量导入的原始相对路径）"
+    )
+
+
+class ListRequirementsOutput(BaseModel):
+    """list_requirements 工具出参。"""
+
+    total: int = Field(description="命中总数（跨页不变，非本页条数）")
+    limit: int = Field(description="页大小")
+    offset: int = Field(description="分页偏移")
+    items: list[RequirementListItem] = Field(description="需求条目列表")
 
 
 class ScopeMeta(BaseModel):
@@ -230,76 +204,76 @@ def register_query_tools(mcp: FastMCP) -> None:
     """注册查询类工具到 FastMCP 实例。"""
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
-    async def get_role_skills(
-        role: str | None = Field(
-            default=None,
-            description="指定角色（admin/pm/dev），None 表示返回当前调用者角色",
+    async def list_requirements(
+        project_id: uuid.UUID | None = Field(
+            default=None, description="归属项目 ID（与 system_id 均不传时按 Key 绑定 system 兜底）"
         ),
-    ) -> GetRoleSkillsOutput:
-        """【首次连接请先调用】获取角色的 Skills 指导文档，一次性安装后指导你所有后续工作。
+        system_id: uuid.UUID | None = Field(
+            default=None, description="归属 system 域（枚举该系统全部需求，含悬浮）"
+        ),
+        module: str | None = Field(
+            default=None, description="module 精确过滤（properties.module）"
+        ),
+        source_doc_prefix: str | None = Field(
+            default=None,
+            description="source_doc 前缀过滤，如 '云HIS-二期-v2.15优化-' 圈定一个批次",
+        ),
+        tags: list[str] | None = Field(default=None, description="标签过滤"),
+        tags_op: str = Field(
+            default="all", description="标签语义：all=AND（默认）/any=OR"
+        ),
+        limit: int = Field(default=50, description="页大小，默认 50，上限 200"),
+        offset: int = Field(default=0, description="分页偏移"),
+    ) -> ListRequirementsOutput:
+        """清单式枚举 Requirement（分页 + 属性过滤），返回命中总数 total。
 
-        共享工具（三角色均可调用）。接入 MemLake 后应首先调用本工具，按返回内容的
-        指引安装你的角色技能（skills_markdown 可直接保存为 SKILL.md）。返回值含
-        installation_guide 字段，指导将 Skills 文件放置到对应 Agent 目录（首推跨客户端
-        项目级 `.agents/skills/mem-lake-{role}/SKILL.md`，并列出 Claude Code/Cursor/Codex
-        CLI/Gemini CLI）。安装后刷新/重启会话即可生效，此后由该技能指导你在日常工作中
-        使用 MemLake 检索与沉淀团队知识。
-        """
-        target_role = role or get_current_role()
-        if target_role not in ROLE_SKILLS_MD:
-            raise to_tool_error(
-                ValueError(f"未知角色: {target_role}，合法角色: admin/pm/dev")
-            )
-        return GetRoleSkillsOutput(
-            role=target_role,
-            skills_markdown=ROLE_SKILLS_MD[target_role],
-            reference_guide=ROLE_REFERENCE_MD.get(target_role),
-            version=ROLE_SKILLS_VERSION,
-            installation_guide=INSTALLATION_GUIDE,
-        )
-
-    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
-    async def get_project_profile(
-        project_id: uuid.UUID = Field(description="项目 ID"),
-    ) -> GetProjectProfileOutput:
-        """查询项目画像（技术栈/架构/约定/团队）。
-
-        PM/Dev/Admin 共享工具。返回项目最新的 ProjectProfile 节点。
-        项目尚未创建画像时 profile=None，可调用 manage_project_profile（admin）创建。
+        「列出某项目/系统的全部需求」「按 module 或 source_doc 前缀圈定批次」用
+        本工具，不要用检索工具反复试探再人工取并集。条目不含正文；要看某条详情
+        用 get_requirement_context。
         """
         try:
-            validate_project_access(project_id)
+            project_id, system_id = resolve_search_scope_fallback(
+                get_current_role(),
+                get_current_system_scope(),
+                project_id=project_id,
+                system_id=system_id,
+            )
+            if project_id is not None:
+                validate_project_access(project_id)
+            if system_id is not None:
+                validate_system_access(system_id)
             session = await get_readonly_session()
             try:
-                nodes = await list_nodes_by_project(
+                rows, total = await list_requirements_repo(
                     session,
                     project_id=project_id,
-                    node_type="ProjectProfile",
-                    status="approved",
-                    limit=1,
-                    offset=0,
+                    system_id=system_id,
+                    module=module,
+                    source_doc_prefix=source_doc_prefix,
+                    tags=tuple(tags) if tags else None,
+                    tags_op=tags_op,
+                    limit=min(max(limit, 1), 200),
+                    offset=max(offset, 0),
                 )
-                profile = None
-                if nodes:
-                    n = nodes[0]
-                    profile = ProjectProfileOutput(
-                        node_id=n.id,
-                        title=n.title,
-                        content=n.content,
-                        properties=n.properties or {},
-                        tags=n.tags or [],
-                        version=n.version,
-                        created_at=n.created_at.isoformat()
-                        if n.created_at
-                        else None,
-                        created_by=n.created_by,
-                    )
-                return GetProjectProfileOutput(
-                    project_id=project_id, profile=profile
+                return ListRequirementsOutput(
+                    total=total,
+                    limit=min(max(limit, 1), 200),
+                    offset=offset,
+                    items=[
+                        RequirementListItem(
+                            node_id=r.id,
+                            title=r.title,
+                            module=(r.properties or {}).get("module"),
+                            priority=(r.properties or {}).get("priority"),
+                            requirement_key=r.requirement_key,
+                            source_doc=(r.properties or {}).get("source_doc"),
+                        )
+                        for r in rows
+                    ],
                 )
             finally:
                 await session.close()
-        except Exception as e:
+        except (ValueError, ToolError) as e:
             raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
@@ -311,24 +285,17 @@ def register_query_tools(mcp: FastMCP) -> None:
             default=None, description="get 时必填的项目 ID"
         ),
         include_profile: bool = Field(
-            default=False,
-            description="为 true 时在每个项目结果附完整画像属性（properties）",
+            default=False, description="为 true 时附完整画像属性（properties）"
         ),
         include_scope_meta: bool = Field(
             default=False,
-            description="为 true 时附 scope 自证信息（scope_type/visible_count/visible_uuids"
-            "，另含 system 维度 visible_systems：dev/pm 自查可见 system 用）",
+            description="为 true 时附 scope 自证（project 维度 + system 维度 visible_systems）",
         ),
     ) -> GetProjectInfoOutput:
-        """枚举/查询项目画像（PM/Dev/Admin 共享，只读）。
+        """枚举/查询项目画像（admin 全量；pm/dev 仅 scope 内，只读）。
 
-        list：枚举当前 key 可见的项目（admin 全量；pm/dev 仅 scope 内），
-        每项含 name/work_dir/repo/description/tags/updated_at。
-        get：按 project_id 查询单个项目；越权（pm/dev 访问 scope 外）返回权限拒绝错误。
-        include_scope_meta=true 回显 key 的可见范围，用于自证项目隔离边界；
-        scope_meta 还含 visible_systems（可见 system 的 id+name+code 列表），
-        dev/pm 可用于确认自身能检索哪些 system。
-        同一项目存在多个画像节点时取最新一条。
+        get 越权返回权限拒绝；scope 内无画像的项目返回占位条目（name=None）。
+        同一项目多画像时取最新一条。
         """
         try:
             role = get_current_role()

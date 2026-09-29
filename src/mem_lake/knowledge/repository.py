@@ -23,7 +23,7 @@ import re
 import uuid
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import ColumnElement, delete, func, select, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,7 +44,7 @@ from mem_lake.knowledge.schema import (
     validate_edge_type,
     validate_node,
 )
-from mem_lake.search.filters import node_active_approved
+from mem_lake.search.filters import FilterSpec, compile_sqlalchemy, node_active_approved
 
 
 class NodeNotFoundError(Exception):
@@ -510,6 +510,69 @@ async def list_nodes_by_project(
     stmt = stmt.limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def list_requirements(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID | None = None,
+    system_id: uuid.UUID | None = None,
+    module: str | None = None,
+    source_doc_prefix: str | None = None,
+    tags: tuple[str, ...] | None = None,
+    tags_op: str = "all",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[KnowledgeNode], int]:
+    """清单式枚举 Requirement（分页 + 属性过滤），返回 (rows, total)。
+
+    消「清单类任务只能靠检索试探取并集」的无效调用（反馈 ISSUE-01）：
+    - project_id / system_id 双维度过滤（均不传由调用方做 Key scope 兜底；
+      悬浮需求 project 为空，system 维度可枚举全系统需求）
+    - module 精确 / source_doc 前缀（properties JSONB）——「列出 V2.15 批次
+      全部需求」用 source_doc_prefix 一次圈定
+    - tags 复用 FilterSpec 的 AND/OR 过滤语义
+    - total 为命中总数（count 查询，非本页条数）
+    排序：requirement_key 升序 NULLS LAST → created_at 升序（稳定分页序）。
+    """
+    clauses: list[ColumnElement[bool]] = [
+        KnowledgeNode.type == "Requirement",
+        KnowledgeNode.status == "approved",
+        KnowledgeNode.is_deleted == False,  # noqa: E712
+    ]
+    if project_id is not None:
+        clauses.append(KnowledgeNode.project_id == project_id)
+    if system_id is not None:
+        clauses.append(KnowledgeNode.system_id == system_id)
+    if module is not None:
+        clauses.append(KnowledgeNode.properties["module"].astext == module)
+    if source_doc_prefix is not None:
+        clauses.append(
+            KnowledgeNode.properties["source_doc"].astext.like(source_doc_prefix + "%")
+        )
+    if tags:
+        # 复用 FilterSpec 的 tags AND/OR 编译（其自带 status/is_deleted 子句与
+        # 上方 clauses 重复但语义一致，无害）
+        clauses.extend(
+            compile_sqlalchemy(FilterSpec(tags=tuple(tags), tags_op=tags_op))
+        )
+
+    total = (
+        await session.execute(select(func.count()).select_from(KnowledgeNode).where(*clauses))
+    ).scalar_one()
+
+    stmt = (
+        select(KnowledgeNode)
+        .where(*clauses)
+        .order_by(
+            KnowledgeNode.requirement_key.asc().nullslast(),
+            KnowledgeNode.created_at.asc(),
+        )
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return list(rows), int(total)
 
 
 async def count_nodes_by_project(

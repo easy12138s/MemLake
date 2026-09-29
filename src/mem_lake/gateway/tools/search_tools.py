@@ -40,6 +40,7 @@ from mem_lake.gateway.dependencies import (
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     get_lifespan_context,
+    resolve_search_scope_fallback,
     to_tool_error,
 )
 from mem_lake.knowledge.repository import list_nodes_by_project
@@ -63,55 +64,39 @@ logger = logging.getLogger("mem_lake.gateway.tools.search")
 
 
 class SearchItemOutput(BaseModel):
-    """单个检索结果项。"""
+    """单个检索结果项（content 为前 200 字摘要；source=引擎；score/vector_score=相似度）。"""
 
     node_id: uuid.UUID = Field(description="节点 ID")
-    title: str = Field(description="节点标题")
-    content: str = Field(description="节点摘要（前 200 字符）")
-    node_type: str = Field(description="节点类型")
-    score: float | None = Field(description="分数(fused=向量余弦分 0~1/vector=cosine/fulltext=ts_rank/graph=None)")
-    vector_score: float | None = Field(
-        default=None,
-        description="向量余弦相似度（0~1）；fused 结果附带其原始向量分，便于判相关性",
-    )
-    source: str = Field(
-        description="来源引擎：vector/fulltext/graph/fused"
-    )
-    properties: dict[str, Any] = Field(default={}, description="节点属性")
-    tags: list[str] = Field(default=[], description="标签数组")
+    title: str = Field(description="标题")
+    content: str = Field(description="摘要")
+    node_type: str = Field(description="类型")
+    score: float | None = Field(description="分数")
+    vector_score: float | None = Field(default=None, description="向量余弦分")
+    source: str = Field(description="来源")
+    properties: dict[str, Any] = Field(default={}, description="属性")
+    tags: list[str] = Field(default=[], description="标签")
 
 
 class HybridSearchOutput(BaseModel):
     """search_similar_requirements / search_code_snippets 出参。
 
-    vector/fulltext 默认 None（序列化省略该键）——回传空数组会被误读为
-    「引擎候选池为空」（真实使用反馈 ISSUE-04）；仅 include_engine_details=true
-    的调试场景填充。
+    出参仅保留 agent 决策所需字段（fused 检索结果 + query_terms 分词自诊 +
+    returned/candidates_total 计数）。vector/fulltext 引擎原始明细为调试数据，
+    连同 include_engine_details 参数与 total 历史字段已在批次三删除——
+    需要评估检索质量时经 admin 渠道直查，不再占用每个调用方的 schema 体积。
     """
 
     query: str = Field(description="原始查询文本")
     fused: list[SearchItemOutput] = Field(
-        description="RRF 融合结果（向量+全文），按分数降序"
-    )
-    vector: list[SearchItemOutput] | None = Field(
-        description="向量引擎原始结果（仅 include_engine_details=true 时回传）",
-        default=None,
-    )
-    fulltext: list[SearchItemOutput] | None = Field(
-        description="全文引擎原始结果（仅 include_engine_details=true 时回传）",
-        default=None,
+        description="融合结果（向量+全文，rerank 后），按相关性降序"
     )
     query_terms: list[str] | None = Field(
         default=None,
-        description="全文引擎实际分词结果（zhparser lexeme，保序去重）——"
-        "检索没命中时可据此自诊「实际用什么词在匹配」",
+        description="全文引擎实际分词结果（保序去重）——检索没命中时可据此自诊",
     )
     candidates_total: int = Field(
         default=0,
-        description="min_score 阈值过滤前的候选池条数——评估「命中总量」请以本字段为准",
-    )
-    total: int = Field(
-        description="历史字段，语义等同 returned（随 top_n 变化，非命中总数）"
+        description="min_score 阈值过滤前的候选池条数（评估命中量以本字段为准）",
     )
 
     @computed_field  # type: ignore[prop-decorator, untyped-decorator]
@@ -119,11 +104,6 @@ class HybridSearchOutput(BaseModel):
     def returned(self) -> int:
         """实际返回条数，恒等于 len(fused)（computed，构造无需传参）。"""
         return len(self.fused)
-
-    # 注意：不可用 model_serializer 裁剪 None 键——wrap/plain 模式都会使
-    # json_schema(mode="serialization") 退化为非 object，FastMCP 据此判定
-    # "x-fastmcp-wrap-result" 把出参包一层 {"result": ...}，破坏调用方平铺契约。
-    # None（输出为 null）语义已足够：null=未请求明细，与空数组的「候选池为空」相区分。
 
 
 class ImpactScopeOutput(BaseModel):
@@ -184,41 +164,6 @@ class ListKnowledgeOutput(BaseModel):
     offset: int = Field(description="当前分页偏移")
 
 
-def _resolve_search_scope_fallback(
-    role: str,
-    system_scope: list[str],
-    *,
-    project_id: uuid.UUID | None,
-    system_id: uuid.UUID | None,
-) -> tuple[uuid.UUID | None, uuid.UUID | None]:
-    """检索 scope 兜底：调用方未传 scope 时按 Key 的 system_scope 回收。
-
-    规则（局促性收敛——绝不隐式跨 system 检索）：
-    - 任传一个 ID → 原样返回（调用方的显式选择，不做放大）
-    - admin → 维持「至少提供一个」的硬错误（admin 无 system scope 概念，
-      避免 accidental 全库检索）
-    - 非 admin + claims 恰好绑定 1 个 system → 默认按该 system 检索
-    - 非 admin + claims 0 个 system → 报错「未绑定 system，请显式传入」
-    - 非 admin + claims >1 个 system → 报错列出候选（id），不聚合检索防混叠
-    """
-    if project_id is not None or system_id is not None:
-        return project_id, system_id
-
-    if role == "admin":
-        raise ValueError("project_id 与 system_id 至少提供一个")
-
-    if not system_scope:
-        raise ValueError(
-            "当前 Access Key 未绑定任何 system，请显式传入 system_id（或 project_id）"
-        )
-    if len(system_scope) == 1:
-        return project_id, uuid.UUID(system_scope[0])
-    raise ValueError(
-        f"当前 Access Key 绑定多个 system（{len(system_scope)} 个），"
-        f"请显式传入 system_id 二选一；候选: {sorted(system_scope)}"
-    )
-
-
 # 全文引擎查询构造：match_mode=any 时按空白拆词 OR 连接（websearch_to_tsquery
 # 原生支持 OR 关键字）；all 保持原样（空格即 AND/短语语义，现状不破坏）。
 def _build_fulltext_query(query: str, match_mode: str) -> str:
@@ -272,59 +217,32 @@ def register_search_tools(mcp: FastMCP) -> None:
         project_id: uuid.UUID | None = Field(
             default=None, description="归属项目 ID（与 system_id 至少其一必填或走 Key 兜底）"
         ),
-        top_n: int = Field(
-            default=20,
-            description="融合后返回数量上限（默认 20；rerank 会把高相关项压到候选池后位，过小易挤出）",
-        ),
-        tags: list[str] | None = Field(
-            default=None, description="标签过滤（tags_op 控制 AND/OR）"
-        ),
+        top_n: int = Field(default=20, description="返回数量上限"),
+        tags: list[str] | None = Field(default=None, description="标签过滤"),
         tags_op: str = Field(
-            default="all",
-            description="标签匹配语义：all=AND（默认，需包含所有标签），any=OR（命中任一标签）",
+            default="all", description="标签语义：all=AND（默认）/any=OR"
         ),
         min_score: float | None = Field(
             default=0.5,
-            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；传 None 可关闭默认阈值（返回相对 top_n）",
+            description="仅过滤纯向量命中（0~1）；有全文命中的节点不受影响；"
+            "0.99=只要全文精确命中（清单穷举）；None=关闭阈值",
         ),
         semantic_tags: bool = Field(
-            default=False,
-            description="标签语义扩展：开启后用 embedding 将给定标签扩展为项目中语义相近的标签"
-            "（如「性能」≈「N+1」），放宽精确匹配；关闭时仅做精确 AND/OR 匹配",
-        ),
-        include_engine_details: bool = Field(
-            default=False,
-            description="回传 vector/fulltext 引擎原始明细（调试/评估检索质量用）。"
-            "默认 false 仅回 fused 最终结果——明细每页约 30KB，会显著增加 token 消耗",
+            default=False, description="标签语义扩展（embedding 近义召回），默认精确匹配"
         ),
         match_mode: Literal["all", "any"] = Field(
             default="all",
-            description="多词匹配语义（仅影响全文引擎）：all=AND 全词命中（默认）；"
-            "any=任一词命中即召回（宽召回，适合多关键词清单式检索）。"
-            "出参 query_terms 回显实际分词结果",
+            description="多词语义（全文引擎）：all=AND 全词命中（默认）/any=任一词命中即召回",
         ),
     ) -> HybridSearchOutput:
-        """向量+全文融合检索相似需求（Requirement 类型；按 system 或 project 隔离）。
+        """向量+全文融合检索相似需求（Requirement；按 system/project 隔离，仅 approved）。
 
-        PM/Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
-        RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
-        system 维度：传 system_id 检索该系统全部需求（含悬浮，project 可空）；dev 可用
-        system_id 定位可见 system 的需求 UUID，再引用实现建边。与 project_id 均不传时，
-        按 Access Key 绑定的 system 兜底（绑定唯一 system 时自动用之，否则报错提示）。
-        注意：min_score 仅过滤**纯向量命中**的弱相关噪声（默认 0.5）；
-        有全文命中的节点不受该阈值影响（关键词精确匹配始终保留）——
-        min_score=0.99 可用于「只要全文精确命中」的清单式穷举；
-        fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
-        fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
-        tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
-        query 不能为空（空查询下全文引擎无排序依据）。
-        出参默认仅含 fused（省 token）；仅调试/评估时设 include_engine_details=true
-        取回 vector/fulltext 引擎明细。
-        用途边界：本工具检索**需求节点(Requirement)**。要查某需求的关联代码/方案/意图，
-        用 get_requirement_context；要做"改这个需求会影响哪些代码"的影响分析，用 analyze_impact_scope。
+        - system_id/project_id 均不传时按 Key 绑定的唯一 system 兜底
+        - 出参 fused 的 score 为向量余弦分（0~1）；query_terms 回显全文实际分词
+        - 要查某需求的关联产物用 get_requirement_context；影响分析用 analyze_impact_scope
         """
         try:
-            project_id, system_id = _resolve_search_scope_fallback(
+            project_id, system_id = resolve_search_scope_fallback(
                 get_current_role(),
                 get_current_system_scope(),
                 project_id=project_id,
@@ -345,7 +263,6 @@ def register_search_tools(mcp: FastMCP) -> None:
                 tags_op=tags_op,
                 min_score=min_score,
                 semantic_tags=semantic_tags,
-                include_engine_details=include_engine_details,
                 match_mode=match_mode,
             )
         except (SchemaValidationError, ValueError) as e:
@@ -355,55 +272,28 @@ def register_search_tools(mcp: FastMCP) -> None:
     async def search_code_snippets(
         project_id: uuid.UUID = Field(description="归属项目 ID"),
         query: str = Field(description="查询文本（代码功能/关键词）"),
-        top_n: int = Field(
-            default=20,
-            description="融合后返回数量上限（默认 20；rerank 会把高相关项压到候选池后位，过小易挤出）",
-        ),
-        tags: list[str] | None = Field(
-            default=None, description="标签过滤（tags_op 控制 AND/OR）"
-        ),
+        top_n: int = Field(default=20, description="返回数量上限"),
+        tags: list[str] | None = Field(default=None, description="标签过滤"),
         tags_op: str = Field(
-            default="all",
-            description="标签匹配语义：all=AND（默认，需包含所有标签），any=OR（命中任一标签）",
+            default="all", description="标签语义：all=AND（默认）/any=OR"
         ),
         min_score: float | None = Field(
             default=0.5,
-            description="向量余弦相似度下限（0~1）；低于此值的结果被过滤；传 None 可关闭默认阈值（返回相对 top_n）",
+            description="仅过滤纯向量命中（0~1）；有全文命中的节点不受影响；"
+            "0.99=只要全文精确命中；None=关闭阈值",
         ),
         semantic_tags: bool = Field(
-            default=False,
-            description="标签语义扩展：开启后用 embedding 将给定标签扩展为项目中语义相近的标签"
-            "（如「性能」≈「N+1」），放宽精确匹配；关闭时仅做精确 AND/OR 匹配",
-        ),
-        include_engine_details: bool = Field(
-            default=False,
-            description="回传 vector/fulltext 引擎原始明细（调试/评估检索质量用）。"
-            "默认 false 仅回 fused 最终结果——明细每页约 30KB，会显著增加 token 消耗",
+            default=False, description="标签语义扩展（embedding 近义召回），默认精确匹配"
         ),
         match_mode: Literal["all", "any"] = Field(
             default="all",
-            description="多词匹配语义（仅影响全文引擎）：all=AND 全词命中（默认）；"
-            "any=任一词命中即召回（宽召回，适合多关键词清单式检索）。"
-            "出参 query_terms 回显实际分词结果",
+            description="多词语义（全文引擎）：all=AND 全词命中（默认）/any=任一词命中即召回",
         ),
     ) -> HybridSearchOutput:
-        """向量+全文融合检索研发资产（同项目内 CodeSnippet/Pitfall/Solution/DesignIntent 类型）。
+        """向量+全文融合检索研发资产（CodeSnippet/Pitfall/Solution/DesignIntent；project 内，仅 approved）。
 
-        Dev 工具。三引擎并行：向量（pgvector cosine）+ 全文（tsvector chinese 分词），
-        RRF 融合后返回 top_n 结果。仅检索 approved 状态节点。
-        除代码片段外，踩坑(Pitfall)/方案(Solution)/设计意图(DesignIntent) 也会一并召回，
-        便于「踩过的坑」「采用的方案」等经验类检索。返回项的 node_type 区分具体类型。
-        注意：min_score 仅过滤**纯向量命中**的弱相关噪声（默认 0.5）；
-        有全文命中的节点不受该阈值影响（关键词精确匹配始终保留）——
-        min_score=0.99 可用于「只要全文精确命中」的清单式穷举；
-        fused 中仅全文命中的节点 score 为 RRF 小数量纲，min_score 对其不生效。
-        fused 结果的 score 已透出向量余弦分（0~1），可据此判相关性。
-        tags 默认精确匹配（AND/OR 由 tags_op 控制）；如需语义相近召回，设 semantic_tags=true。
-        query 不能为空（空查询下全文引擎无排序依据）。
-        出参默认仅含 fused（省 token）；仅调试/评估时设 include_engine_details=true
-        取回 vector/fulltext 引擎明细。
-        用途边界：本工具检索**研发资产**(CodeSnippet/Solution/DesignIntent/Pitfall)。
-        要找需求本身用 search_similar_requirements；要拿某需求关联的实现/方案/坑用 get_requirement_context。
+        踩坑/方案/意图与代码一并召回，node_type 区分类型。
+        要找需求本身用 search_similar_requirements；需求关联产物用 get_requirement_context。
         """
         try:
             validate_project_access(project_id)
@@ -417,7 +307,6 @@ def register_search_tools(mcp: FastMCP) -> None:
                 tags_op=tags_op,
                 min_score=min_score,
                 semantic_tags=semantic_tags,
-                include_engine_details=include_engine_details,
                 match_mode=match_mode,
             )
         except (SchemaValidationError, ValueError) as e:
@@ -613,7 +502,6 @@ async def _run_hybrid_search(
     tags_op: str = "all",
     min_score: float | None = None,
     semantic_tags: bool = False,
-    include_engine_details: bool = False,
     match_mode: str = "all",
 ) -> HybridSearchOutput:
     """执行三引擎融合检索的共享辅助函数。
@@ -630,10 +518,8 @@ async def _run_hybrid_search(
     system 维度：传 project_id 检索该 project 资产；传 system_id 检索该系统全部需求
     （含悬浮需求）。二者都不传时用 project_scope 内全部 project 检索。
 
-    include_engine_details=false（默认）时出参仅含 fused（RRF+精排后的最终结果），
-    vector/fulltext 引擎明细不回传——明细单项 ~600B、每页 50 条，默认回传会把单次
-    调用撑到 ~30KB 量级（约 97% 为 Agent 无需的诊断数据，token 负担主要来源）；
-    调试/评估检索质量时显式传 true 取回。
+    出参仅含 fused（融合+精排后的最终结果）——引擎原始明细为调试数据，
+    已随 include_engine_details 一并删除（批次三工具面治理）。
     """
     lifespan_ctx = get_lifespan_context()
 
@@ -708,19 +594,8 @@ async def _run_hybrid_search(
     return HybridSearchOutput(
         query=query,
         fused=[_to_search_item_output(r, vector_score_map.get(r.node_id)) for r in fused_raw],
-        vector=(
-            [_to_search_item_output(r) for r in result.get("vector", [])]
-            if include_engine_details
-            else None
-        ),
-        fulltext=(
-            [_to_search_item_output(r) for r in result.get("fulltext", [])]
-            if include_engine_details
-            else None
-        ),
         query_terms=_parse_tsquery_lexemes(result.get("fulltext_tsquery", "")),
         candidates_total=candidates_total,
-        total=len(fused_raw),
     )
 
 

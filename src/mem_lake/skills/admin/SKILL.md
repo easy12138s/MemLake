@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile."
-version: 1.8.0
+version: 1.9.0
 ---
 
 # Admin Skills（管理员）
@@ -84,7 +84,6 @@ version: 1.8.0
 ### 项目管理类
 - **manage_system** — 建立并签发 system 域
 - **manage_project_profile** — 直接写入项目画像
-- **get_project_profile** — 查询项目画像
 - **get_project_info** — 枚举/查询项目
 
 ### 数据质量类
@@ -94,7 +93,7 @@ version: 1.8.0
 - **query_audit_log** — 查询审计日志
 
 ### 共享类
-- **get_role_skills** — 获取角色 Skills 文档
+- **list_requirements** — 清单式枚举需求（分页+module/source_doc 前缀过滤）
 - **get_requirement_context** — 查询需求上下文
 
 > **详细参数表和示例见 `admin/REFERENCE.md`**
@@ -151,6 +150,29 @@ set_access_key_mode(lax_mode=true, key_ids=["..."])
 - **Admin**: 参考 `admin/REFERENCE.md`
 
 按需加载方式：
-1. 使用 `get_role_skills(role="admin")` 获取主文件
-2. 如需详细工具参数或示例，加载 `admin/REFERENCE.md`
+1. 本文件与 `admin/REFERENCE.md` 均在 GitHub 仓库（raw.githubusercontent.com/easy12138s/MemLake/master/src/mem_lake/skills/admin/）
+2. 如需详细工具参数或示例，下载 REFERENCE.md 放到本文件同目录
 3. REFERENCE.md 仅在需要时加载，节省 context token
+
+## Skills 文件放置指南
+
+本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发（get_role_skills
+工具已在 v1.9.0 删除）。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
+
+### 跨客户端项目级（推荐，首选）
+- `.agents/skills/mem-lake-{role}/SKILL.md`（符合 Agent Skills 标准 agentskills.io，主流 Agent 通用）
+
+### Claude Code
+- 用户级：`~/.claude/skills/mem-lake-{role}/SKILL.md`；项目级：`.claude/skills/mem-lake-{role}/SKILL.md`
+
+### Cursor
+- `.cursor/rules/mem-lake-{role}.mdc`（包装为 .mdc 格式）
+
+### Codex CLI (OpenAI)
+- `.agents/skills/mem-lake-{role}/SKILL.md`（同首选）；或追加到 `AGENTS.md`
+
+### Gemini CLI
+- `.gemini/rules/mem-lake-{role}.md`
+
+`{role}` 替换为实际角色（admin/pm/dev）；放置后重启 Agent 会话生效；
+不确定目录格式请查阅你的 Agent 官方文档。
