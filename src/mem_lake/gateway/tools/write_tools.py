@@ -349,31 +349,19 @@ def register_write_tools(mcp: FastMCP) -> None:
         requirement_id: uuid.UUID | None = Field(
             default=None,
             description=(
-                "关联的需求节点 ID（自动为每个 CodeSnippet 构造 implements 边）。可选："
-                "省略则提交「游离知识点」，系统自动把每个产物挂到本项目的 ProjectProfile "
-                "节点（若该节点存在），无需绑定具体需求"
+                "关联的需求 ID（仅为 CodeSnippet 自动建 implements 边）；"
+                "省略时产物挂本项目 ProjectProfile，relations 照常解析"
             ),
         ),
         operation_id: str | None = Field(
             default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
         ),
     ) -> WriteToolOutput:
-        """批量提交开发产物（代码片段+方案+意图+踩坑），产生审批批次等待 admin 审批。
-        若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
-        直接入库（status="approved" + decision="auto_approved"），有冲突停在待审批。
+        """批量提交开发产物（代码/方案/意图/踩坑），产生审批批次；宽松模式无冲突时自动入库。
 
-        Dev 工具。审批通过后产物节点写入知识图谱。
-        自动关系：
-        - 传入 requirement_id 时，系统为每个 CodeSnippet 自动建立 Requirement--implements-->CodeSnippet 边。
-        - 省略 requirement_id（游离知识点）时，系统把每个产物自动挂到本项目的
-          ProjectProfile 节点（ProjectProfile--references-->产物）；若项目无 ProjectProfile 节点则仅入库不建边。
-        坑(Pitfall)/方案(Solution)/设计意图(DesignIntent) 不会自动与需求建边，
-        如需把它们关联到具体需求，须在 relations 中显式声明
-        （from_ref/to_ref 用 ref 名或节点 UUID，relation_type 如 described_by/references 等）。
-        使用 ref 机制在批次内引用未创建的节点：artifacts 中每个产物声明 ref 名，
-        relations 中用 from_ref/to_ref 引用这些 ref 名（或已有节点的 UUID）。
-        临时引用在审批通过时解析为实际节点 ID。
-        支持 operation_id 幂等。
+        relations 用 ref 机制引用：artifacts 声明 ref 名，relations 的 from_ref/to_ref
+        可用批次内 ref 名或已有节点 UUID。坑/方案/意图与需求的关联不会自动建边，
+        须在 relations 显式声明。支持 operation_id 幂等。
         """
         try:
             validate_project_access(project_id)

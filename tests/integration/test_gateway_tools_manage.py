@@ -128,10 +128,10 @@ async def test_manage_project_profile_auto_id(admin_app):
 
         # 生成的 project_id 可经 get_project_profile 查回
         prof = await client.call_tool(
-            "get_project_profile", {"project_id": str(pid)}
+            "get_project_info", {"action": "get", "project_id": str(pid), "include_profile": True}
         )
         prof_data = _parse(prof)
-        assert prof_data.get("project_id") == str(pid)
+        assert prof_data["project"]["project_id"] == str(pid)
 
 
 async def test_manage_project_profile_explicit_id_returns_same(admin_app):
@@ -187,7 +187,8 @@ def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
 
     hint = output["user_hint"]
     assert isinstance(hint, str) and hint.strip()
-    assert "get_role_skills" in hint
+    assert "raw.githubusercontent.com" in hint
+    assert "skills/" in hint
     # 安全：Key 不应出现在给用户的提示词里
     assert plaintext not in hint
 

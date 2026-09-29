@@ -125,7 +125,6 @@ PM/Dev 共享。向量+全文融合检索相似需求（Requirement 类型；按
 | tags_op | str | 否 | 标签匹配语义：`all`=AND（默认）/`any`=OR |
 | min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5；None 关闭阈值 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
-| include_engine_details | bool | 否 | 回传 vector/fulltext 引擎明细（调试用），默认 False 仅回 fused 省 token |
 | match_mode | str | 否 | 多词匹配语义：`all`=AND 全词命中（默认）/`any`=任一词命中即召回（宽召回） |
 
 **何时用**：你想"找出某类需求 / 某功能有哪些需求"时。返回仅含 fused（融合+精排后的最终结果）。
@@ -212,22 +211,6 @@ check_requirement_conflicts(
 
 ---
 
-### get_project_profile — 查询项目画像
-
-PM/Dev/Admin 共享。返回项目最新的 ProjectProfile 节点（技术栈/架构/约定/团队）。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| project_id | UUID | 是 | 项目 ID |
-
-**何时用**：提交/检索前想了解项目技术栈、架构约定。
-
-**何时不用**：想枚举可见项目列表用 `get_project_info`。
-
-```python
-get_project_profile(project_id="proj-uuid")
-```
-
 ---
 
 ### get_project_info — 枚举/查询项目画像
@@ -243,7 +226,7 @@ PM/Dev/Admin 共享。list 枚举当前 key 可见的项目；get 按 project_id
 
 **何时用（PM）**：想确认自己可被哪些项目访问、或查看项目基本信息。
 
-**何时不用**：只查单个项目技术栈细节用 `get_project_profile`。
+**何时不用**：只查单个项目技术栈细节用 `get_project_info(action="get", include_profile=true)`。
 
 ```python
 get_project_info(action="list", include_scope_meta=True)

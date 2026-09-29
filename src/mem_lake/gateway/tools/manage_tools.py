@@ -169,14 +169,15 @@ def _build_mcp_config(mcp_url: str, plaintext: str) -> str:
 def _build_user_hint(role: str) -> str:
     """生成给【用户】的一句话接入提示（不含 Key）。
 
-    只引导用户配置完 MCP 后对自己 Agent 说一句话，指向 get_role_skills；
-    具体安装教程由目标 Agent 调 get_role_skills 自助获取，不再经 admin 转手
-    大段提示词，从而消除「admin Agent → admin 人 → 目标用户 → 目标 Agent」的接力损耗。
+    批次三起 skills 不再经 MCP 工具分发（get_role_skills 已删除），改指引用户
+    让 Agent 从 GitHub 仓库自取安装——工具面少一个 schema，skills 内容更新
+    走仓库发布，Agent 侧安装一次后所有会话生效。
     """
     return (
         f"已生成 {role} 角色的 MCP 配置（见 mcp_config）。将它粘贴进你的 MCP 客户端后，"
-        "对你的 Agent 说一句「先调用 get_role_skills 安装角色技能，再开始使用 MemLake」即可。"
-        "技能由 Agent 自行安装一次，后续会话自动生效。"
+        "让你的 Agent 从 GitHub 下载并安装角色技能（安装一次，后续会话自动生效）：\n"
+        f"https://raw.githubusercontent.com/easy12138s/MemLake/master/"
+        f"src/mem_lake/skills/{role}/SKILL.md"
     )
 
 

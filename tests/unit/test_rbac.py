@@ -39,7 +39,11 @@ def test_graph_tools_admin_only():
 
 
 def test_pm_tools_exact():
-    """PM_TOOLS 精确匹配 PDD 3.5 的工具名（+ get_project_info）。"""
+    """PM_TOOLS 精确匹配工具名。
+
+    批次三调整（工具面治理）：-get_role_skills（GitHub 分发）-get_project_profile
+    （get_project_info 吸收）+list_requirements（清单枚举）。
+    """
     expected = {
         "publish_requirement",
         "search_similar_requirements",
@@ -47,18 +51,17 @@ def test_pm_tools_exact():
         "check_requirement_conflicts",
         "update_requirement_relations",
         "update_node",
-        "get_project_profile",
+        "list_requirements",
         "get_requirement_context",
         "get_project_info",
-        "get_role_skills",
     }
     assert PM_TOOLS == expected
 
 
 def test_dev_tools_exact():
-    """DEV_TOOLS 精确匹配 PDD 3.5 的工具名（+ get_project_info）。"""
+    """DEV_TOOLS 精确匹配工具名（批次三：-skills/-profile +list_requirements）。"""
     expected = {
-        "get_project_profile",
+        "list_requirements",
         "get_requirement_context",
         "search_code_snippets",
         "submit_dev_artifacts",
@@ -66,9 +69,22 @@ def test_dev_tools_exact():
         "search_similar_requirements",
         "analyze_impact_scope",
         "get_project_info",
-        "get_role_skills",
     }
     assert DEV_TOOLS == expected
+
+
+def test_removed_tools_not_anywhere():
+    """批次三删除的工具不得出现在任何角色工具集（防回流）。"""
+    for name in ("get_role_skills", "get_project_profile"):
+        assert name not in PM_TOOLS
+        assert name not in DEV_TOOLS
+        assert name not in ADMIN_ONLY_TOOLS
+
+
+def test_list_requirements_shared():
+    """list_requirements 为 pm/dev 共享（admin 经并集继承）。"""
+    assert "list_requirements" in PM_TOOLS
+    assert "list_requirements" in DEV_TOOLS
 
 
 def test_get_tools_for_role_valid():

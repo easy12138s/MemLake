@@ -16,9 +16,6 @@ import pytest
 
 from mem_lake.gateway.tools.query_tools import (
     AuditLogItemOutput,
-    GetProjectProfileOutput,
-    GetRoleSkillsOutput,
-    ProjectProfileOutput,
     QueryAuditLogOutput,
     RelatedNodeOutput,
     RequirementContextOutput,
@@ -181,8 +178,8 @@ class TestResolveSearchScopeFallback:
     """_resolve_search_scope_fallback 三分支 + admin 不接收。"""
 
     def setup_method(self):
-        from mem_lake.gateway.tools.search_tools import _resolve_search_scope_fallback
-        self.resolve = _resolve_search_scope_fallback
+        from mem_lake.gateway.tools._shared import resolve_search_scope_fallback
+        self.resolve = resolve_search_scope_fallback
 
     def test_explicit_ids_pass_through(self):
         p, s = uuid.uuid4(), uuid.uuid4()
@@ -214,8 +211,12 @@ class TestResolveSearchScopeFallback:
 # ============================================================================
 
 
-class TestEngineDetailsToggle:
-    """_run_hybrid_search 的 include_engine_details 三态。"""
+class TestRunHybridSearchContract:
+    """_run_hybrid_search 出参契约：fused + query_terms + candidates_total/returned。
+
+    引擎明细（vector/fulltext）与 include_engine_details 参数已在批次三删除——
+    出参只保留 agent 决策所需字段，防调试数据回流 schema。
+    """
 
     def _make_result(self):
         from mem_lake.search.fusion import SearchResult
@@ -226,65 +227,16 @@ class TestEngineDetailsToggle:
                 SearchResult(node_id=nid, title="需求A", content="内容A", node_type="Requirement",
                              score=0.9, source="fused", properties={}, tags=[]),
             ],
-            "vector": [
-                SearchResult(node_id=nid, title="需求A", content="内容A", node_type="Requirement",
-                             score=0.9, source="vector", properties={}, tags=[]),
-            ],
-            "fulltext": [
-                SearchResult(node_id=nid, title="需求A", content="内容A", node_type="Requirement",
-                             score=0.01, source="fulltext", properties={}, tags=[]),
-            ],
+            "vector": [],
+            "fulltext": [],
         }
 
-    async def test_engine_details_omitted_by_default(self, monkeypatch):
-        """默认不回传引擎明细：vector/fulltext 为 None（序列化后不出现该键），fused 正常返回。"""
-        from types import SimpleNamespace
+    async def test_output_has_no_debug_fields(self, monkeypatch):
+        """出参模型不含 vector/fulltext/total（调试与历史字段，防回流断言）。"""
+        from mem_lake.gateway.tools.search_tools import HybridSearchOutput
 
-        from mem_lake.gateway.tools import search_tools
-
-        monkeypatch.setattr(
-            search_tools, "get_lifespan_context",
-            lambda: SimpleNamespace(embedding_client=None, graph_store=None),
-        )
-        monkeypatch.setattr(
-            search_tools, "hybrid_search",
-            lambda **kw: _async_return(self._make_result()),
-        )
-
-        out = await search_tools._run_hybrid_search(
-            project_id=uuid.uuid4(), query="登录", node_types=("Requirement",),
-            top_n=10, tags=None,
-        )
-        assert len(out.fused) == 1
-        assert out.vector is None
-        assert out.fulltext is None
-        # 序列化后不得出现误导性的空数组键（ISSUE-04：空列表像「候选池为空」）
-        dumped = out.model_dump(exclude_none=True)
-        assert "vector" not in dumped
-        assert "fulltext" not in dumped
-
-    async def test_engine_details_included_when_flag(self, monkeypatch):
-        """include_engine_details=True 时回传引擎明细（调试/评估用）。"""
-        from types import SimpleNamespace
-
-        from mem_lake.gateway.tools import search_tools
-
-        monkeypatch.setattr(
-            search_tools, "get_lifespan_context",
-            lambda: SimpleNamespace(embedding_client=None, graph_store=None),
-        )
-        monkeypatch.setattr(
-            search_tools, "hybrid_search",
-            lambda **kw: _async_return(self._make_result()),
-        )
-
-        out = await search_tools._run_hybrid_search(
-            project_id=uuid.uuid4(), query="登录", node_types=("Requirement",),
-            top_n=10, tags=None, include_engine_details=True,
-        )
-        assert len(out.fused) == 1
-        assert len(out.vector) == 1
-        assert len(out.fulltext) == 1
+        for banned in ("vector", "fulltext", "total"):
+            assert banned not in HybridSearchOutput.model_fields
 
     async def test_candidates_total_counts_pre_filter(self, monkeypatch):
         """candidates_total=阈值过滤前候选数，returned/total=过滤后条数（ISSUE-03）。"""
@@ -324,7 +276,7 @@ class TestEngineDetailsToggle:
         )
         assert out.candidates_total == 3  # 过滤前
         assert len(out.fused) == 1  # 仅纯全文命中保留
-        assert out.total == out.returned == 1
+        assert out.returned == 1
 
 
 # ============================================================================
@@ -491,33 +443,14 @@ class TestOutputModels:
         assert item.source == "fused"
         assert item.score == 0.8
 
-    def test_hybrid_search_output_default_omits_engine_lists(self):
-        """默认不回传 vector/fulltext（None，序列化省略）；returned/candidates_total 就位。"""
-        output = HybridSearchOutput(
-            query="测试",
-            fused=[],
-            total=0,
-        )
-        assert output.vector is None
-        assert output.fulltext is None
+    def test_hybrid_search_output_minimal_contract(self):
+        """出参仅 agent 所需字段；调试/历史字段不得回流。"""
+        output = HybridSearchOutput(query="测试", fused=[])
         assert output.returned == 0
         assert output.candidates_total == 0
-        dumped = output.model_dump(exclude_none=True)
-        assert "vector" not in dumped and "fulltext" not in dumped
+        for banned in ("vector", "fulltext", "total"):
+            assert banned not in HybridSearchOutput.model_fields
 
-    def test_hybrid_search_output_total_equals_returned(self):
-        """total 为历史字段，语义等同 returned（避免「命中总数」误读，ISSUE-03）。"""
-        from mem_lake.gateway.tools.search_tools import SearchItemOutput
-
-        items = [
-            SearchItemOutput(
-                node_id=uuid.uuid4(), title="t", content="c",
-                node_type="Requirement", score=0.9, source="fused",
-            )
-        ]
-        output = HybridSearchOutput(query="q", fused=items, total=1, candidates_total=7)
-        assert output.total == output.returned == len(output.fused)
-        assert output.candidates_total == 7
 
     def test_conflict_check_output_no_conflict(self):
         """ConflictCheckOutput 无冲突场景。"""
@@ -551,40 +484,6 @@ class TestOutputModels:
             offset=0,
         )
         assert output.total == 0
-
-    def test_get_role_skills_output(self):
-        """GetRoleSkillsOutput 字段校验。"""
-        output = GetRoleSkillsOutput(
-            role="pm",
-            skills_markdown="# PM Skills",
-            version="1.0.0",
-            installation_guide="## Skills 文件放置指南",
-        )
-        assert output.role == "pm"
-        assert output.version == "1.0.0"
-        assert "放置指南" in output.installation_guide
-
-    def test_get_project_profile_output_none(self):
-        """GetProjectProfileOutput 无画像场景。"""
-        output = GetProjectProfileOutput(
-            project_id=uuid.uuid4(),
-            profile=None,
-        )
-        assert output.profile is None
-
-    def test_project_profile_output(self):
-        """ProjectProfileOutput 字段校验。"""
-        output = ProjectProfileOutput(
-            node_id=uuid.uuid4(),
-            title="项目名",
-            content="描述",
-            properties={"tech_stack": ["Python"]},
-            tags=["tag"],
-            version=1,
-            created_at="2026-08-02T12:00:00",
-            created_by="ak_admin",
-        )
-        assert output.properties == {"tech_stack": ["Python"]}
 
     def test_related_node_output(self):
         """RelatedNodeOutput 字段校验。"""

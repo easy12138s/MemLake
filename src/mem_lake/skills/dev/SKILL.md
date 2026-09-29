@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.8.0
+version: 1.9.0
 ---
 
 # Dev Skills（开发者）
@@ -79,12 +79,11 @@ version: 1.8.0
 - **search_similar_requirements** — 检索相似需求（向量+全文融合）
 - **search_code_snippets** — 检索研发资产（代码/方案/意图/坑）
 - **analyze_impact_scope** — 分析变更影响范围
+- **list_requirements** — 清单式枚举需求（分页+module/source_doc 前缀过滤）
 - **get_requirement_context** — 查询需求上下文
 
 ### 查询类
-- **get_project_profile** — 查询项目画像
 - **get_project_info** — 枚举/查询项目
-- **get_role_skills** — 获取角色 Skills 文档
 
 > **详细参数表和示例见 `dev/REFERENCE.md`**
 
@@ -117,6 +116,29 @@ version: 1.8.0
 - **Dev**: 参考 `dev/REFERENCE.md`
 
 按需加载方式：
-1. 使用 `get_role_skills(role="dev")` 获取主文件
-2. 如需详细工具参数或示例，加载 `dev/REFERENCE.md`
+1. 本文件与 `dev/REFERENCE.md` 均在 GitHub 仓库（raw.githubusercontent.com/easy12138s/MemLake/master/src/mem_lake/skills/dev/）
+2. 如需详细工具参数或示例，下载 REFERENCE.md 放到本文件同目录
 3. REFERENCE.md 仅在需要时加载，节省 context token
+
+## Skills 文件放置指南
+
+本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发（get_role_skills
+工具已在 v1.9.0 删除）。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
+
+### 跨客户端项目级（推荐，首选）
+- `.agents/skills/mem-lake-{role}/SKILL.md`（符合 Agent Skills 标准 agentskills.io，主流 Agent 通用）
+
+### Claude Code
+- 用户级：`~/.claude/skills/mem-lake-{role}/SKILL.md`；项目级：`.claude/skills/mem-lake-{role}/SKILL.md`
+
+### Cursor
+- `.cursor/rules/mem-lake-{role}.mdc`（包装为 .mdc 格式）
+
+### Codex CLI (OpenAI)
+- `.agents/skills/mem-lake-{role}/SKILL.md`（同首选）；或追加到 `AGENTS.md`
+
+### Gemini CLI
+- `.gemini/rules/mem-lake-{role}.md`
+
+`{role}` 替换为实际角色（admin/pm/dev）；放置后重启 Agent 会话生效；
+不确定目录格式请查阅你的 Agent 官方文档。
