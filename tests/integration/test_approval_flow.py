@@ -2151,3 +2151,109 @@ class TestAutoProcessFloating:
         )
         assert result["decision"] == "auto_approved"
         assert result["batch"].status == STATUS_APPROVED
+
+
+# ============================================================================
+# 批次四：跨 project 语义查重（09-29 报告场景 D 根因——可见性三下游之一）
+# ============================================================================
+
+
+class TestCrossProjectConflictDetection:
+    """system 下跨 project 的同类重复沉淀必须被冲突检测捕获。
+
+    根因：detect_conflicts 的 L1 候选域按提交节点自身 project_id 过滤，
+    旧 project 下的同类节点不在候选域 → 语义重复静默 auto_approved，
+    知识库自我稀释。修复：asset 检测候选域扩为 system 维度（跨 project）。
+    """
+
+    async def test_duplicate_pitfall_across_projects_needs_review(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """system 下 A project 已有 Pitfall，B project 提交同内容 Pitfall → needs_human_review。"""
+        from mem_lake.approval.policy import auto_process_batch
+        from mem_lake.approval.repository import submit_batch
+        from mem_lake.knowledge.models import System
+        from mem_lake.knowledge.repository import (
+            add_system_projects,
+            create_node,
+        )
+        from mem_lake.search.vector import VectorSearcher
+
+        sys_obj = System(name=f"CP-{uuid.uuid4().hex[:6]}", code=f"CP{uuid.uuid4().hex[:4]}")
+        db_session.add(sys_obj)
+        await db_session.flush()
+        p_a, p_b = uuid.uuid4(), uuid.uuid4()
+        await add_system_projects(db_session, system_id=sys_obj.id, project_ids=[p_a, p_b])
+
+        # project A 沉淀过的 Pitfall（approved）
+        await create_node(
+            db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+            project_id=p_a, node_type="Pitfall",
+            title="adjust_total_price 误判陷阱",
+            content="退费行的 adjust_total_price 恒等于子项完整应收，用它判退清必然误判",
+            properties=knowledge_helpers["Pitfall"](),
+            created_by="ak_dev_old",
+        )
+        await db_session.commit()
+
+        # project B 提交同内容 Pitfall（宽松模式）——现状：静默 auto_approved
+        pit_props = knowledge_helpers["Pitfall"]()
+        items = [
+            {
+                "item_type": "node",
+                "action": "create",
+                "entity_type": "Pitfall",
+                "payload": {
+                    "project_id": str(p_b),
+                    "node_type": "Pitfall",
+                    "title": "adjust_total_price 误判陷阱",
+                    "content": "退费行的 adjust_total_price 恒等于子项完整应收，用它判退清必然误判",
+                    "properties": pit_props,
+                    "tags": [],
+                    "source": {"agent": "dev_agent", "tool": "submit_dev_artifacts"},
+                    "created_by": "ak_dev_new",
+                },
+            }
+        ]
+        batch = await submit_batch(
+            db_session,
+            project_id=p_b,
+            batch_type="submit_dev_artifacts",
+            submitted_by="ak_dev_new",
+            submitter_role="dev",
+            items=items,
+        )
+        result = await auto_process_batch(
+            db_session,
+            batch_id=batch.id,
+            reviewed_by="ak_dev_new",
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            vector_searcher=VectorSearcher(mock_embedding_client),
+        )
+        assert result["decision"] == "needs_human_review", (
+            "跨 project 同内容 Pitfall 必须触发人工复核——语义重复静默入库是知识库自我稀释的根因"
+        )
+
+        # 清理：批次保持 pending（需人工处理）——直接删除测试数据
+        from sqlalchemy import delete as sa_delete
+
+        from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding, SystemProject
+
+        # 已存在的 A project Pitfall + 本批次 pending 项
+        rows = (await db_session.execute(
+            __import__("sqlalchemy").select(KnowledgeNode).where(
+                KnowledgeNode.type == "Pitfall",
+                KnowledgeNode.project_id.in_([p_a, p_b]),
+            )
+        )).scalars().all()
+        for r in rows:
+            await graph_store._exec_cypher(
+                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(r.id)})
+        await db_session.execute(sa_delete(NodeEmbedding).where(
+            NodeEmbedding.node_id.in_([r.id for r in rows])))
+        await db_session.execute(sa_delete(KnowledgeNode).where(
+            KnowledgeNode.id.in_([r.id for r in rows])))
+        await db_session.execute(sa_delete(SystemProject).where(SystemProject.system_id == sys_obj.id))
+        await db_session.delete(sys_obj)
+        await db_session.commit()

@@ -43,7 +43,7 @@ from mem_lake.gateway.tools._shared import (
     resolve_search_scope_fallback,
     to_tool_error,
 )
-from mem_lake.knowledge.repository import list_nodes_by_project
+from mem_lake.knowledge.repository import get_system_project_ids, list_nodes_by_project
 from mem_lake.knowledge.schema import SchemaValidationError
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.fusion import SearchResult, hybrid_search
@@ -111,7 +111,7 @@ class ImpactScopeOutput(BaseModel):
 
     requirement_id: uuid.UUID = Field(description="需求节点 ID")
     requirement: dict[str, Any] | None = Field(
-        default=None, description="需求节点详情（None 表示不存在）"
+        default=None, description="需求节点详情"
     )
     codes: list[dict[str, Any]] = Field(
         default=[], description="直接实现该需求的代码节点列表"
@@ -124,6 +124,9 @@ class ImpactScopeOutput(BaseModel):
     )
     design_intents: list[dict[str, Any]] = Field(
         default=[], description="方案体现的设计意图节点列表"
+    )
+    pitfalls: list[dict[str, Any]] = Field(
+        default=[], description="需求挂载的踩坑节点（described_by/references 链）"
     )
 
 
@@ -270,8 +273,17 @@ def register_search_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def search_code_snippets(
-        project_id: uuid.UUID = Field(description="归属项目 ID"),
         query: str = Field(description="查询文本（代码功能/关键词）"),
+        project_id: uuid.UUID | None = Field(
+            default=None,
+            description="归属项目 ID（与 system_id 均不传时按 Key 绑定 system 兜底，"
+            "检索该 system 下全部项目的资产）",
+        ),
+        system_id: uuid.UUID | None = Field(
+            default=None,
+            description="归属 system 域——检索该 system 下全部项目的资产"
+            "（症状式检索跨项目可见，消「图读得到/检索恒空」的可见性割裂）",
+        ),
         top_n: int = Field(default=20, description="返回数量上限"),
         tags: list[str] | None = Field(default=None, description="标签过滤"),
         tags_op: str = Field(
@@ -290,16 +302,45 @@ def register_search_tools(mcp: FastMCP) -> None:
             description="多词语义（全文引擎）：all=AND 全词命中（默认）/any=任一词命中即召回",
         ),
     ) -> HybridSearchOutput:
-        """向量+全文融合检索研发资产（CodeSnippet/Pitfall/Solution/DesignIntent；project 内，仅 approved）。
+        """向量+全文融合检索研发资产（CodeSnippet/Pitfall/Solution/DesignIntent，仅 approved）。
 
-        踩坑/方案/意图与代码一并召回，node_type 区分类型。
+        scope 三态：传 project_id 检索单项目；传 system_id 检索该系统下全部项目
+        （症状式检索的推荐用法——踩坑/方案跨项目可见）；均不传按 Key 绑定
+        system 兜底。踩坑/方案/意图与代码一并召回，node_type 区分类型。
         要找需求本身用 search_similar_requirements；需求关联产物用 get_requirement_context。
         """
         try:
-            validate_project_access(project_id)
+            project_id, system_id = resolve_search_scope_fallback(
+                get_current_role(),
+                get_current_system_scope(),
+                project_id=project_id,
+                system_id=system_id,
+            )
+            if project_id is not None:
+                validate_project_access(project_id)
+            if system_id is not None:
+                validate_system_access(system_id)
+
+            # system 维度 → 该 system 下全部项目集（asset 节点无 system_id 列，
+            # 经 SystemProject 关联表展开；09-29 报告 P0-2 可见性统一）
+            project_ids: tuple[uuid.UUID, ...] | None = None
+            if project_id is None and system_id is not None:
+                session = await get_readonly_session()
+                try:
+                    pids = await get_system_project_ids(session, system_id=system_id)
+                finally:
+                    await session.close()
+                if not pids:
+                    raise ValueError(
+                        f"system {system_id} 下未挂载任何项目，无资产可检索"
+                        "（admin 可用 manage_system add_projects 挂载）"
+                    )
+                project_ids = tuple(pids)
+
             _validate_query(query)
             return await _run_hybrid_search(
                 project_id=project_id,
+                project_ids=project_ids,
                 query=query,
                 node_types=("CodeSnippet", "Pitfall", "Solution", "DesignIntent"),
                 top_n=top_n,
@@ -347,6 +388,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                     dependencies=result.get("dependencies", []),
                     solutions=result.get("solutions", []),
                     design_intents=result.get("design_intents", []),
+                    pitfalls=result.get("pitfalls", []),
                 )
             finally:
                 await session.close()
@@ -494,6 +536,7 @@ def register_search_tools(mcp: FastMCP) -> None:
 async def _run_hybrid_search(
     *,
     project_id: uuid.UUID | None = None,
+    project_ids: tuple[uuid.UUID, ...] | None = None,
     system_id: uuid.UUID | None = None,
     query: str,
     node_types: tuple[str, ...],
@@ -517,6 +560,8 @@ async def _run_hybrid_search(
 
     system 维度：传 project_id 检索该 project 资产；传 system_id 检索该系统全部需求
     （含悬浮需求）。二者都不传时用 project_scope 内全部 project 检索。
+    project_ids：system 维度资产检索的展开形式（system 下全部项目集）——asset
+    节点无 system_id 列，工具层经 SystemProject 关联表解析后传入。
 
     出参仅含 fused（融合+精排后的最终结果）——引擎原始明细为调试数据，
     已随 include_engine_details 一并删除（批次三工具面治理）。
@@ -544,6 +589,7 @@ async def _run_hybrid_search(
 
     filters = FilterSpec(
         project_id=project_id,
+        project_ids=project_ids,
         system_id=system_id,
         node_types=node_types,
         tags=effective_tags,

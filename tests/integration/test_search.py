@@ -972,3 +972,85 @@ class TestRecallRegressionBatch2:
             assert set(out_any.query_terms or []) >= {"登录", "注册"}
         finally:
             await _cleanup_project_data(db_session, graph_store, pid)
+
+
+# ============ 批次四：system 维度资产检索（09-29 报告 P1-1 症状式检索） ============
+
+
+class TestSystemScopedAssetSearch:
+    """search_code_snippets 的 system 维度：system 下全部 project 的资产跨项目可见。
+
+    根因（报告 P0-2）：Requirement 是 system 级悬浮节点、asset 是 project 级，
+    三套过滤规则不一致导致"图读得到 / project 内检索恒空"。本测试锁定
+    system 维度（project_ids=system 下项目集）的资产检索通路。
+    """
+
+    @staticmethod
+    def _ctx(monkeypatch, embedding_client, graph_store):
+        from types import SimpleNamespace
+
+        from mem_lake.gateway.tools import search_tools
+
+        monkeypatch.setattr(
+            search_tools,
+            "get_lifespan_context",
+            lambda: SimpleNamespace(
+                embedding_client=embedding_client, graph_store=graph_store
+            ),
+        )
+        return search_tools
+
+    async def test_system_scope_searches_across_projects(
+        self, db_session, graph_store, mock_embedding_client,
+        knowledge_helpers, monkeypatch
+    ):
+        """system 维度检索跨 project 命中两个项目下的资产。"""
+        from mem_lake.knowledge.models import System
+        from mem_lake.knowledge.repository import (
+            add_system_projects,
+            create_node,
+        )
+
+        sys_obj = System(name=f"SA-{uuid.uuid4().hex[:6]}", code=f"SA{uuid.uuid4().hex[:4]}")
+        db_session.add(sys_obj)
+        await db_session.flush()
+        p_a, p_b = uuid.uuid4(), uuid.uuid4()
+        await add_system_projects(db_session, system_id=sys_obj.id, project_ids=[p_a, p_b])
+
+        code_a = await create_node(
+            db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+            project_id=p_a, node_type="CodeSnippet", title="LoginService 登录服务",
+            content="登录服务实现", properties=knowledge_helpers["CodeSnippet"](),
+            created_by="ak_dev",
+        )
+        pit_b = await create_node(
+            db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+            project_id=p_b, node_type="Pitfall", title="登录态丢失踩坑",
+            content="Redis 续期冲突", properties=knowledge_helpers["Pitfall"](),
+            created_by="ak_dev",
+        )
+        await db_session.commit()
+
+        search_tools = self._ctx(monkeypatch, mock_embedding_client, graph_store)
+        try:
+            out = await search_tools._run_hybrid_search(
+                project_ids=(p_a, p_b),
+                query="登录", node_types=("CodeSnippet", "Pitfall", "Solution", "DesignIntent"),
+                top_n=10, tags=None, min_score=None,
+            )
+            hit_ids = {r.node_id for r in out.fused}
+            assert code_a.id in hit_ids, "system 下 project A 的资产应命中"
+            assert pit_b.id in hit_ids, "system 下 project B 的资产应命中"
+        finally:
+            from sqlalchemy import delete as sa_delete
+
+            from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding, SystemProject
+            ids = [code_a.id, pit_b.id]
+            for nid in ids:
+                await graph_store._exec_cypher(
+                    db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)})
+            await db_session.execute(sa_delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
+            await db_session.execute(sa_delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
+            await db_session.execute(sa_delete(SystemProject).where(SystemProject.system_id == sys_obj.id))
+            await db_session.delete(sys_obj)
+            await db_session.commit()

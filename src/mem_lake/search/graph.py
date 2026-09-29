@@ -224,28 +224,32 @@ class GraphSearcher:
 
         返回：
             {
-                "requirement": <node dict or None>,
-                "codes": [<node dict>, ...],       # 直接实现该需求的代码
-                "dependencies": [<node dict>, ...], # 代码依赖链（去重）
-                "solutions": [<node dict>, ...],   # 代码对应的实现方案
-                "design_intents": [<node dict>, ...], # 方案体现的设计意图
+                "requirement": <node dict>,         # 不存在时抛 ValueError
+                "codes": [...], "dependencies": [...],
+                "solutions": [...], "design_intents": [...],
+                "pitfalls": [<node dict>, ...],     # described_by/references 挂载的踩坑
             }
         """
-        # 1. 需求节点：PG 查询（存在 + approved + 未软删除），不存在返回全空结果
+        # 1. 需求节点：三态区分（09-29 报告：静默全空让 Agent 把
+        #    「UUID 不存在」误判为「无影响范围」）：
+        #    - DB 无行（拼错/幻觉 UUID）→ ValueError（工具层转 ToolError）
+        #    - 行存在但归档/软删 → 全空结构（既有语义，归档不构成影响范围）
+        #    - approved → 正常分析
         req_row = (
             await session.execute(
-                select(KnowledgeNode)
-                .where(KnowledgeNode.id == requirement_id)
-                .where(*node_active_approved())
+                select(KnowledgeNode).where(KnowledgeNode.id == requirement_id)
             )
         ).scalar_one_or_none()
         if req_row is None:
+            raise ValueError(f"需求节点不存在或已删除: {requirement_id}")
+        if req_row.status != "approved" or req_row.is_deleted:
             return {
                 "requirement": None,
                 "codes": [],
                 "dependencies": [],
                 "solutions": [],
                 "design_intents": [],
+                "pitfalls": [],
             }
         requirement = {
             "id": str(req_row.id),
@@ -341,12 +345,64 @@ class GraphSearcher:
             and (d.get("properties") or {}).get("id") in intent_approved_ids
         ]
 
+        # 6. 批次四（09-29 报告 P0-1）：存量契约资产纳入影响范围。
+        #    - described_by：Requirement --described_by--> Pitfall（自动建边链的坑）
+        #    - references：按官方写入契约显式声明挂到需求上的任意资产，
+        #      按 node 类型归入对应段（此前对这些边永久不可见 → 影响分析残缺）
+        pit_dicts = await self._graph_store.neighbors(
+            session, requirement_id, edge_type="described_by", depth=1
+        )
+        ref_dicts = await self._graph_store.neighbors(
+            session, requirement_id, edge_type="references", depth=1
+        )
+
+        # 按 AGE label 归类（CodeSnippet/Solution/DesignIntent/Pitfall），同 id 去重
+        # 键对齐 AGE 节点 label（节点类型名，首字母大写）
+        grouped: dict[str, list[dict[str, Any]]] = {
+            "CodeSnippet": [], "Solution": [], "DesignIntent": [], "Pitfall": [],
+        }
+        seen: set[str] = set()
+        for d in [*pit_dicts, *ref_dicts]:
+            if not isinstance(d, dict):
+                continue
+            nid = (d.get("properties") or {}).get("id")
+            label = d.get("label")
+            if not nid or nid in seen or label not in grouped:
+                continue
+            seen.add(nid)
+            grouped[label].append(d)
+
+        # 与主链去重（同一节点可能既有 realized_by 又有 references）
+        main_seen = set(_extract_node_ids(
+            [*codes, *dependencies, *solutions, *design_intents]
+        ))
+        # 过滤主链重复 + PG approved 过滤（一次性查剩余 id）
+        remain = [
+            d for seg in grouped.values() for d in seg
+            if (d.get("properties") or {}).get("id") not in main_seen
+        ]
+        ref_approved_ids = await self._query_approved_ids(
+            session, _extract_node_ids(remain)
+        )
+
+        def _ref(seg: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                d for d in seg
+                if (d.get("properties") or {}).get("id") in ref_approved_ids
+            ]
+
+        codes = [*codes, *_ref(grouped["CodeSnippet"])]
+        solutions = [*solutions, *_ref(grouped["Solution"])]
+        design_intents = [*design_intents, *_ref(grouped["DesignIntent"])]
+        pitfalls = _ref(grouped["Pitfall"])
+
         return {
             "requirement": requirement,
             "codes": codes,
             "dependencies": dependencies,
             "solutions": solutions,
             "design_intents": design_intents,
+            "pitfalls": pitfalls,
         }
 
     async def _query_approved_ids(

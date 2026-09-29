@@ -218,13 +218,26 @@ class TestBuildDevItems:
             created_by="ak",
         )
 
-        # 4 nodes + 1 auto implements (only for code_snippets)
-        assert len(items) == 5
+        # 09-29 报告 P0-1 修复：四类产物统一自动建边（批次二已拍板语义映射）
+        # 4 nodes + 4 auto edges: CodeSnippet→implements, Solution→realized_by,
+        # DesignIntent→embodies, Pitfall→described_by
+        assert len(items) == 8
         node_types = [item["entity_type"] for item in items if item["item_type"] == "node"]
         assert "CodeSnippet" in node_types
         assert "Solution" in node_types
         assert "DesignIntent" in node_types
         assert "Pitfall" in node_types
+        auto_edges = [item for item in items if item["item_type"] == "edge"]
+        assert {e["entity_type"] for e in auto_edges} == {
+            "implements", "realized_by", "embodies", "described_by",
+        }
+        by_type = {e["entity_type"]: e for e in auto_edges}
+        assert by_type["implements"]["payload"]["to_ref"] == "Code1"
+        assert by_type["realized_by"]["payload"]["to_ref"] == "Sol1"
+        assert by_type["embodies"]["payload"]["to_ref"] == "Intent1"
+        assert by_type["described_by"]["payload"]["to_ref"] == "Pitfall1"
+        for e in auto_edges:
+            assert e["payload"]["from_ref"] == str(requirement_id)
 
     def test_with_explicit_relations(self):
         """含显式 relations：nodes + auto implements + explicit relations。"""
@@ -454,8 +467,8 @@ class TestBuildDevItemsFreeStanding:
             created_by="ak",
             profile_id=None,
         )
-        # 4 nodes + 1 implements (仅 CodeSnippet)
-        assert len(items) == 5
+        # 4 nodes + 4 auto edges（批次四四类统一映射）
+        assert len(items) == 8
         edge_types = [i["entity_type"] for i in items if i["item_type"] == "edge"]
         assert edge_types.count("implements") == 1
         impl = next(i for i in items if i["item_type"] == "edge" and i["entity_type"] == "implements")
