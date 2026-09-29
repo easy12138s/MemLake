@@ -222,14 +222,23 @@ def register_query_tools(mcp: FastMCP) -> None:
         tags_op: str = Field(
             default="all", description="标签语义：all=AND（默认）/any=OR"
         ),
+        requirement_key: str | None = Field(
+            default=None,
+            description="需求主键精确直查（如 SYS-1416），已知 key 时免翻分页",
+        ),
+        fields: list[str] | None = Field(
+            default=None,
+            description="出参字段白名单裁剪（可裁：module/priority/requirement_key/"
+            "source_doc；node_id/title 恒回）——大结果集只回必要字段省 token",
+        ),
         limit: int = Field(default=50, description="页大小，默认 50，上限 200"),
         offset: int = Field(default=0, description="分页偏移"),
     ) -> ListRequirementsOutput:
         """清单式枚举 Requirement（分页 + 属性过滤），返回命中总数 total。
 
-        「列出某项目/系统的全部需求」「按 module 或 source_doc 前缀圈定批次」用
-        本工具，不要用检索工具反复试探再人工取并集。条目不含正文；要看某条详情
-        用 get_requirement_context。
+        「列出某项目/系统的全部需求」「按 module 或 source_doc 前缀圈定批次」
+        「按 requirement_key 直查」用本工具，不要用检索工具反复试探再人工取
+        并集。条目不含正文；要看某条详情用 get_requirement_context。
         """
         try:
             project_id, system_id = resolve_search_scope_fallback(
@@ -242,6 +251,15 @@ def register_query_tools(mcp: FastMCP) -> None:
                 validate_project_access(project_id)
             if system_id is not None:
                 validate_system_access(system_id)
+            # fields 白名单校验（防注入：非出参字段直接拒绝）
+            allowed_fields = set(RequirementListItem.model_fields)
+            if fields is not None:
+                unknown = set(fields) - allowed_fields
+                if unknown:
+                    raise ValueError(
+                        f"非法 fields: {sorted(unknown)}，可选: {sorted(allowed_fields)}"
+                    )
+
             session = await get_readonly_session()
             try:
                 rows, total = await list_requirements_repo(
@@ -250,26 +268,34 @@ def register_query_tools(mcp: FastMCP) -> None:
                     system_id=system_id,
                     module=module,
                     source_doc_prefix=source_doc_prefix,
+                    requirement_key=requirement_key,
                     tags=tuple(tags) if tags else None,
                     tags_op=tags_op,
                     limit=min(max(limit, 1), 200),
                     offset=max(offset, 0),
                 )
+                # node_id/title 为恒回字段（引用键+可读名，报告 P1-4 曾批评
+                # "只回 UUID 没名字"），fields 只裁可选维度
+                keep = (set(fields) | {"node_id", "title"}) if fields is not None else None
+
+                def _item(r: Any) -> RequirementListItem:
+                    payload = {
+                        "node_id": r.id,
+                        "title": r.title,
+                        "module": (r.properties or {}).get("module"),
+                        "priority": (r.properties or {}).get("priority"),
+                        "requirement_key": r.requirement_key,
+                        "source_doc": (r.properties or {}).get("source_doc"),
+                    }
+                    if keep is not None:
+                        payload = {k: v for k, v in payload.items() if k in keep}
+                    return RequirementListItem(**payload)
+
                 return ListRequirementsOutput(
                     total=total,
                     limit=min(max(limit, 1), 200),
                     offset=offset,
-                    items=[
-                        RequirementListItem(
-                            node_id=r.id,
-                            title=r.title,
-                            module=(r.properties or {}).get("module"),
-                            priority=(r.properties or {}).get("priority"),
-                            requirement_key=r.requirement_key,
-                            source_doc=(r.properties or {}).get("source_doc"),
-                        )
-                        for r in rows
-                    ],
+                    items=[_item(r) for r in rows],
                 )
             finally:
                 await session.close()

@@ -265,20 +265,20 @@ async def hybrid_search(
         )
     )
 
-    # 向量与全文 RRF 融合。启用精排时先融合出 ≥ RERANK_TOP_K 的候选池（而非直接截断到
-    # top_n），rerank 在候选池内重排后再收口到 top_n——否则 rerank 只在前 top_n 内重排，
-    # 无法挽回被 RRF 排到 6~30 名的相关结果（A/B 对照验证：候选池 30 使 hit@5 提升）。
-    settings = get_settings()
-    candidate_n = top_n
-    if settings.ENABLE_RERANK and settings.RERANK_MODEL_PATH:
-        candidate_n = max(top_n, settings.RERANK_TOP_K)
-    fused = rrf_fuse([vector_results, fulltext_results], k=60, top_n=candidate_n)
+    # 向量与全文 RRF 融合。融合不按 candidate_n 截断而取全量（上界=2×top_k）——
+    # 批次五（09-29 报告 P0-3）：candidates_total 需为「过滤后未截断」的真实候选数，
+    # 截断池会让计数随 top_n 变化。rerank 仅重排前 RERANK_TOP_K 名（候选池优化
+    # 语义不变：A/B 验证候选池 30 使 hit@5 提升），尾部原序拼接后收口 top_n。
+    fused_pool = rrf_fuse(
+        [vector_results, fulltext_results], k=60, top_n=top_k * 2
+    )
 
     # 融合结果 score 透出向量余弦分（0~1）：便于调用方判相关性，并修复
     # check_requirement_conflicts 用 r.score >= threshold(0.85) 过滤时 RRF 小数
     # 永远不触发的问题。排序仍由 RRF 决定（fused_sorted 已按 RRF 排好），此处仅
     # 替换展示/阈值用的 score；无向量分（仅全文命中）的节点保留原 RRF 分。
-    fused = _apply_vector_scores(fused, vector_results)
+    fused_pool = _apply_vector_scores(fused_pool, vector_results)
+    fused = fused_pool
 
     # 精排（可降级）：服务启用 rerank 时，对融合候选做 cross-encoder 重排。
     # 排序改由精排分数决定，score 字段仍保留向量余弦分（与 "RRF 排序 + 向量 score" 的
@@ -287,6 +287,8 @@ async def hybrid_search(
 
     return {
         "fused": fused,
+        # 融合全量池（未按 top_n 截断）：供调用方统计真实候选数（批次五）
+        "fused_pool": fused_pool,
         "vector": vector_results,
         "fulltext": fulltext_results,
         "graph": graph_results,

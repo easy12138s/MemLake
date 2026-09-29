@@ -8,6 +8,7 @@
 
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -422,3 +423,51 @@ class TestToToolError:
         assert "工具调用失败" in str(err)
         # 不应暴露内部错误详情
         assert "内部错误详情" not in str(err)
+
+
+class TestWriteToolOutputReceipt:
+    """批次五（报告 P1-2）：宽松模式回执含 created 节点清单与建边计数。"""
+
+    def _lax_batch(self):
+        """auto_approved 批次 mock：2 node（target_id 回填）+ 1 edge。"""
+        from datetime import datetime, timezone
+
+        node1 = MagicMock()
+        node1.item_type, node1.action, node1.entity_type = "node", "create", "Pitfall"
+        node1.target_id = uuid.uuid4()
+        node1.payload = {"ref": "Pit", "title": "退费判据陷阱"}
+
+        node2 = MagicMock()
+        node2.item_type, node2.action, node2.entity_type = "node", "create", "Solution"
+        node2.target_id = uuid.uuid4()
+        node2.payload = {"ref": "Sol", "title": "双锚点方案"}
+
+        edge1 = MagicMock()
+        edge1.item_type, edge1.action, edge1.entity_type = "edge", "create", "described_by"
+        edge1.target_id, edge1.payload = None, {}
+
+        batch = MagicMock()
+        batch.id = uuid.uuid4()
+        batch.status = "approved"
+        batch.submitted_at = datetime.now(timezone.utc)
+        batch.items = [node1, node2, edge1]
+        return batch, node1, node2
+
+    def test_auto_approved_receipt_contains_created_and_edges(self):
+        """auto_approved：created 含 ref/node_id/type/title，edges_created=边项数。"""
+        batch, n1, n2 = self._lax_batch()
+        out = WriteToolOutput.from_batch(batch, decision="auto_approved")
+        assert out.edges_created == 1
+        assert len(out.created) == 2
+        by_ref = {c["ref"]: c for c in out.created}
+        assert by_ref["Pit"]["node_id"] == str(n1.target_id)
+        assert by_ref["Pit"]["node_type"] == "Pitfall"
+        assert by_ref["Sol"]["title"] == "双锚点方案"
+
+    def test_strict_and_pending_receipt_omit_created(self):
+        """严格模式（decision=None）与 needs_human_review 不返回 created（节点未入库）。"""
+        batch, _, _ = self._lax_batch()
+        strict = WriteToolOutput.from_batch(batch, decision=None)
+        assert strict.created is None and strict.edges_created is None
+        pending = WriteToolOutput.from_batch(batch, decision="needs_human_review")
+        assert pending.created is None and pending.edges_created is None

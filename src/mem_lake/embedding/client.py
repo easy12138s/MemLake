@@ -34,7 +34,17 @@ DEFAULT_TIMEOUT = 600.0
 
 
 class EmbeddingError(Exception):
-    """Embedding 服务不可用、响应非 200 或维度不符时抛出。"""
+    """Embedding 服务不可用、响应非 200 或维度不符时抛出。
+
+    retryable（09-29 报告 P2-1）：调用方可据此区分「该重试」与「该放弃」——
+    ConnectError/5xx 为瞬时错误（retryable=True）；ReadTimeout 明确
+    retryable=False（请求可能已到达服务端仍在计算，盲目重试会并发叠压，
+    实测 OOM 诱因），应等待后查询或稍后再试。
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class EmbeddingClient:
@@ -102,13 +112,17 @@ class EmbeddingClient:
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
                     continue
-                raise EmbeddingError(f"Embedding 服务连接失败: {exc}") from exc
+                raise EmbeddingError(
+                    f"Embedding 服务连接失败: {exc}", retryable=True
+                ) from exc
             except httpx.HTTPError as exc:
                 # 超时/读中断等：请求可能已到达服务端并在计算，重试会造成服务端
                 # 同一请求并发叠压（实测 OOM 诱因），故不重试，直接失败。
                 # str(ReadTimeout) 为空串，须带异常类型定位（真实反馈 ISSUE-10）
                 raise EmbeddingError(
                     f"Embedding 服务请求失败: {type(exc).__name__}: {exc!r}"
+                    "（请求可能已到达服务端仍在计算，勿立即重试以免叠压）",
+                    retryable=False,
                 ) from exc
 
             if resp.status_code == 200:
@@ -162,7 +176,8 @@ class EmbeddingClient:
             resp = await self._client.get("/health")
         except httpx.HTTPError as exc:
             raise EmbeddingError(
-                f"Embedding 健康检查失败: {type(exc).__name__}: {exc!r}"
+                f"Embedding 健康检查失败: {type(exc).__name__}: {exc!r}",
+                retryable=isinstance(exc, httpx.ConnectError),
             ) from exc
 
         if resp.status_code != 200:

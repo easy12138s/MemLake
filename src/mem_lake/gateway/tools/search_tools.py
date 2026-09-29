@@ -96,7 +96,12 @@ class HybridSearchOutput(BaseModel):
     )
     candidates_total: int = Field(
         default=0,
-        description="min_score 阈值过滤前的候选池条数（评估命中量以本字段为准）",
+        description="min_score 过滤后、top_n 截断前的真实候选数（同 query 恒定，"
+        "评估命中量以本字段为准——批次五语义修正：不再随 top_n 变化）",
+    )
+    truncated: bool = Field(
+        default=False,
+        description="候选池是否大于本页 top_n（true=还有更多候选，翻大 top_n 可取）",
     )
 
     @computed_field  # type: ignore[prop-decorator, untyped-decorator]
@@ -621,27 +626,31 @@ async def _run_hybrid_search(
     # 把"向量低分捎带召回 + 精确全文命中"的节点一并误杀（0 召回的根因）。
     fulltext_ids = {r.node_id for r in result.get("fulltext", [])}
 
+    # 批次五（报告 P0-3）：candidates_total = min_score 过滤后、top_n 截断前的
+    # 真实候选数——从融合全量池（fused_pool）计数，与 top_n 无关；此前从
+    # 截断后的 fused_raw 计数导致 top_n=3 → 3，Agent 无法自证穷举。
+    fused_pool = result.get("fused_pool") or result.get("fused", [])
+
+    def _passes(r: "SearchResult") -> bool:
+        # 仅过滤"纯向量命中"节点；有全文命中或无向量分的节点予以保留
+        return (
+            r.node_id in fulltext_ids
+            or r.node_id not in vector_score_map
+            or vector_score_map.get(r.node_id, -1) >= (min_score if min_score is not None else 0)
+        )
+
+    candidates_total = sum(1 for r in fused_pool if _passes(r))
+
     fused_raw = result.get("fused", [])
     if min_score is not None:
-        # 仅过滤"纯向量命中"节点；有全文命中或无向量分的节点予以保留
-        # candidates_total 记录过滤前条数（ISSUE-03：total/returned 随 top_n 变化，
-        # 非命中总数；评估命中总量以 candidates_total 为准）
-        candidates_total = len(fused_raw)
-        fused_raw = [
-            r
-            for r in fused_raw
-            if r.node_id in fulltext_ids
-            or r.node_id not in vector_score_map
-            or vector_score_map.get(r.node_id, -1) >= min_score
-        ]
-    else:
-        candidates_total = len(fused_raw)
+        fused_raw = [r for r in fused_raw if _passes(r)]
 
     return HybridSearchOutput(
         query=query,
         fused=[_to_search_item_output(r, vector_score_map.get(r.node_id)) for r in fused_raw],
         query_terms=_parse_tsquery_lexemes(result.get("fulltext_tsquery", "")),
         candidates_total=candidates_total,
+        truncated=candidates_total > len(fused_raw),
     )
 
 

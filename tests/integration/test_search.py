@@ -1054,3 +1054,70 @@ class TestSystemScopedAssetSearch:
             await db_session.execute(sa_delete(SystemProject).where(SystemProject.system_id == sys_obj.id))
             await db_session.delete(sys_obj)
             await db_session.commit()
+
+
+# ============ 批次五：candidates_total 真总数（09-29 报告 P0-3） ============
+
+
+class TestCandidatesTotalInvariant:
+    """candidates_total = min_score 过滤后、top_n 截断前的真实候选数。
+
+    语义修正（报告 P0-3）：此前 candidates_total=len(fused_raw) 随 top_n 变化
+    （top_n=3 → 3），Agent 无法自证穷举。修正后同 query 不同 top_n 恒定，
+    并以 truncated 标记截断。
+    """
+
+    @staticmethod
+    def _ctx(monkeypatch, embedding_client, graph_store):
+        from types import SimpleNamespace
+
+        from mem_lake.gateway.tools import search_tools
+
+        monkeypatch.setattr(
+            search_tools,
+            "get_lifespan_context",
+            lambda: SimpleNamespace(embedding_client=embedding_client, graph_store=graph_store),
+        )
+        return search_tools
+
+    async def test_candidates_total_invariant_to_topn(
+        self, db_session, graph_store, mock_embedding_client,
+        knowledge_helpers, monkeypatch
+    ):
+        """同 query 不同 top_n：candidates_total 恒定、returned 随 top_n、truncated 正确。"""
+        search_tools = self._ctx(monkeypatch, mock_embedding_client, graph_store)
+        pid = uuid.uuid4()
+        nodes = []
+        for i in range(8):
+            n = await create_node(
+                db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+                project_id=pid, node_type="Requirement",
+                title=f"甲乙丙丁条目{i:02d}", content=f"检索回归条目 {i}",
+                properties=knowledge_helpers["Requirement"](),
+                tags=[], created_by="ak_pm", system_id=uuid.uuid4(),
+            )
+            nodes.append(n)
+        await db_session.commit()
+
+        try:
+            outs = {}
+            for top_n in (2, 5):
+                out = await search_tools._run_hybrid_search(
+                    project_id=pid, query="甲乙丙丁条目",
+                    node_types=("Requirement",), top_n=top_n,
+                    tags=None, min_score=None,
+                )
+                outs[top_n] = out
+            c2, c5 = outs[2].candidates_total, outs[5].candidates_total
+            assert c2 == c5, "candidates_total 不得随 top_n 变化（报告 P0-3）"
+            assert c2 >= 5, "融合全量候选应远大于单页"
+            assert outs[2].returned == 2 and outs[5].returned == 5
+            assert outs[2].truncated is True and outs[5].truncated is True
+            big = await search_tools._run_hybrid_search(
+                project_id=pid, query="甲乙丙丁条目",
+                node_types=("Requirement",), top_n=c2 + 10,
+                tags=None, min_score=None,
+            )
+            assert big.truncated is False
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)

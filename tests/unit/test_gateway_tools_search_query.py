@@ -239,7 +239,7 @@ class TestRunHybridSearchContract:
             assert banned not in HybridSearchOutput.model_fields
 
     async def test_candidates_total_counts_pre_filter(self, monkeypatch):
-        """candidates_total=阈值过滤前候选数，returned/total=过滤后条数（ISSUE-03）。"""
+        """candidates_total=阈值过滤后、截断前的候选数（批次五语义修正）。"""
         from types import SimpleNamespace
 
         from mem_lake.gateway.tools import search_tools
@@ -274,7 +274,9 @@ class TestRunHybridSearchContract:
             project_id=uuid.uuid4(), query="q", node_types=("Requirement",),
             top_n=10, tags=None, min_score=0.9,
         )
-        assert out.candidates_total == 3  # 过滤前
+        # 批次五语义：candidates_total = min_score 过滤后、截断前
+        # （mock 的 fused 被当作 pool 回退：3 条中 2 条低分向量命中被滤）
+        assert out.candidates_total == 1
         assert len(out.fused) == 1  # 仅纯全文命中保留
         assert out.returned == 1
 

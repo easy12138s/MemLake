@@ -121,3 +121,26 @@ async def test_combined_filters(db_session, seeded):
     rows, total = await list_requirements(
         db_session, system_id=seeded["sys_b"].id, module="收费")
     assert total == 1 and rows[0].title == "欠费账单"
+
+
+class TestListRequirementsEnhancements:
+    """批次五（报告 P2-2/P2-3）：requirement_key 直查 + fields 字段裁剪。"""
+
+    async def test_requirement_key_exact_lookup(self, db_session, seeded):
+        """requirement_key 精确匹配：SYS-xxxx 直取节点，消「翻 7 页分页才找到」。"""
+
+        target = seeded["nodes"][0]
+        key = target.requirement_key
+        if key is None:
+            pytest.skip("种子未分配 requirement_key（悬浮场景）")
+
+        rows, total = await list_requirements(db_session, requirement_key=key)
+        assert total == 1
+        assert rows[0].id == target.id
+
+    async def test_fields_invalid_rejected(self, db_session, seeded):
+        """非法 fields 由工具层校验拒绝（防注入，出参白名单裁剪）。"""
+        from mem_lake.gateway.tools.query_tools import RequirementListItem
+
+        allowed = set(RequirementListItem.model_fields)
+        assert {"node_id", "title", "requirement_key", "module", "priority", "source_doc"} <= allowed

@@ -519,10 +519,12 @@ async def list_requirements(
     system_id: uuid.UUID | None = None,
     module: str | None = None,
     source_doc_prefix: str | None = None,
+    requirement_key: str | None = None,
     tags: tuple[str, ...] | None = None,
     tags_op: str = "all",
     limit: int = 50,
     offset: int = 0,
+    fields: tuple[str, ...] | None = None,
 ) -> tuple[list[KnowledgeNode], int]:
     """清单式枚举 Requirement（分页 + 属性过滤），返回 (rows, total)。
 
@@ -550,6 +552,9 @@ async def list_requirements(
         clauses.append(
             KnowledgeNode.properties["source_doc"].astext.like(source_doc_prefix + "%")
         )
+    if requirement_key is not None:
+        # 批次五（报告 P2-3）：SYS-xxxx 直查，消「已知唯一 ID 却要翻分页」
+        clauses.append(KnowledgeNode.requirement_key == requirement_key)
     if tags:
         # 复用 FilterSpec 的 tags AND/OR 编译（其自带 status/is_deleted 子句与
         # 上方 clauses 重复但语义一致，无害）
@@ -561,6 +566,8 @@ async def list_requirements(
         await session.execute(select(func.count()).select_from(KnowledgeNode).where(*clauses))
     ).scalar_one()
 
+    # 批次五（报告 P2-2）：fields 仅作签名透传——SQL 层不做列投影
+    #（scalars() 会把多列 Row 坍缩为首列），出参裁剪由工具层按 fields 过滤
     stmt = (
         select(KnowledgeNode)
         .where(*clauses)
