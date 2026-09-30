@@ -417,7 +417,7 @@ async def _safe_enqueue_embed(
 ) -> None:
     """写入/审批提交后安全入队向量补全任务。
 
-    事务已 commit，入队仅是后台优化（新建节点 content_vector 暂为 NULL，搜索可安全
+    事务已 commit，入队仅是后台优化（新建节点暂无 node_embedding 向量记录，搜索可安全
     跳过）。入队失败（如 DB 短暂不可用）只记录告警，不阻断结果返回——已生效，向量
     缺失由后续 reindex 兜底（AUDIT §2.11）。
     """

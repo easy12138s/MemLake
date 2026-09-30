@@ -86,7 +86,8 @@ class RequirementInput(StrictInputModel):
             "需求属性。**必填字段**：priority（P0/P1/P2/P3）、module（模块）。"
             "**可选字段**：acceptance_criteria（验收标准）、source_doc、version、"
             "external_id（如 Jira/ADO 原始需求号，仅作记录，不参与判重）。"
-            "需求主键（如 HIS-0001）由服务端按 system 域自动分配，审批通过后随节点返回 requirement_key；"
+            "需求主键（如 HIS-0001）由服务端按 system 域自动分配并存储于节点，"
+            "经 list_requirements（requirement_key 直查）或 get_requirement_context 获取；"
             "调用方无需、也不应传入 requirement_id。"
         )
     )
@@ -248,8 +249,9 @@ def register_write_tools(mcp: FastMCP) -> None:
 
         PM 工具。需求默认按 system 域隔离（system_id 必填）；project_id 可选，None 表示
         "先于实现"的悬浮需求。审批通过后才写入知识图谱并参与检索。
-        需求主键（如 HIS-0001）由服务端按 system 域自动分配并通过节点的 requirement_key 返回；
-        调用方无需、也不应传入 requirement_id。需求间的重复/矛盾判定基于内容语义相似度（L3）。
+        需求主键（如 HIS-0001）由服务端按 system 域自动分配并存储于节点，经
+        list_requirements 或 get_requirement_context 查询；调用方无需、也不应传入
+        requirement_id。需求间的重复/矛盾判定基于内容语义相似度（L3）。
         若当前 Access Key 为宽松模式（lax_mode=true 且全局开关开启）：无冲突时提交即自动
         直接入库（返回 status="approved" + decision="auto_approved"），有冲突返回
         decision="needs_human_review" 并停在待审批。
@@ -349,7 +351,8 @@ def register_write_tools(mcp: FastMCP) -> None:
         requirement_id: uuid.UUID | None = Field(
             default=None,
             description=(
-                "关联的需求 ID（仅为 CodeSnippet 自动建 implements 边）；"
+                "关联的需求 ID。传入时四类产物按类型自动建边：CodeSnippet→implements、"
+                "Solution→realized_by、DesignIntent→embodies、Pitfall→described_by；"
                 "省略时产物挂本项目 ProjectProfile，relations 照常解析"
             ),
         ),
@@ -360,7 +363,8 @@ def register_write_tools(mcp: FastMCP) -> None:
         """批量提交开发产物（代码/方案/意图/踩坑），产生审批批次；宽松模式无冲突时自动入库。
 
         relations 用 ref 机制引用：artifacts 声明 ref 名，relations 的 from_ref/to_ref
-        可用批次内 ref 名或已有节点 UUID。坑/方案/意图与需求的关联不会自动建边，
+        可用批次内 ref 名或已有节点 UUID。传入 requirement_id 时四类产物按类型自动建边
+        （implements/realized_by/embodies/described_by）；产物间其他关系（如 depends_on）
         须在 relations 显式声明。支持 operation_id 幂等。
         """
         try:

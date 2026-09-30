@@ -76,8 +76,12 @@ class PendingBatchItem(BaseModel):
     submitted_by: str = Field(description="提交者 Access Key ID")
     submitted_at: datetime = Field(description="提交时间")
     summary: str = Field(description="批次摘要")
-    is_warning: bool = Field(description="即将超期（>7 天）")
-    is_timeout: bool = Field(description="已超期（>30 天）")
+    is_warning: bool = Field(
+        description="即将超期（>7 天，阈值可配 APPROVAL_WARNING_DAYS）"
+    )
+    is_timeout: bool = Field(
+        description="已超期（>30 天，阈值可配 APPROVAL_TIMEOUT_DAYS）"
+    )
 
 
 class ReviewPendingListOutput(BaseModel):
@@ -169,7 +173,8 @@ def register_review_tools(mcp: FastMCP) -> None:
         """查询待审批批次队列（含摘要、提交者、时间、超期标记）。
 
         Admin 工具。返回 pending_review 状态的批次列表，含超期预警标记。
-        is_warning=true 表示提交超过 7 天即将超期，is_timeout=true 表示已超期（>30 天）。
+        is_warning=true 表示提交超过 7 天即将超期（APPROVAL_WARNING_DAYS 可配），
+        is_timeout=true 表示已超期（>30 天，APPROVAL_TIMEOUT_DAYS 可配）。
         """
         try:
             session = await get_readonly_session()
@@ -240,7 +245,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                     and it.action == "create"
                     and it.target_id is not None
                 ]
-            # 审批已提交（事务已 commit）：将新建节点（content_vector 暂为 NULL）
+            # 审批已提交（事务已 commit）：将新建节点（暂无 node_embedding 向量记录）
             # 异步入队补向量，复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
             # 入队失败不阻断审批结果——审批已生效，向量缺失由后续 reindex 兜底
             #（AUDIT §2.11：避免"审批成功但工具报错"的 Agent 误判重试窗口）。
@@ -321,7 +326,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                     vector_searcher=lifespan_ctx.vector_searcher,
                 )
             batch = result["batch"]
-            # 审批已提交：将新建节点（content_vector 暂为 NULL）异步入队补向量，
+            # 审批已提交：将新建节点（暂无 node_embedding 向量记录）异步入队补向量，
             # 复用 reindex worker；入队失败不阻断（AUDIT §2.11，见 review_approve）。
             created_node_ids = result.get("created_node_ids") or []
             if created_node_ids:

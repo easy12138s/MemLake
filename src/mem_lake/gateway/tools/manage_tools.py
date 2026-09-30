@@ -138,7 +138,7 @@ class CreateAccessKeyOutput(BaseModel):
         default=None,
         description=(
             "给用户的接入提示（一句话，不含 Key）：MCP 配置完成后转述给其 Agent，"
-            "引导 Agent 先调用 get_role_skills 安装角色技能"
+            "引导 Agent 按其中的 GitHub URL 安装角色技能文档"
         ),
     )
 
@@ -347,8 +347,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
         （admin 为空列表表示不受限）。同时返回两部分初始化产物，请按需分发给对应接收方：
           · mcp_config：拼装好的 MCP 客户端配置 JSON，交【用户】粘贴到其
             MCP 客户端（Claude Desktop / Cursor / Codex 等），Agent 不自行安装 MCP；
-          · user_hint：给【用户】的一句话接入提示（不含 Key），告诉用户
-            MCP 接通后对自己 Agent 说一句「先调 get_role_skills」即可。
+          · user_hint：给【用户】的一句话接入提示（不含 Key），转述给其 Agent 后，
+            Agent 按 hint 中的 GitHub URL 安装角色技能文档（一次安装，后续会话生效）。
         """
         try:
             key_id_actor = get_current_key_id()
@@ -423,7 +423,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
     async def update_access_key_scope(
         project_scope: list[uuid.UUID] | None = Field(
             default=None,
-            description="新的项目范围（grant_all_projects=true 时留空表示不受限）",
+            description="新的项目范围（必填；授权不受限传 []，None 报错）",
         ),
         key_ids: str | list[uuid.UUID] | None = Field(
             default=None,
@@ -438,7 +438,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
         ),
         grant_all_projects: bool = Field(
             default=False,
-            description="一键将全部 Key 授权为不受限（project_scope=[]）",
+            description="目标定位开关：将全部 Key 作为目标，范围统一更新为 project_scope 参数值"
+                       "（admin 全授不受限时配合 project_scope=[]）",
         ),
     ) -> AccessKeyListOutput:
         """动态修改 Key 的项目范围，支持三种定位（优先级 key_ids > role_filter > grant_all_projects）。
@@ -735,7 +736,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         status=node.status,
                         version=node.version,
                         warning=(
-                            "该项目已存在其他 approved 画像节点，get_project_profile"
+                            "该项目已存在其他 approved 画像节点，get_project_info"
                             " 将取最新一条" if existing else None
                         ),
                     )

@@ -311,7 +311,7 @@ async def start_embed_nodes_task(
 ) -> uuid.UUID:
     """异步提交「仅嵌入指定节点」任务：建记录 + 启动后台 worker，返回 task_id。
 
-    用于审批通过后将新建节点（content_vector=NULL）的向量化延迟到后台执行，
+    用于审批通过后将新建节点（暂无 node_embedding 向量记录）的向量化延迟到后台执行，
     彻底解耦审批 MCP 调用与 embedding 耗时，避免大批次审批超时。
     project_id 允许为空：悬浮 system 需求（project_id=None）节点嵌入只需按
     node_ids 定位，无需项目过滤。

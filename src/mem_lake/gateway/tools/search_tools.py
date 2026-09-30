@@ -85,10 +85,9 @@ class SearchItemOutput(BaseModel):
 class HybridSearchOutput(BaseModel):
     """search_similar_requirements / search_code_snippets 出参。
 
-    出参仅保留 agent 决策所需字段（fused 检索结果 + query_terms 分词自诊 +
-    returned/candidates_total 计数）。vector/fulltext 引擎原始明细为调试数据，
-    连同 include_engine_details 参数与 total 历史字段已在批次三删除——
-    需要评估检索质量时经 admin 渠道直查，不再占用每个调用方的 schema 体积。
+    出参仅保留调用方决策所需字段：query（原始查询）、fused（融合精排结果）、
+    query_terms（分词自诊）、candidates_total/truncated/returned（候选计数与
+    翻页提示）。引擎原始明细不入出参，检索质量评估经 admin 渠道直查。
     """
 
     query: str = Field(description="原始查询文本")
@@ -225,7 +224,8 @@ def register_search_tools(mcp: FastMCP) -> None:
         query: str = Field(description="查询文本（需求描述/关键词）"),
         system_id: uuid.UUID | None = Field(
             default=None, description="归属 system 域（可选；与 project_id 均不传时按"
-            " Access Key 绑定的 system 兜底——仅绑定唯一 system 时自动用之，多个则报错列出候选）"
+            " Access Key 绑定的 system 兜底——仅绑定唯一 system 时自动用之，多个则报错列出候选；"
+            "admin 不兜底，须显式传入其一）"
         ),
         project_id: uuid.UUID | None = Field(
             default=None, description="归属项目 ID（与 system_id 至少其一必填或走 Key 兜底）"
@@ -241,12 +241,14 @@ def register_search_tools(mcp: FastMCP) -> None:
             "0.99=只要全文精确命中（清单穷举）；None=关闭阈值",
         ),
         semantic_tags: bool = Field(
-            default=False, description="标签语义扩展（embedding 近义召回），默认精确匹配"
+            default=False,
+            description="标签语义扩展（embedding 近义召回），默认精确匹配；"
+            "仅显式传 project_id 时生效（system 维度检索不扩展）",
         ),
         match_mode: Literal["all", "any"] = Field(
             default="all",
             description="多词语义（全文引擎）：all=AND 全词命中（默认）/any=任一词命中即召回",
-        ),
+        )
     ) -> HybridSearchOutput:
         """向量+全文融合检索相似需求（Requirement；按 system/project 隔离，仅 approved）。
 
@@ -305,7 +307,9 @@ def register_search_tools(mcp: FastMCP) -> None:
             "0.99=只要全文精确命中；None=关闭阈值",
         ),
         semantic_tags: bool = Field(
-            default=False, description="标签语义扩展（embedding 近义召回），默认精确匹配"
+            default=False,
+            description="标签语义扩展（embedding 近义召回），默认精确匹配；"
+            "仅显式传 project_id 时生效（system 维度检索不扩展）",
         ),
         match_mode: Literal["all", "any"] = Field(
             default="all",
@@ -380,7 +384,8 @@ def register_search_tools(mcp: FastMCP) -> None:
         PM/Dev 工具。从需求出发遍历：
         Requirement --implements--> CodeSnippet --depends_on--> CodeSnippet
         CodeSnippet --realized_by--> Solution --embodies--> DesignIntent
-        另含 described_by/references 挂载的踩坑与存量契约资产（pitfalls 段）。
+        另含 described_by/references 挂载的资产：踩坑归 pitfalls 段，references
+        引用的代码/方案/意图分别并入对应段。
         权限锚定：显式传 project_id 校验项目权限；不传则按需求自身归属
         （project → 项目权限 / 悬浮 → system 权限）。
         用途边界：本工具做**变更影响范围**遍历。若只想看某需求的**直接关联节点**，用 get_requirement_context。
@@ -440,12 +445,12 @@ def register_search_tools(mcp: FastMCP) -> None:
             default=20, description="检索召回数量上限（融合后）"
         ),
     ) -> ConflictCheckOutput:
-        """向量检索检测需求冲突（同项目同类型高相似度节点）。
+        """检测需求冲突（同项目同类型高相似度节点）。
 
-        PM 工具。基于向量相似度检测与指定需求冲突的潜在重复/矛盾需求。
-        自动排除自身节点，仅返回 score >= threshold 的结果。threshold 缺省读
-        配置 CONFLICT_SIMILARITY_THRESHOLD（与审批流冲突检测同一阈值来源，
-        避免双源脱钩；AUDIT §2.10）。本工具为纯向量相似度过滤，不含审批层
+        PM 工具。融合检索召回后按向量余弦阈值过滤，检测与指定需求冲突的
+        潜在重复/矛盾需求。自动排除自身节点，仅返回 score >= threshold 的结果。
+        threshold 缺省读配置 CONFLICT_SIMILARITY_THRESHOLD（与审批流冲突检测同一
+        阈值来源，避免双源脱钩；AUDIT §2.10）。本工具为相似度过滤，不含审批层
         detect_conflicts 的 L2 关键属性比对——二者定位不同（前者给 PM 主动
         排查，后者是审批质量门禁）。
         has_conflict=true 时 suggestion 推荐 review（人工核查）或 manual_merge（高相似度合并）。
@@ -529,7 +534,7 @@ def register_search_tools(mcp: FastMCP) -> None:
     ) -> ListKnowledgeOutput:
         """分页列出项目知识节点（不走融合检索，直接按时间倒序）。
 
-        Admin 工具。用于查看项目下所有节点（含已归档）。
+        Admin 工具。默认仅返回 approved 节点，传 status 可含已归档。
         status="approved"（默认）仅返回已审批节点，"archived" 仅返回已归档，
         None 返回所有状态。
         """
