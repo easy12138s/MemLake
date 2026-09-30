@@ -169,8 +169,7 @@ set_access_key_mode(lax_mode=true, key_ids=["..."])
 
 ## Skills 文件放置指南
 
-本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发（get_role_skills
-工具已在 v1.9.0 删除）。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
+本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
 
 ### 跨客户端项目级（推荐，首选）
 - `.agents/skills/mem-lake-{role}/SKILL.md`（符合 Agent Skills 标准 agentskills.io，主流 Agent 通用）
