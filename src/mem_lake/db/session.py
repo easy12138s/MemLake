@@ -2,7 +2,7 @@
 
 基于 psycopg3 async 驱动，URL scheme 必须为 postgresql+psycopg_async。
 连接池参数从 config.Settings 读取。AsyncSessionLocal 为全局会话工厂，
-由 gateway 层（dependencies.py）的 transactional_session / get_readonly_session
+由 gateway 层（dependencies.py）的 transactional_session / readonly_session
 使用。expire_on_commit=False 避免 commit 后访问属性触发隐式 IO（async 不支持）。
 """
 

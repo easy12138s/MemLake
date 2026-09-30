@@ -18,7 +18,7 @@
 - check_requirement_conflicts 复用 search_similar_requirements 的检索逻辑，
   额外做相似度阈值过滤（score >= threshold）与自身排除（exclude_node_id）
 - list_knowledge 直接调用 repository.list_nodes_by_project，不走融合检索
-- 全部使用 get_readonly_session，无需事务控制
+- 全部使用 readonly_session，无需事务控制
 """
 
 import logging
@@ -33,17 +33,17 @@ from pydantic import BaseModel, Field, computed_field
 from mem_lake.config import get_settings
 from mem_lake.gateway.dependencies import (
     get_current_role,
-    get_current_system_scope,
-    get_readonly_session,
+    readonly_session,
     validate_project_access,
     validate_system_access,
 )
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     get_lifespan_context,
-    resolve_search_scope_fallback,
+    resolve_and_validate_scope,
     to_tool_error,
 )
+from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.repository import (
     get_node,
     get_system_project_ids,
@@ -257,16 +257,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         - 要查某需求的关联产物用 get_requirement_context；影响分析用 analyze_impact_scope
         """
         try:
-            project_id, system_id = resolve_search_scope_fallback(
-                get_current_role(),
-                get_current_system_scope(),
-                project_id=project_id,
-                system_id=system_id,
-            )
-            if project_id is not None:
-                validate_project_access(project_id)
-            if system_id is not None:
-                validate_system_access(system_id)
+            project_id, system_id = resolve_and_validate_scope(project_id, system_id)
             _validate_query(query)
             return await _run_hybrid_search(
                 project_id=project_id,
@@ -324,26 +315,14 @@ def register_search_tools(mcp: FastMCP) -> None:
         要找需求本身用 search_similar_requirements；需求关联产物用 get_requirement_context。
         """
         try:
-            project_id, system_id = resolve_search_scope_fallback(
-                get_current_role(),
-                get_current_system_scope(),
-                project_id=project_id,
-                system_id=system_id,
-            )
-            if project_id is not None:
-                validate_project_access(project_id)
-            if system_id is not None:
-                validate_system_access(system_id)
+            project_id, system_id = resolve_and_validate_scope(project_id, system_id)
 
             # system 维度 → 该 system 下全部项目集（asset 节点无 system_id 列，
             # 经 SystemProject 关联表展开；09-29 报告 P0-2 可见性统一）
             project_ids: tuple[uuid.UUID, ...] | None = None
             if project_id is None and system_id is not None:
-                session = await get_readonly_session()
-                try:
+                async with readonly_session() as session:
                     pids = await get_system_project_ids(session, system_id=system_id)
-                finally:
-                    await session.close()
                 if not pids:
                     raise ValueError(
                         f"system {system_id} 下未挂载任何项目，无资产可检索"
@@ -395,8 +374,7 @@ def register_search_tools(mcp: FastMCP) -> None:
                 validate_project_access(project_id)
             lifespan_ctx = get_lifespan_context()
 
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 if project_id is None:
                     # 批次六（09-29 报告缺口）：不传 project_id 时按需求自身
                     # 归属校验——悬浮需求（project=None）走 system 权限，
@@ -425,8 +403,6 @@ def register_search_tools(mcp: FastMCP) -> None:
                     design_intents=result.get("design_intents", []),
                     pitfalls=result.get("pitfalls", []),
                 )
-            finally:
-                await session.close()
         except Exception as e:
             raise to_tool_error(e) from e
 
@@ -463,13 +439,8 @@ def register_search_tools(mcp: FastMCP) -> None:
 
             # 获取被检测需求的标题用作查询文本（build_embed_text 含属性段，
             # 与落库向量构造一致）
-            session = await get_readonly_session()
-            try:
-                from mem_lake.knowledge.embed import build_embed_text
-                from mem_lake.knowledge.repository import get_node
+            async with readonly_session() as session:
                 target_node = await get_node(session, requirement_id)
-            finally:
-                await session.close()
             query_text = build_embed_text(
                 target_node.type,
                 target_node.title,
@@ -540,8 +511,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         """
         try:
             validate_project_access(project_id)
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 nodes = await list_nodes_by_project(
                     session,
                     project_id=project_id,
@@ -557,8 +527,6 @@ def register_search_tools(mcp: FastMCP) -> None:
                     limit=limit,
                     offset=offset,
                 )
-            finally:
-                await session.close()
         except Exception as e:
             raise to_tool_error(e) from e
 
@@ -606,21 +574,19 @@ async def _run_hybrid_search(
     effective_tags = tags
     if semantic_tags and tags and project_id is not None:
         # 标签语义扩展：拉取项目标签词表 + 向量扩展；embedding 异常时降级为精确匹配
-        session = await get_readonly_session()
-        try:
-            expanded = await expand_tags_for_project(
-                lifespan_ctx.embedding_client,
-                session,
-                project_id=project_id,
-                tags=list(tags),
-                node_type=node_types[0] if len(node_types) == 1 else None,
-                threshold=0.7,
-            )
-            effective_tags = tuple(expanded)
-        except Exception as e:  # noqa: BLE001 - 降级而非让检索整体失败
-            logger.warning("semantic tag expansion failed, fall back to exact tags: %s", e)
-        finally:
-            await session.close()
+        async with readonly_session() as session:
+            try:
+                expanded = await expand_tags_for_project(
+                    lifespan_ctx.embedding_client,
+                    session,
+                    project_id=project_id,
+                    tags=list(tags),
+                    node_type=node_types[0] if len(node_types) == 1 else None,
+                    threshold=0.7,
+                )
+                effective_tags = tuple(expanded)
+            except Exception as e:  # noqa: BLE001 - 降级而非让检索整体失败
+                logger.warning("semantic tag expansion failed, fall back to exact tags: %s", e)
 
     filters = FilterSpec(
         project_id=project_id,

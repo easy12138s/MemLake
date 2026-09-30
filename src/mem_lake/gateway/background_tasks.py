@@ -22,7 +22,7 @@ from sqlalchemy import CursorResult, select, update
 
 from mem_lake.embedding.client import EmbeddingClient, get_embedding_client
 from mem_lake.gateway.dependencies import (
-    get_readonly_session,
+    readonly_session,
     transactional_session,
 )
 from mem_lake.gateway.models import (
@@ -79,20 +79,16 @@ async def create_task_record(
 
 async def get_task_record(task_id: uuid.UUID) -> ReindexTask | None:
     """按 task_id 查询任务记录（只读）。"""
-    session = await get_readonly_session()
-    try:
+    async with readonly_session() as session:
         result = await session.execute(
             select(ReindexTask).where(ReindexTask.id == task_id)
         )
         return result.scalar_one_or_none()
-    finally:
-        await session.close()
 
 
 async def find_running_task(project_id: uuid.UUID) -> ReindexTask | None:
     """查项目是否有 pending/running 任务（防重入用）。返回最新一条或 None。"""
-    session = await get_readonly_session()
-    try:
+    async with readonly_session() as session:
         result = await session.execute(
             select(ReindexTask)
             .where(
@@ -102,8 +98,6 @@ async def find_running_task(project_id: uuid.UUID) -> ReindexTask | None:
             .order_by(ReindexTask.created_at.desc())
         )
         return result.scalars().first()
-    finally:
-        await session.close()
 
 
 async def _patch_task(task_id: uuid.UUID, **fields: Any) -> None:

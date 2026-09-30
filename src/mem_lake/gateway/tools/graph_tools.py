@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from mem_lake.approval.service import PayloadValidationError, submit_batch
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
-    get_readonly_session,
+    readonly_session,
     transactional_session,
 )
 from mem_lake.gateway.tools._shared import (
@@ -124,12 +124,9 @@ def register_graph_tools(mcp: FastMCP) -> None:
         """
         try:
             lifespan_ctx = get_lifespan_context()
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 stats = await svc_graph_stats(session, lifespan_ctx.graph_store)
                 return GraphStatsOutput(**stats)
-            finally:
-                await session.close()
         except Exception as e:
             raise to_tool_error(e) from e
 
@@ -144,12 +141,9 @@ def register_graph_tools(mcp: FastMCP) -> None:
         """
         try:
             lifespan_ctx = get_lifespan_context()
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 report = await svc_graph_quality_report(session, lifespan_ctx.graph_store)
                 return GraphQualityReportOutput(**report)
-            finally:
-                await session.close()
         except Exception as e:
             raise to_tool_error(e) from e
 
