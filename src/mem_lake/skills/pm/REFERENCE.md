@@ -28,8 +28,8 @@ system 维度：`system_id` 必填；`project_id` 可选（None=悬浮，表示"
     "properties": {
         "priority": "P0",              # 必填 P0/P1/P2/P3
         "module": "auth",              # 必填
-        "acceptance_criteria": "...",  # 必填
-        # 可选：source_doc, version
+        "acceptance_criteria": "...",  # 可选（验收标准）
+        # 可选：source_doc, version, external_id（如 Jira 原始需求号，仅作记录）
     },
     "tags": ["auth", "login"]          # 可选
 }
@@ -44,7 +44,7 @@ system 维度：`system_id` 必填；`project_id` 可选（None=悬浮，表示"
 }
 ```
 
-**返回**：`batch_id` + `status`（"pending_review" 或 "approved"；宽松模式已入库时 status="approved" + decision="auto_approved"，有冲突时 status="pending_review" + decision="needs_human_review"）。node_id 直到审批通过才回填。
+**返回**：`batch_id` + `status`（"pending_review" 或 "approved"；宽松模式已入库时 status="approved" + decision="auto_approved"，并附 `created`（已建节点清单）与 `edges_created`（建边数）；有冲突时 status="pending_review" + decision="needs_human_review"）。
 
 ---
 
@@ -96,7 +96,7 @@ PM/Dev 共享。修正已写入知识图谱（审批通过）的错误节点内�
 | tags | list | 否 | 新标签列表；留空不更新 |
 | operation_id | str | 否 | 幂等键 |
 
-**何时用**：发现已审批入库的节点内容写错、需要修正时（版本号 +1、重新生成向量、写审计日志）。
+**何时用**：发现已审批入库的节点内容写错、需要修正时——产生审批批次，通过后版本号 +1、重新生成向量、写审计日志。
 
 **何时不用**：尚未提交/审批中的内容用原发布工具重提；想新增知识用 submit_dev_artifacts 或 publish_requirement。
 
@@ -143,7 +143,7 @@ search_similar_requirements(
 
 ### analyze_impact_scope — 分析变更影响范围
 
-PM/Dev 共享。从需求出发做**变更影响范围**遍历（需求→代码→依赖→方案→意图）。
+PM/Dev 共享。从需求出发做**变更影响范围**遍历（需求→代码→方案→设计意图→踩坑）。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -200,7 +200,7 @@ PM 工具。基于向量相似度检测某需求是否与库内需求**重复/�
 
 **何时用**：发布前主动排查某需求是否与已有需求重复/矛盾。
 
-**何时不用**：审批阶段的冲突门禁（L2 关键属性比对）由 admin 审批流负责，二者互补。
+**何时不用**：审批阶段的冲突门禁（Requirement 走 L3 内容语义相似度）由 admin 审批流负责，二者互补。
 
 ```python
 check_requirement_conflicts(
@@ -210,6 +210,25 @@ check_requirement_conflicts(
 ```
 
 ---
+
+### list_requirements — 清单式枚举需求
+
+PM/Dev/Admin 共享。分页枚举需求，返回命中总数 total。清单类任务（"列出某批次全部需求"）用本工具，不要用检索工具试探取并集。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| system_id | UUID | 否 | 归属 system 域；与 project_id 均不传时按 Key 绑定 system 兜底 |
+| project_id | UUID | 否 | 归属项目 ID |
+| module | str | 否 | 按模块精确过滤 |
+| source_doc_prefix | str | 否 | 按来源文档前缀圈定批次 |
+| tags | list[str] | 否 | 标签过滤 |
+| tags_op | str | 否 | 标签匹配语义：`all`=AND（默认）/`any`=OR |
+| requirement_key | str | 否 | 需求主键精确直查（如 HIS-0001）|
+| fields | list[str] | 否 | 出参字段白名单裁剪（module/priority/requirement_key/source_doc；node_id/title 恒回）|
+| limit | int | 否 | 页大小，默认 50，上限 200 |
+| offset | int | 否 | 分页偏移 |
+
+条目不含正文；要看某条详情用 `get_requirement_context`。
 
 ---
 
@@ -222,11 +241,11 @@ PM/Dev/Admin 共享。list 枚举当前 key 可见的项目；get 按 project_id
 | action | str | 是 | `list` 枚举可见项目 / `get` 查询单个项目 |
 | project_id | UUID | 否 | get 时必填的项目 ID |
 | include_profile | bool | 否 | 是否附完整画像属性，默认 False |
-| include_scope_meta | bool | 否 | 是否附 scope 自证信息，默认 False |
+| include_scope_meta | bool | 否 | 是否附 scope 自证信息（project 与 system 双维度），默认 False |
 
-**何时用（PM）**：想确认自己可被哪些项目访问、或查看项目基本信息。
+**何时用（PM）**：确认自己可访问哪些项目（list）、查看项目基本信息与画像（get）；`has_profile=false` 表示画像占位，返回的 `hint` 会引导补建。
 
-**何时不用**：只查单个项目技术栈细节用 `get_project_info(action="get", include_profile=true)`。
+**何时不用**：要检索需求/资产内容用对应 search 工具。
 
 ```python
 get_project_info(action="list", include_scope_meta=True)
@@ -344,9 +363,12 @@ PM Agent → 人类: "已建立两个需求的关联关系，批次 ghi-789 待�
 ```python
 {
     "batch_id": "abc-123",           # 审批批次 ID
-    "status": "pending_review",      # pending_review / approved
-    "node_id": None,                 # 审批通过后回填，未审批时为 None
-    "decision": "auto_approved"      # 仅宽松模式返回：auto_approved / needs_human_review
+    "status": "pending_review",     # pending_review / approved
+    "submitted_at": "2026-09-30T10:00:00Z",  # 提交时间
+    "item_count": 3,                 # 批次条目数
+    "decision": "auto_approved",     # 仅宽松模式返回：auto_approved / needs_human_review
+    "created": [...],                # 仅宽松 auto_approved 返回：[{ref, node_id, node_type, title}]
+    "edges_created": 2               # 仅宽松 auto_approved 返回：建边数
 }
 ```
 
@@ -358,12 +380,12 @@ PM Agent → 人类: "已建立两个需求的关联关系，批次 ghi-789 待�
     "title": "节点标题",
     "content": "节点内容摘要（前200字符）",
     "node_type": "Requirement",
-    "score": 0.85,                   # 向量相似度（0~1），图遍历为 None
-    "source": "fused",               # vector / fulltext / graph / fused
+    "score": 0.85,                   # 融合分（向量余弦，0~1）
+    "vector_score": 0.87,            # 向量余弦分（仅向量命中时有值）
+    "source": "fused",
     "properties": {...},
-    "tags": [...],
-    "version": 1,                    # 节点版本号
-    "vector_generated_at": "2026-09-07T10:00:00Z",  # 向量生成时间
-    "data_age_hours": 2.5            # 数据年龄（小时）
+    "tags": [...]
 }
 ```
+
+顶层另附检索自诊字段：`query_terms`（全文引擎实际分词）、`candidates_total`（阈值过滤后、top_n 截断前的候选数）、`returned`（实际返回条数）、`truncated`（候选池是否大于 top_n）。

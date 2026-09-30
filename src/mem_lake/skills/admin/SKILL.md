@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile."
-version: 1.12.0
+version: 1.13.0
 ---
 
 # Admin Skills（管理员）
@@ -24,13 +24,13 @@ version: 1.12.0
 
 ### 数据认证
 - **审批即认证**：admin 审批通过的数据视为已认证
-- **冲突检测**：三层冲突检测（L0/L1/L2/L3）保证数据质量
+- **冲突检测**：四层冲突检测（L0/L1/L2/L3）保证数据质量
 - **审计可追溯**：所有写操作记录审计日志，可追溯数据来源
 - **幂等保证**：operation_id 唯一约束，防止重复提交
 
 ### 数据质量监控
 - **图统计**：get_graph_stats 查看节点/边数量和质量基线
-- **质量报告**：get_graph_quality_report 查看孤立节点、缺失向量等问题
+- **质量报告**：get_graph_quality_report 查看孤儿节点、重复度、连通分量
 - **审计日志**：query_audit_log 追踪所有数据变更历史
 
 ### 使用建议
@@ -91,12 +91,25 @@ version: 1.12.0
 - **get_reindex_status** — 查询重嵌任务进度
 - **list_knowledge** — 分页列出项目知识节点
 - **query_audit_log** — 查询审计日志
+- **get_graph_stats** — 图统计（节点/边按 type 与 system 维度）
+- **get_graph_quality_report** — 图质量基线（孤儿/重复度/连通分量）
+- **generate_rule_edges** — 规则边生成（走审批批次）
+
+### 检索与写入类（与 PM/Dev 共享）
+- **publish_requirement** — 发布需求节点
+- **update_requirement_relations** — 更新需求间关系
+- **submit_dev_artifacts** — 批量提交开发产物
+- **update_node** — 修正已审批节点
+- **search_similar_requirements** — 融合检索相似需求
+- **search_code_snippets** — 融合检索研发资产
+- **analyze_impact_scope** — 变更影响范围分析
+- **check_requirement_conflicts** — 需求冲突排查
 
 ### 共享类
-- **list_requirements** — 清单式枚举需求（分页+module/source_doc 前缀过滤）
+- **list_requirements** — 清单式枚举需求（分页+过滤；requirement_key 直查、fields 裁剪）
 - **get_requirement_context** — 查询需求上下文
 
-> **详细参数表和示例见 `admin/REFERENCE.md`**
+> **Admin 专属工具详细参数表和示例见 `admin/REFERENCE.md`；与 PM/Dev 共享工具的参数表见 `pm/REFERENCE.md` 与 `dev/REFERENCE.md`**
 
 ## 关键要点
 
@@ -117,7 +130,7 @@ version: 1.12.0
 | 层级 | 检测内容 | 不冲突条件 |
 |------|---------|-----------|
 | L0 | 关键标识字段精确匹配 | 相同 → 冲突（Requirement 无此层）|
-| L1 | 项目 + 节点类型 | 不同项目或类型 → 通过 |
+| L1 | 候选域（项目/system 域 + 节点类型） | 不同域或类型 → 通过 |
 | L2 | 关键属性 | 不同 → 排除（Requirement 无此层）|
 | L3 | 内容语义相似度 | < 0.85 → 通过 |
 

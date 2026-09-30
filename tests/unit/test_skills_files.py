@@ -48,11 +48,11 @@ class TestSkillsFiles:
             assert "## Skills 文件放置指南" in body
             assert ".agents/skills/" in body
 
-    def test_version_1_9_0(self):
-        """1.12.0：analyze_impact_scope 悬浮需求支持/占位画像引导。"""
+    def test_version_1_13_0(self):
+        """1.13.0：文档与代码行为对齐（自动建边语义/审计枚举/回执结构/工具摘要补全）。"""
         for role in ("admin", "pm", "dev"):
             _, version = _load_skill(role)
-            assert version == "1.12.0"
+            assert version == "1.13.0"
 
     def test_github_distribution_note(self):
         """文件含 GitHub 分发说明（raw URL 指引）。"""
