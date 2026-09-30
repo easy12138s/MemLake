@@ -171,12 +171,17 @@ async def transactional_session() -> AsyncIterator[AsyncSession]:
         await session.close()
 
 
-async def get_readonly_session() -> AsyncSession:
-    """获取只读会话（不自动 commit）。
+@asynccontextmanager
+async def readonly_session() -> AsyncIterator[AsyncSession]:
+    """只读会话上下文管理器（不自动 commit）。
 
-    用于读工具（review_pending_list / review_batch_detail / list_requirements），
-    这些工具不需要事务，只需读取数据。
-
-    调用方负责在 finally 中 close session。
+    用于读工具（检索/查询/枚举等无需事务的场景）：
+        async with readonly_session() as session:
+            ...
+    退出时自动 close，异常向上抛出。
     """
-    return AsyncSessionLocal()
+    session = AsyncSessionLocal()
+    try:
+        yield session
+    finally:
+        await session.close()

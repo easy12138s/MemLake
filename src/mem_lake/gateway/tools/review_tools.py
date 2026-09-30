@@ -39,7 +39,7 @@ from mem_lake.approval.service import (
 from mem_lake.config import get_settings
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
-    get_readonly_session,
+    readonly_session,
     transactional_session,
 )
 from mem_lake.gateway.tools._shared import (
@@ -177,8 +177,7 @@ def register_review_tools(mcp: FastMCP) -> None:
         is_timeout=true 表示已超期（>30 天，APPROVAL_TIMEOUT_DAYS 可配）。
         """
         try:
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 batches = await list_pending_batches(
                     session,
                     project_id=project_id,
@@ -187,8 +186,6 @@ def register_review_tools(mcp: FastMCP) -> None:
                 )
                 items = [_to_pending_batch_item(b) for b in batches]
                 return ReviewPendingListOutput(batches=items, total=len(items))
-            finally:
-                await session.close()
         except Exception as e:
             raise to_tool_error(e) from e
 
@@ -202,12 +199,9 @@ def register_review_tools(mcp: FastMCP) -> None:
         target_id 为审批通过后回填的实际节点 ID（pending_review 状态下为 None）。
         """
         try:
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 batch = await get_batch_detail(session, batch_id)
                 return _to_batch_detail_output(batch)
-            finally:
-                await session.close()
         except Exception as e:
             raise to_tool_error(e) from e
 

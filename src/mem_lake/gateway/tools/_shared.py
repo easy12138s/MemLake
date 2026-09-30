@@ -24,7 +24,11 @@ from mem_lake.approval.service import (
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
     get_current_lax_mode,
+    get_current_role,
+    get_current_system_scope,
     transactional_session,
+    validate_project_access,
+    validate_system_access,
 )
 from mem_lake.knowledge.repository import NodeNotFoundError
 from mem_lake.knowledge.schema import SchemaValidationError, validate_attribution
@@ -403,6 +407,23 @@ def resolve_search_scope_fallback(
         f"当前 Access Key 绑定多个 system（{len(system_scope)} 个），"
         f"请显式传入 system_id 二选一；候选: {sorted(system_scope)}"
     )
+
+
+def resolve_and_validate_scope(
+    project_id: uuid.UUID | None, system_id: uuid.UUID | None
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """检索/枚举工具的 scope 前奏：Key 绑定 system 兜底 + 项目/system 权限校验。"""
+    project_id, system_id = resolve_search_scope_fallback(
+        get_current_role(),
+        get_current_system_scope(),
+        project_id=project_id,
+        system_id=system_id,
+    )
+    if project_id is not None:
+        validate_project_access(project_id)
+    if system_id is not None:
+        validate_system_access(system_id)
+    return project_id, system_id
 
 
 

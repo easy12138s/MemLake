@@ -35,7 +35,7 @@ from mem_lake.gateway.dependencies import (
     get_current_project_scope,
     get_current_role,
     get_current_system_scope,
-    get_readonly_session,
+    readonly_session,
     validate_project_access,
 )
 from mem_lake.gateway.tools._shared import (
@@ -443,8 +443,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 raise PayloadValidationError("properties 必须为 JSON 对象")
 
             # 预校验目标节点存在、归属本项目且未归档，并取节点类型用于审批项实体标识
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 try:
                     node = await get_node(session, node_id)
                 except NodeNotFoundError:
@@ -453,8 +452,6 @@ def register_write_tools(mcp: FastMCP) -> None:
                     raise PayloadValidationError(f"节点不属于本项目: {node_id}")
                 if node.status == "archived":
                     raise PayloadValidationError(f"已归档节点不可更新: {node_id}")
-            finally:
-                await session.close()
 
             items = [
                 build_update_node_item(
@@ -494,11 +491,10 @@ async def _validate_requirement_refs(
     """
     if not ref_ids:
         return
-    session = await get_readonly_session()
     role = get_current_role()
     project_scope = get_current_project_scope()
     system_scope = get_current_system_scope()
-    try:
+    async with readonly_session() as session:
         try:
             uuids = [uuid.UUID(r) for r in ref_ids]
         except (ValueError, TypeError, AttributeError) as e:
@@ -530,8 +526,6 @@ async def _validate_requirement_refs(
                 raise PayloadValidationError(
                     f"{label} 引用不在当前调用者可见范围: {n.id}"
                 )
-    finally:
-        await session.close()
 
 
 async def _get_project_profile_id(project_id: uuid.UUID) -> uuid.UUID | None:
@@ -540,14 +534,11 @@ async def _get_project_profile_id(project_id: uuid.UUID) -> uuid.UUID | None:
     用于游离知识点（requirement_id 为空）时自动挂到项目画像节点。
     list_project_profiles 按 created_at 倒序，取第一条即为最新画像。
     """
-    session = await get_readonly_session()
-    try:
+    async with readonly_session() as session:
         profiles = await list_project_profiles(
             session, project_ids=[project_id], limit=1
         )
         return profiles[0].id if profiles else None
-    finally:
-        await session.close()
 
 
 async def _validate_dev_artifacts(
@@ -577,8 +568,7 @@ async def _validate_dev_artifacts(
         raise PayloadValidationError(f"产物 ref 重复（批次内必须唯一）: {dup}")
 
     # 2 & 3：requirement_id 存在性 + 类型 + 归属项目；relations 引用校验
-    session = await get_readonly_session()
-    try:
+    async with readonly_session() as session:
         # 2. requirement_id 存在性 + 类型 + 对调用者可见（仅当显式提供需求时校验）
         if requirement_id is not None:
             role = get_current_role()
@@ -623,8 +613,6 @@ async def _validate_dev_artifacts(
                 errors.append(f"自引用（from_ref == to_ref）: {r.from_ref}")
         if errors:
             raise PayloadValidationError("; ".join(errors))
-    finally:
-        await session.close()
 
 
 def _build_publish_items(

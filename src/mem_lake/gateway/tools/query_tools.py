@@ -34,14 +34,14 @@ from mem_lake.gateway.dependencies import (
     get_current_project_scope,
     get_current_role,
     get_current_system_scope,
-    get_readonly_session,
+    readonly_session,
     validate_project_access,
     validate_system_access,
 )
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     get_lifespan_context,
-    resolve_search_scope_fallback,
+    resolve_and_validate_scope,
     to_tool_error,
 )
 from mem_lake.knowledge.models import KnowledgeNode
@@ -255,16 +255,7 @@ def register_query_tools(mcp: FastMCP) -> None:
         并集。条目不含正文；要看某条详情用 get_requirement_context。
         """
         try:
-            project_id, system_id = resolve_search_scope_fallback(
-                get_current_role(),
-                get_current_system_scope(),
-                project_id=project_id,
-                system_id=system_id,
-            )
-            if project_id is not None:
-                validate_project_access(project_id)
-            if system_id is not None:
-                validate_system_access(system_id)
+            project_id, system_id = resolve_and_validate_scope(project_id, system_id)
             # fields 白名单校验（防注入：非出参字段直接拒绝）
             allowed_fields = set(RequirementListItem.model_fields)
             if fields is not None:
@@ -274,8 +265,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                         f"非法 fields: {sorted(unknown)}，可选: {sorted(allowed_fields)}"
                     )
 
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 rows, total = await list_requirements_repo(
                     session,
                     project_id=project_id,
@@ -311,8 +301,6 @@ def register_query_tools(mcp: FastMCP) -> None:
                     offset=offset,
                     items=[_item(r) for r in rows],
                 )
-            finally:
-                await session.close()
         except (ValueError, ToolError) as e:
             raise to_tool_error(e) from e
 
@@ -341,8 +329,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             role = get_current_role()
             scope = get_current_project_scope()
             system_scope = get_current_system_scope()
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 return await _get_project_info_core(
                     action=action,
                     project_id=project_id,
@@ -355,8 +342,6 @@ def register_query_tools(mcp: FastMCP) -> None:
                     validate_fn=validate_project_access,
                     list_systems_fn=lambda: list_systems(session),
                 )
-            finally:
-                await session.close()
         except (ValueError, ToolError) as e:
             raise to_tool_error(e) from e
 
@@ -381,8 +366,7 @@ def register_query_tools(mcp: FastMCP) -> None:
 
             lifespan_ctx = get_lifespan_context()
 
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 # 1. 获取需求节点详情
                 requirement_dict = None
                 try:
@@ -444,8 +428,6 @@ def register_query_tools(mcp: FastMCP) -> None:
                     related_nodes=related,
                     total=len(related),
                 )
-            finally:
-                await session.close()
         except (NodeNotFoundError, ValueError) as e:
             raise to_tool_error(e) from e
 
@@ -491,8 +473,7 @@ def register_query_tools(mcp: FastMCP) -> None:
             if project_id is not None:
                 validate_project_access(project_id)
 
-            session = await get_readonly_session()
-            try:
+            async with readonly_session() as session:
                 logs = await query_audit_logs(
                     session,
                     actor=actor,
@@ -512,8 +493,6 @@ def register_query_tools(mcp: FastMCP) -> None:
                     limit=limit,
                     offset=offset,
                 )
-            finally:
-                await session.close()
         except Exception as e:
             raise to_tool_error(e) from e
 
