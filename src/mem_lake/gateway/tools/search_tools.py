@@ -27,6 +27,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field, computed_field
 
 from mem_lake.config import get_settings
@@ -43,7 +44,11 @@ from mem_lake.gateway.tools._shared import (
     resolve_search_scope_fallback,
     to_tool_error,
 )
-from mem_lake.knowledge.repository import get_system_project_ids, list_nodes_by_project
+from mem_lake.knowledge.repository import (
+    get_node,
+    get_system_project_ids,
+    list_nodes_by_project,
+)
 from mem_lake.knowledge.schema import SchemaValidationError
 from mem_lake.search.filters import FilterSpec
 from mem_lake.search.fusion import SearchResult, hybrid_search
@@ -360,26 +365,46 @@ def register_search_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def analyze_impact_scope(
-        project_id: uuid.UUID = Field(description="归属项目 ID"),
         requirement_id: uuid.UUID = Field(description="需求节点 ID"),
+        project_id: uuid.UUID | None = Field(
+            default=None,
+            description="归属项目 ID（可选：不传时按需求自身归属校验——悬浮需求"
+            "走 system 权限，纯 system 绑定 Key 可直接调用）",
+        ),
         max_depth: int = Field(
             default=5, description="depends_on 依赖链遍历深度"
         ),
     ) -> ImpactScopeOutput:
-        """图检索分析变更影响范围（需求→代码→方案→设计意图）。
+        """图检索分析变更影响范围（需求→代码→方案→设计意图→踩坑）。
 
         PM/Dev 工具。从需求出发遍历：
         Requirement --implements--> CodeSnippet --depends_on--> CodeSnippet
         CodeSnippet --realized_by--> Solution --embodies--> DesignIntent
-        返回需求节点、直接实现代码、依赖链、方案、设计意图的完整影响范围。
+        另含 described_by/references 挂载的踩坑与存量契约资产（pitfalls 段）。
+        权限锚定：显式传 project_id 校验项目权限；不传则按需求自身归属
+        （project → 项目权限 / 悬浮 → system 权限）。
         用途边界：本工具做**变更影响范围**遍历。若只想看某需求的**直接关联节点**，用 get_requirement_context。
         """
         try:
-            validate_project_access(project_id)
+            if project_id is not None:
+                validate_project_access(project_id)
             lifespan_ctx = get_lifespan_context()
 
             session = await get_readonly_session()
             try:
+                if project_id is None:
+                    # 批次六（09-29 报告缺口）：不传 project_id 时按需求自身
+                    # 归属校验——悬浮需求（project=None）走 system 权限，
+                    # 纯 system 绑定 Key 不再结构性不可用
+                    anchor = await get_node(session, requirement_id)
+                    if anchor.project_id is not None:
+                        validate_project_access(anchor.project_id)
+                    elif anchor.system_id is not None:
+                        validate_system_access(anchor.system_id)
+                    elif get_current_role() != "admin":
+                        raise ToolError(
+                            f"需求 {requirement_id} 无 project/system 归属，非 admin 无权访问"
+                        )
                 graph_searcher = _get_graph_searcher(lifespan_ctx)
                 result = await graph_searcher.impact_analysis(
                     session,

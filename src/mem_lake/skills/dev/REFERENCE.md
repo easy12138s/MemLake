@@ -231,8 +231,8 @@ search_code_snippets(
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | 是 | 归属项目 ID |
 | requirement_id | UUID | 是 | 需求节点 ID |
+| project_id | UUID | 否 | 归属项目 ID（不传时按需求自身归属校验：悬浮需求走 system 权限） |
 | max_depth | int | 否 | 依赖链遍历深度，默认 5 |
 
 ```python
