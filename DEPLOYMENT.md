@@ -36,16 +36,22 @@ docker compose up -d --build
 
 首次构建需编译 AGE/pgvector/zhparser 扩展 + 下载 Embedding 模型，约 15-20 分钟。
 
-### 2.1 复用本地模型（可选，跳过下载）
+### 2.1 需求文档挂载导入（可选叠加层）
 
-若宿主机已下载过 Qwen3-Embedding-0.6B 模型（默认位于仓库 `models/models/Qwen--Qwen3-Embedding-0.6B/snapshots/master`），可避免重复下载：叠加 `docker-compose.local.yml` 将本地模型挂载进容器，并通过 `DOWNLOAD_MODEL=false` 跳过构建期下载。
+`docker-compose.local.yml` 把宿主机需求文档目录挂载进 mem-lake 容器（`/data/reqs`，容器重建不丢），供 `memlake-import-requirements` CLI 导入 Axure/HTML/notes 文档，免去手工 `docker cp`。
 
 ```bash
+# deploy/.env（不入库）设置宿主机目录
+REQS_HOST_DIR=/path/to/reqs
+
 cd deploy
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d mem-lake
+
+# 容器内正式导入（axure/notes 适配器，分批断点续跑）
+docker exec deploy-mem-lake-1 memlake-import-requirements /data/reqs --system-code <code> --adapter axure
 ```
 
-> 注意：该文件不会被 `docker compose up` 自动加载，必须显式 `-f` 指定。宿主机不存在该模型目录时**不要**使用，否则 embedding 容器会因加载不到模型而启动失败。普通首次部署直接 `docker compose up -d --build` 即可。
+> 注意：该文件不会被 `docker compose up` 自动加载，必须显式 `-f` 指定。
 
 ### 2.2 第三方 Embedding API 模式（remote，可选）
 
@@ -110,7 +116,7 @@ docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 |------|------|------|
 | postgres | 5432 | PostgreSQL 17 + AGE + pgvector + zhparser，数据持久化在 `pg_data` 卷 |
 | embedding | 8001 | Qwen3-Embedding-0.6B 向量化服务，mem-lake 通过 HTTP 调用 |
-| mem-lake | 8000 | MCP 网关，32 个工具 + RBAC + 限流 |
+| mem-lake | 8000 | MCP 网关，31 个工具 + RBAC + 限流 |
 
 启动顺序：postgres healthy → embedding healthy → mem-lake。默认 compose 会发布 5432/8001 端口，生产环境请通过防火墙限制或移除对应 `ports` 映射，仅对外放行 8000。
 
@@ -177,7 +183,7 @@ Schema 说明：业务表 schema 变更由 Alembic 迁移管理（`alembic/versi
 git pull
 docker compose build mem-lake
 docker compose run --rm mem-lake alembic stamp 0001_initial   # 登记基线（不改动 schema）
-docker compose up -d                                           # 启动时自动 upgrade head（含 0002 向量索引 opclass 修复）
+docker compose up -d                                           # 启动时自动 upgrade head（含 0002 向量索引 opclass 修复、0003 content_vector 列删除）
 ```
 
 早于 v1.0.0 的历史部署仍走备份迁移：`deploy/backup.sh` 备份 → 全新重建（`docker compose down -v` → `up -d --build`）→ `deploy/restore.sh` 恢复；恢复的旧数据须符合 v1.0.0 契约（节点 properties 不得含 `requirement_id` 等白名单外字段、`project_scope` 须为 `{systems,projects}` 字典结构），恢复完成后按上方存量升级流程登记 Alembic 基线。
@@ -210,7 +216,7 @@ docker compose logs embedding
 ```
 
 - postgres 首次构建慢：扩展编译需 10-15 分钟
-- embedding 健康检查失败：复用本地模型时确认 `models/models/Qwen--Qwen3-Embedding-0.6B/snapshots/master` 已挂载且非空；构建期下载模式则查看 embedding 镜像构建日志确认模型下载成功
+- embedding 健康检查失败：local 模式查看 embedding 镜像构建日志确认模型下载成功；remote 模式确认第三方 API（`EMBEDDING_API_BASE`/`EMBEDDING_API_KEY`）可达且输出 1024 维
 - mem-lake 连接数据库失败：检查 postgres healthcheck 状态
 
 ### 认证失败
