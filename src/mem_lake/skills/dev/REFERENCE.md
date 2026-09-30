@@ -12,12 +12,12 @@
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | project_id | UUID | 是 | 项目 ID |
-| artifacts | dict | 否 | 嵌套产物集合，结构见下 |
+| artifacts | dict | 是 | 嵌套产物集合，结构见下 |
 | requirement_id | UUID | 否 | 关联的需求 ID（四类统一自动建边：CodeSnippet→implements / Solution→realized_by / DesignIntent→embodies / Pitfall→described_by） |
 | relations | list[dict] | 否 | 节点间关系（用 ref 引用）|
 | operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
 
-> **多需求锚定**：一条知识涉及多个需求时省略 `requirement_id`（其仅对 CodeSnippet 自动建边），在 `relations` 中显式声明需求→产物边——省略 `requirement_id` 时 `relations` **照常解析生效**。
+> **多需求锚定**：一条知识涉及多个需求时省略 `requirement_id`，在 `relations` 中显式声明需求→产物边——省略 `requirement_id` 时 `relations` **照常解析生效**。
 
 **artifacts 内部结构**：
 
@@ -45,6 +45,7 @@ artifacts={
 | properties.type | str | 类型（class/function/module/component）|
 | properties.responsibility | str | 职责描述 |
 | properties.file_path | str | 文件路径 |
+| properties.signature / snippet / language | str | 可选：签名 / 代码片段 / 语言 |
 | tags | list[str] | 否，标签 |
 
 #### Solution（解决方案）
@@ -80,7 +81,7 @@ artifacts={
 | properties.symptom | str | 症状表现 |
 | properties.root_cause | str | 根本原因 |
 | properties.solution | str | 解决方案 |
-| properties.severity | str | 严重程度（P0/P1/P2/P3）|
+| properties.severity | str | 严重程度（P0/P1/P2/P3，可选）|
 | tags | list[str] | 否，标签 |
 
 ---
@@ -140,18 +141,12 @@ submit_dev_artifacts(project_id=uuid, artifacts={"pitfalls":[{
 **relation_type 枚举**：`implements` / `depends_on` / `realized_by` / `embodies` / `traces_to` / `described_by` / `references`
 
 **自动构造的关系**：
-- 传入 `requirement_id` 时，系统自动为每个 CodeSnippet 构造 `Requirement --implements--> CodeSnippet` 关系
-- 省略 `requirement_id` 时，系统自动把每个产物挂到本项目的 `ProjectProfile` 节点
+- 传入 `requirement_id` 时，四类产物按类型自动建边：CodeSnippet→`implements` / Solution→`realized_by` / DesignIntent→`embodies` / Pitfall→`described_by`
+- 省略 `requirement_id` 时，产物自动挂到本项目 `ProjectProfile` 节点（`references` 边；项目已有画像时）
 
-**⚠️ 坑/方案/意图不会自动挂载到需求**：若希望它们出现在某需求下，必须在 `relations` 中显式声明：
+产物间其他关系（如 `depends_on`）须在 `relations` 中显式声明。
 
-```python
-relations=[
-    {"from_ref": str(requirement_id), "relation_type": "described_by", "to_ref": "AsyncSessionLeak"}
-]
-```
-
-**返回**：`WriteToolOutput`（node_id=None 直到审批通过, batch_id, status="pending_review"/"approved"）
+**返回**：`WriteToolOutput`（batch_id / status / submitted_at / item_count；宽松模式 auto_approved 时附 `decision` + `created` 已建节点清单 + `edges_created` 建边数）
 
 ---
 
@@ -189,7 +184,7 @@ update_node(
 | top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
-| min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5 |
+| min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5；None 关闭阈值 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
 | match_mode | str | 否 | 多词匹配语义：`all`=AND 全词命中（默认）/`any`=任一词命中即召回（宽召回） |
 
@@ -213,7 +208,7 @@ search_similar_requirements(
 | top_n | int | 否 | 返回数量上限，默认 20 |
 | tags | list[str] | 否 | 标签过滤 |
 | tags_op | str | 否 | `all`=AND（默认），`any`=OR |
-| min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5 |
+| min_score | float | 否 | 仅过滤纯向量命中；有全文命中的节点不受影响，默认 0.5；None 关闭阈值 |
 | semantic_tags | bool | 否 | 标签语义扩展，默认 False |
 | match_mode | str | 否 | 多词匹配语义：`all`=AND 全词命中（默认）/`any`=任一词命中即召回（宽召回） |
 
@@ -255,6 +250,42 @@ analyze_impact_scope(
 ```python
 get_requirement_context(requirement_id="req-uuid-001", depth=2)
 ```
+
+---
+
+### list_requirements — 清单式枚举需求
+
+分页枚举需求，返回命中总数 total。清单类任务（"列出某批次全部需求"）用本工具，不要用检索工具试探取并集。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| system_id | UUID | 否 | 归属 system 域；与 project_id 均不传时按 Key 绑定 system 兜底 |
+| project_id | UUID | 否 | 归属项目 ID |
+| module | str | 否 | 按模块精确过滤 |
+| source_doc_prefix | str | 否 | 按来源文档前缀圈定批次 |
+| tags | list[str] | 否 | 标签过滤 |
+| tags_op | str | 否 | 标签匹配语义：`all`=AND（默认）/`any`=OR |
+| requirement_key | str | 否 | 需求主键精确直查（如 HIS-0001）|
+| fields | list[str] | 否 | 出参字段白名单裁剪（module/priority/requirement_key/source_doc；node_id/title 恒回）|
+| limit | int | 否 | 页大小，默认 50，上限 200 |
+| offset | int | 否 | 分页偏移 |
+
+条目不含正文；要看某条详情用 `get_requirement_context`。
+
+---
+
+### get_project_info — 枚举/查询项目画像
+
+list 枚举可见项目；get 查询单个项目。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| action | str | 是 | `list` 枚举可见项目 / `get` 查询单个项目 |
+| project_id | UUID | 否 | get 时必填的项目 ID |
+| include_profile | bool | 否 | 是否附完整画像属性，默认 False |
+| include_scope_meta | bool | 否 | 是否附 scope 自证信息（project 与 system 双维度），默认 False |
+
+`has_profile=false` 表示画像占位，返回的 `hint` 会引导补建。
 
 ---
 
@@ -361,10 +392,7 @@ Dev: "昨天踩的 async session 泄漏的坑记一下"
             },
             "tags": ["async", "sqlalchemy", "bug"]
         }]
-    },
-    relations=[
-        {"from_ref": str(req_uuid), "relation_type": "described_by", "to_ref": "AsyncSessionLeak"}
-    ]
+    }
 )
 ← batch_id="ghi-789", status="pending_review"
 ```
@@ -420,7 +448,7 @@ Dev: "记录 YAML 缩进的坑，不绑定具体需求"
 )
 ← batch_id="mno-345", status="pending_review"
 
-# 审批通过后自动生成：ProjectProfile --references--> YamlIndentTrap
+# 审批通过后自动生成：ProjectProfile --references--> YamlIndentTrap（项目已有画像时）
 ```
 
 ---
@@ -433,8 +461,11 @@ Dev: "记录 YAML 缩进的坑，不绑定具体需求"
 {
     "batch_id": "abc-123",
     "status": "pending_review",      # pending_review / approved
-    "node_id": None,                 # 审批通过后回填
-    "decision": "auto_approved"      # 仅宽松模式返回
+    "submitted_at": "2026-09-30T10:00:00Z",  # 提交时间
+    "item_count": 2,                 # 批次条目数
+    "decision": "auto_approved",     # 仅宽松模式返回：auto_approved / needs_human_review
+    "created": [...],                # 仅宽松 auto_approved 返回：[{ref, node_id, node_type, title}]
+    "edges_created": 1               # 仅宽松 auto_approved 返回：建边数
 }
 ```
 
@@ -446,12 +477,12 @@ Dev: "记录 YAML 缩进的坑，不绑定具体需求"
     "title": "节点标题",
     "content": "节点内容摘要（前200字符）",
     "node_type": "CodeSnippet",
-    "score": 0.85,
+    "score": 0.85,                   # 融合分（向量余弦，0~1）
+    "vector_score": 0.87,            # 向量余弦分（仅向量命中时有值）
     "source": "fused",
     "properties": {...},
-    "tags": [...],
-    "version": 1,
-    "vector_generated_at": "2026-09-07T10:00:00Z",
-    "data_age_hours": 2.5
+    "tags": [...]
 }
 ```
+
+顶层另附检索自诊字段：`query_terms`（全文引擎实际分词）、`candidates_total`（阈值过滤后、top_n 截断前的候选数）、`returned`（实际返回条数）、`truncated`（候选池是否大于 top_n）。

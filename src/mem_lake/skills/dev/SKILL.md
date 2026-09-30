@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.12.0
+version: 1.13.0
 ---
 
 # Dev Skills（开发者）
@@ -21,7 +21,7 @@ version: 1.12.0
 
 ### 数据认证
 - **审批即认证**：admin 审批通过的数据视为已认证
-- **冲突检测**：三层冲突检测（L0/L1/L2/L3）保证数据质量
+- **冲突检测**：四层冲突检测（L0/L1/L2/L3）保证数据质量
 - **审计可追溯**：所有写操作记录审计日志，可追溯数据来源
 
 ### 使用建议
@@ -79,7 +79,7 @@ version: 1.12.0
 - **search_similar_requirements** — 检索相似需求（向量+全文融合）
 - **search_code_snippets** — 检索研发资产（代码/方案/意图/坑）
 - **analyze_impact_scope** — 分析变更影响范围
-- **list_requirements** — 清单式枚举需求（分页+module/source_doc 前缀过滤）
+- **list_requirements** — 清单式枚举需求（分页+过滤；requirement_key 直查、fields 裁剪）
 - **get_requirement_context** — 查询需求上下文
 
 ### 查询类
@@ -99,7 +99,7 @@ version: 1.12.0
 
 4. **提交后如何跟进（不要轮询、不要立即检索）**：
    - **严格模式**：返回 `status="pending_review"`，拿到 batch_id 后只需告知用户「待 admin 审批」
-   - **宽松模式**：返回 `status="approved"` + `decision="auto_approved"` 即已直接入库
+   - **宽松模式**：返回 `status="approved"` + `decision="auto_approved"` 即已直接入库，回执附 `created`（已建节点清单）与 `edges_created`（建边数）
 
 5. **content 应包含实际代码或详细说明**：content 会用于向量生成，内容越详细检索越准确。
 

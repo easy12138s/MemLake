@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, requirement, PRD."
-version: 1.12.0
+version: 1.13.0
 ---
 
 # PM Skills（产品经理）
@@ -21,7 +21,7 @@ version: 1.12.0
 
 ### 数据认证
 - **审批即认证**：admin 审批通过的数据视为已认证
-- **冲突检测**：三层冲突检测（L0/L1/L2/L3）保证数据质量
+- **冲突检测**：四层冲突检测（L0/L1/L2/L3）保证数据质量
 - **审计可追溯**：所有写操作记录审计日志，可追溯数据来源
 
 ### 使用建议
@@ -68,8 +68,8 @@ version: 1.12.0
 
 ### 检索类
 - **search_similar_requirements** — 检索相似需求（向量+全文融合）
-- **analyze_impact_scope** — 分析变更影响范围（需求→代码→依赖→方案→意图）
-- **list_requirements** — 清单式枚举需求（分页+module/source_doc 前缀过滤）
+- **analyze_impact_scope** — 分析变更影响范围（需求→代码→方案→设计意图→踩坑）
+- **list_requirements** — 清单式枚举需求（分页+过滤；requirement_key 直查、fields 裁剪）
 - **get_requirement_context** — 查询需求上下文（关联节点+关系链）
 - **check_requirement_conflicts** — 排查需求冲突（向量相似度检测）
 
@@ -82,7 +82,7 @@ version: 1.12.0
 
 1. **需求主键由服务端分配**：不必（也不应）自生成需求编号。提交后节点会带 `requirement_key`（如 `HIS-0001`，按 system 域可读序号）返回。需求间的重复/矛盾判定基于内容语义相似度（L3，≥ 0.85），不再依赖任何业务编号。
 
-2. **supersedes/relates_to 中的 ID 必须已存在**：引用的 requirement_id 必须是知识图谱中已审批通过的节点。引用不存在的 ID 会导致审批失败。
+2. **supersedes/relates_to 中的 ID 必须已存在且对你可见**：引用的 requirement_id 必须是知识图谱中已审批通过、且对当前调用者可见的节点。引用不存在或不可见的 ID 会导致审批失败。
 
 3. **提交后不可修改**：批次一旦提交，内容不可修改。如需修改，只能等 admin 拒绝后重新提交，或在 admin 审批通过后发布新版本（用 supersedes 关系）。
 

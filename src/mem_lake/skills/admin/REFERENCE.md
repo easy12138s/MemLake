@@ -1,6 +1,7 @@
 # Admin Reference（详细参数表与示例）
 
-> 本文件为 Admin Skill 的参考文档，包含完整的工具参数表、冲突检测机制和详细工作流示例。
+> 本文件为 Admin Skill 的参考文档，包含 Admin 专属工具的完整参数表、冲突检测机制和详细工作流示例。
+> 与 PM/Dev 共享的工具参数表见 `pm/REFERENCE.md` 与 `dev/REFERENCE.md`。
 > 主文件 `SKILL.md` 包含核心指导原则和快速参考，需要详细参数时加载本文件。
 
 ---
@@ -29,6 +30,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| batch_id | UUID | 审批批次 ID |
 | decision | str | `auto_approved`（无冲突已自动通过）或 `needs_human_review`（有冲突需人工决策）|
 | status | str | 批次最终状态（`approved` 或仍 `pending_review`）|
 | conflict_hint | dict | 冲突检测详情（见下方）|
@@ -44,13 +46,12 @@
     "has_conflict": True,
     "conflicting_nodes": [
         {
-            "new_node_title": "...",
-            "new_node_type": "Requirement",
             "existing_node_id": "uuid",
             "existing_node_title": "...",
+            "existing_node_type": "Requirement",
             "similarity": 0.95,
             "matched_key_attrs": {},
-            "conflict_type": "duplicate"  # duplicate | contradictory
+            "conflict_type": "duplicate"
         }
     ],
     "suggestion": "review"
@@ -80,7 +81,7 @@
 
 **返回**：`ApprovalResultOutput`（batch_id, status="approved", reviewed_at, conflict_hint）
 
-**行为**：原子写入——节点 + 边 + 向量 + 审计日志在同一事务提交。
+**行为**：原子写入——节点 + 边 + 审计日志在同一事务提交；向量在事务提交后异步生成。
 
 ---
 
@@ -222,7 +223,7 @@
 | profile | dict | 是 | 画像内容 |
 | node_id | UUID | update 时必填 | 现有 ProjectProfile 节点 ID |
 
-**返回**：`ManageProjectProfileOutput`（project_id, node_id, action, status="approved", version）
+**返回**：`ManageProjectProfileOutput`（project_id, node_id, action, status="approved", version, warning——create 时项目已有其他画像则附提示）
 
 ---
 
@@ -244,8 +245,8 @@
 |------|------|------|------|
 | project_id | UUID \| None | 否 | 项目 ID 过滤 |
 | actor | str \| None | 否 | 操作者 Access Key ID 过滤 |
-| action | str \| None | 否 | 操作类型过滤 |
-| target_type | str \| None | 否 | 目标类型过滤 |
+| action | str \| None | 否 | 操作类型过滤：write/update/approve/reject/create/revoke/rotate/update_scope/update_system_scope/update_mode/tool_call |
+| target_type | str \| None | 否 | 目标类型过滤：node/edge/access_key/batch/tool |
 | target_id | UUID \| None | 否 | 目标 ID 过滤 |
 | start_time | datetime \| None | 否 | 起始时间 |
 | end_time | datetime \| None | 否 | 结束时间 |
@@ -256,14 +257,16 @@
 
 ## 冲突检测机制
 
-`review_auto_process` 使用三层检测判断是否有冲突：
+`review_auto_process` 使用四层检测判断是否有冲突：
 
 | 层级 | 检测内容 | 不冲突条件 |
 |------|---------|-----------|
-| L0 硬判定 | 类型关键标识字段精确匹配 | 同项目同类型下关键标识字段完全相同 → 直接判冲突 |
-| L1 硬门控 | 项目 + 节点类型 | 不同项目或不同类型 → 直接通过 |
+| L0 硬判定 | 类型关键标识字段精确匹配 | 同候选域同类型下关键标识字段完全相同 → 直接判冲突 |
+| L1 硬门控 | 候选域（项目/system 域 + 节点类型） | 不同域或不同类型 → 直接通过 |
 | L2 关键属性 | 类型特有标识字段 | 向量召回候选中关键属性不同 → 排除 |
 | L3 内容语义 | 向量相似度 | 相似度 < 0.85 → 直接通过 |
+
+悬浮需求与跨项目 asset 的候选域按 system 维度收口。
 
 **各节点类型的关键标识字段**：
 
@@ -274,6 +277,7 @@
 | Solution | approach |
 | DesignIntent | rationale |
 | Pitfall | symptom |
+| Decision | decision_id |
 | ProjectProfile | name |
 
 ---
@@ -283,13 +287,12 @@
 当 `decision="needs_human_review"` 时，按以下模板向人类 admin 描述：
 
 ```
-批次 {batch_id}（{summary}）检测到 {N} 个冲突节点，需要人工审查：
+批次 {batch_id}（{summary}）检测到 {N} 个冲突，需要人工审查：
 
-1. 节点「{new_node_title}」（{new_node_type}）
-   与已有节点「{existing_node_title}」冲突
+1. 新提交内容与已有节点「{existing_node_title}」（{existing_node_type}）冲突
    - 相似度: {similarity}
    - 匹配属性: {matched_key_attrs}
-   - 冲突类型: {conflict_type}（duplicate=疑似重复 / contradictory=疑似矛盾）
+   - 冲突类型: {conflict_type}（duplicate=疑似重复）
 
 建议: {suggestion}
 
@@ -387,6 +390,7 @@ manage_project_profile(
 
 ```python
 {
+    "batch_id": "uuid",
     "decision": "auto_approved",     # 或 "needs_human_review"
     "status": "approved",            # 或 "pending_review"
     "conflict_hint": {...},          # 仅 needs_human_review 时
