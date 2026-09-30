@@ -606,3 +606,81 @@ class TestRolesCollaboration:
             assert search_result["returned"] > 0 or len(search_result["fused"]) > 0, (
                 "system 兜底应能召回到该 system 下的需求节点"
             )
+
+
+# ============================================================================
+# 批次六：纯 system 绑定 key 分析悬浮需求（09-29 报告已知缺口）
+# ============================================================================
+
+
+async def test_impact_scope_system_bound_key_floating_requirement(
+    monkeypatch, db_session, graph_store, mock_embedding_client, knowledge_helpers
+):
+    """analyze_impact_scope 不传 project_id：按需求自身归属校验（悬浮→system 权限）。
+
+    此前 project_id 必填：system 绑定 dev（project_scope 空）对悬浮需求
+    （project=None）传任何 project_id 都会被 validate_project_access 拒绝，
+    影响分析对该类 key 结构性不可用。
+    """
+    from mem_lake.knowledge.repository import add_edge, create_node
+
+    sid = uuid.uuid4()
+    req = await create_node(
+        db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+        project_id=None, node_type="Requirement", title="悬浮需求-影响分析",
+        content="悬浮于 system 的影响分析验证",
+        properties={"priority": "P3", "module": "m"},
+        tags=[], created_by="ak_pm", system_id=sid,
+    )
+    sol = await create_node(
+        db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+        project_id=uuid.uuid4(), node_type="Solution", title="悬浮方案X",
+        content="影响分析应看到 references 挂载的方案",
+        properties={"approach": "a", "version": "1"},
+        tags=[], created_by="ak_dev",
+    )
+    await add_edge(
+        db_session, graph_store=graph_store,
+        from_id=req.id, to_id=sol.id, edge_type="references", actor="ak_dev",
+    )
+    await db_session.commit()
+
+    try:
+        # dev：绑定该 system（project_scope 指向无关项目），不传 project_id
+        app = _make_role_app(
+            monkeypatch, role="dev",
+            project_id=str(uuid.uuid4()), system_scope=[str(sid)],
+        )
+        async with Client(app) as dev:
+            impact = await _call(dev, "analyze_impact_scope",
+                                 {"requirement_id": str(req.id)})
+            assert impact["requirement"] is not None
+            sol_titles = {
+                (d.get("properties") or {}).get("title")
+                for d in impact.get("solutions", [])
+            }
+            assert "悬浮方案X" in sol_titles, "悬浮需求的影响分析应返回 references 资产"
+
+            # 越权：system_scope 不含该 system → 拒绝
+            app2 = _make_role_app(
+                monkeypatch, role="dev",
+                project_id=str(uuid.uuid4()), system_scope=[str(uuid.uuid4())],
+            )
+        async with Client(app2) as dev2:
+            err = await _expect_tool_error(dev2, "analyze_impact_scope",
+                                          {"requirement_id": str(req.id)})
+            assert "system" in err or "权限" in err
+    finally:
+        from sqlalchemy import delete
+
+        from mem_lake.audit.models import AuditLog
+        from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
+
+        for n in (req, sol):
+            await graph_store._exec_cypher(
+                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(n.id)})
+        ids = [req.id, sol.id]
+        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
+        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
+        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
+        await db_session.commit()

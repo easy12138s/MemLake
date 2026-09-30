@@ -81,6 +81,11 @@ class ProjectInfo(BaseModel):
     profile: dict[str, Any] | None = Field(
         default=None, description="完整画像（include_profile=true 时）"
     )
+    has_profile: bool = Field(
+        default=True,
+        description="false=scope 内但尚未创建画像（占位条目）——admin 可用 "
+        "manage_project_profile 补建以暴露 name/work_dir/repo",
+    )
 
 
 class VisibleSystemInfo(BaseModel):
@@ -135,6 +140,10 @@ class ScopeMeta(BaseModel):
 class GetProjectInfoOutput(BaseModel):
     """get_project_info 工具出参。"""
 
+    hint: str | None = Field(
+        default=None,
+        description="输出级提示（如存在无画像的占位项目时引导补建）",
+    )
     action: str = Field(description="list / get")
     scope: ScopeMeta | None = Field(
         default=None, description="仅 include_scope_meta=true 时返回"
@@ -615,11 +624,22 @@ async def _get_project_info_core(
         projects = list(seen.values())
         # ISSUE-07：scope 内但尚未创建 ProjectProfile 的项目补占位条目
         # （name=None），避免「visible_uuids 有 id 但 projects 查不到任何项目名」
+        # 批次六（报告 P1-4）：占位条目标记 has_profile=False，输出级 hint
+        # 引导补建——Agent 不再需要靠猜区分「无数据」与「未建画像」
+        hint = None
+        placeholder_count = 0
         if not is_admin:
             for pid in visible_ids or []:
                 if pid not in seen:
-                    seen[pid] = ProjectInfo(project_id=pid)
+                    seen[pid] = ProjectInfo(project_id=pid, has_profile=False)
                     projects.append(seen[pid])
+                    placeholder_count += 1
+            if placeholder_count:
+                hint = (
+                    f"{placeholder_count} 个可见项目尚未创建画像（has_profile=false，"
+                    "name/工作目录等暂不可见）：请 admin 用 manage_project_profile 补建，"
+                    "补建后所有 Agent 可自证项目与代码仓库的对应关系"
+                )
         scope_meta = (
             _build_scope_meta(
                 is_admin,
@@ -631,7 +651,9 @@ async def _get_project_info_core(
             if include_scope_meta
             else None
         )
-        return GetProjectInfoOutput(action="list", scope=scope_meta, projects=projects)
+        return GetProjectInfoOutput(
+            action="list", scope=scope_meta, projects=projects, hint=hint
+        )
 
     elif action == "get":
         if project_id is None:

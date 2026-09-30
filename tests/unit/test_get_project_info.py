@@ -166,7 +166,11 @@ async def test_core_list_dedup_latest():
 
 
 async def test_core_list_includes_placeholder_for_scope_without_profile():
-    """ISSUE-07：scope 内但未建 ProjectProfile 的项目返回占位条目（name=None），不再消失。"""
+    """ISSUE-07：scope 内但未建 ProjectProfile 的项目返回占位条目（name=None），不再消失。
+
+    批次六（报告 P1-4）：占位条目带 has_profile=False 标记 + 输出级 hint
+    引导「admin 可用 manage_project_profile 补建」——Agent 不再只能靠猜。
+    """
     p1, p2 = uuid.uuid4(), uuid.uuid4()
     nodes = [FakeNode(p1, "A", "da")]  # 仅 p1 有画像
     out = await _get_project_info_core(
@@ -177,6 +181,21 @@ async def test_core_list_includes_placeholder_for_scope_without_profile():
     assert p1 in by_id and by_id[p1].name == "A"
     assert p2 in by_id, "scope 内无画像的项目应返回占位条目而非消失"
     assert by_id[p2].name is None
+    # 批次六：画像标记 + 输出引导
+    assert by_id[p1].has_profile is True
+    assert by_id[p2].has_profile is False
+    assert out.hint and "manage_project_profile" in out.hint
+
+
+async def test_core_list_all_profiled_no_hint():
+    """全部项目有画像：不产生误导性 hint。"""
+    p1 = uuid.uuid4()
+    nodes = [FakeNode(p1, "A", "da")]
+    out = await _get_project_info_core(
+        action="list", project_id=None, include_profile=False, include_scope_meta=False,
+        role="dev", scope=[str(p1)], list_fn=fake_list(nodes), validate_fn=lambda x: None,
+    )
+    assert out.hint is None
 
 
 async def test_core_list_admin_no_placeholder_leak():
