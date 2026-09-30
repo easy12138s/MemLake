@@ -1,10 +1,10 @@
 """MCP 工具定义（按操作性质分组）。
 
-工具注册入口：register_all_tools(mcp) 按操作性质注册 5 组工具。
+工具注册入口：register_all_tools(mcp) 按操作性质注册 6 组工具。
 每个分组模块实现 register_xxx_tools(mcp) 函数，注册该类型的所有工具。
 
 工具只在一个文件中定义一次，角色访问权由 RBAC 中间件层控制（auth/rbac.py），
-与工具文件归属无关。同一工具可被多个角色访问（如 get_role_skills 三角色共享）。
+与工具文件归属无关。同一工具可被多个角色访问（如 update_node PM/Dev 共享）。
 
 PDD 6.1 工具表分组：
 - write_tools：写入类（产生审批批次）
@@ -21,8 +21,7 @@ PDD 6.1 工具表分组：
   - search_similar_requirements, search_code_snippets, analyze_impact_scope,
     check_requirement_conflicts, list_knowledge
 - query_tools：查询类（只读）
-  - get_role_skills（三角色共享）
-  - get_project_profile, get_project_info, get_requirement_context, query_audit_log
+  - list_requirements, get_project_info, get_requirement_context, query_audit_log
 - graph_tools：图能力管理类（Admin 专属）
   - get_graph_stats, get_graph_quality_report（图统计/质量基线，只读）
   - generate_rule_edges（规则边生成，走审批批次）

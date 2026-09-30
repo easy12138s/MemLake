@@ -174,7 +174,7 @@ async def transactional_session() -> AsyncIterator[AsyncSession]:
 async def get_readonly_session() -> AsyncSession:
     """获取只读会话（不自动 commit）。
 
-    用于读工具（review_pending_list / review_batch_detail / get_role_skills），
+    用于读工具（review_pending_list / review_batch_detail / list_requirements），
     这些工具不需要事务，只需读取数据。
 
     调用方负责在 finally 中 close session。

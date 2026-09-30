@@ -178,7 +178,7 @@ class RequirementContextOutput(BaseModel):
         default=None, description="需求节点详情（None 表示不存在）"
     )
     related_nodes: list[RelatedNodeOutput] = Field(
-        default=[], description="关联节点列表（按深度排序）"
+        default=[], description="关联节点列表（无严格排序，depth 字段标注跳数）"
     )
     total: int = Field(description="关联节点数量")
 
@@ -188,8 +188,13 @@ class AuditLogItemOutput(BaseModel):
 
     log_id: uuid.UUID = Field(description="日志 ID")
     actor: str = Field(description="操作者")
-    action: str = Field(description="操作类型：write/update/archive")
-    target_type: str = Field(description="目标类型：node/edge")
+    action: str = Field(
+        description="操作类型：write/update/approve/reject/create/revoke/rotate/"
+        "update_scope/update_system_scope/update_mode/tool_call"
+    )
+    target_type: str = Field(
+        description="目标类型：node/edge/access_key/batch/tool"
+    )
     target_id: uuid.UUID | None = Field(default=None, description="目标 ID")
     detail: dict[str, Any] = Field(default={}, description="操作详情")
     created_at: Any = Field(description="操作时间（ISO 8601）")
@@ -454,10 +459,14 @@ def register_query_tools(mcp: FastMCP) -> None:
         ),
         action: str | None = Field(
             default=None,
-            description="操作类型过滤：write/update/archive",
+            description=(
+                "操作类型过滤：write/update/approve/reject/create/revoke/rotate/"
+                "update_scope/update_system_scope/update_mode/tool_call"
+            ),
         ),
         target_type: str | None = Field(
-            default=None, description="目标类型过滤：node/edge"
+            default=None,
+            description="目标类型过滤：node/edge/access_key/batch/tool"
         ),
         target_id: uuid.UUID | None = Field(
             default=None, description="目标 ID 过滤"
@@ -473,7 +482,8 @@ def register_query_tools(mcp: FastMCP) -> None:
     ) -> QueryAuditLogOutput:
         """查询审计日志（多条件过滤 + 分页）。
 
-        Admin 工具。审计日志为 append-only，记录所有知识图谱写操作。
+        Admin 工具。审计日志为 append-only，记录知识图谱写入、Access Key 管理、
+        审批决策与全部工具调用。
         支持按项目/操作者/操作类型/目标类型/目标 ID/时间范围过滤。
         """
         try:
