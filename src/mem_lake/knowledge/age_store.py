@@ -17,7 +17,7 @@ import logging
 import re
 import uuid
 from functools import lru_cache
-from typing import Any, cast
+from typing import Any, Iterable, Iterator, cast
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -155,6 +155,34 @@ class AGEGraphStore(GraphStore):
             # 返回 None 的优雅降级保留（调用方判空）。
             logger.warning("agtype 解析失败，返回 None：%.200s", s)
             return None
+
+    async def _exec_node_cypher(
+        self, session: AsyncSession, node_id: uuid.UUID, cypher: str
+    ) -> list[Any]:
+        """以 $node_id 参数执行 Cypher（neighbors 系列共用）。"""
+        return await self._exec_cypher(session, cypher, {"node_id": str(node_id)})
+
+    def _parse_node_rows(self, rows: Iterable[Any]) -> list[dict[str, Any]]:
+        """agtype 行解析为节点 dict 列表（None 剔除）。"""
+        return [
+            cast(dict[str, Any], p)
+            for p in (self._parse_agtype(r) for r in rows)
+            if p is not None
+        ]
+
+    def _iter_path_results(
+        self, rows: Iterable[Any]
+    ) -> Iterator[tuple[dict[str, Any], list[Any]]]:
+        """路径行（{node, edges}）解析生成器：yield (node, edges)，跳过非法行。"""
+        for row in rows:
+            parsed = self._parse_agtype(row)
+            if not isinstance(parsed, dict):
+                continue
+            node = parsed.get("node")
+            edges = parsed.get("edges") or []
+            if not isinstance(node, dict):
+                continue
+            yield node, edges
 
     async def add_node(
         self,
@@ -302,37 +330,24 @@ class AGEGraphStore(GraphStore):
                     f"WHERE type(r) = '{edge_type}' "
                     f"RETURN DISTINCT m"
                 )
-                params = {"node_id": str(node_id)}
-                rows = await self._exec_cypher(session, cypher, params)
-                # members 为 agtype 节点 dict，cast 收敛为声明的返回元素类型
-                return [
-                    cast(dict[str, Any], p)
-                    for p in (self._parse_agtype(r) for r in rows)
-                    if p is not None
-                ]
+                rows = await self._exec_node_cypher(session, node_id, cypher)
+                # members 为 agtype 节点 dict
+                return self._parse_node_rows(rows)
             else:
                 # depth>1：AGE v1.7.0 不支持 ALL() 谓词，取路径后在 Python 端过滤
                 cypher = (
                     f"MATCH (n {{id: $node_id}})-[r*1..{depth}]-(m) "
                     f"RETURN {{node: m, edges: r}} AS result"
                 )
-                params = {"node_id": str(node_id)}
-                rows = await self._exec_cypher(session, cypher, params)
+                rows = await self._exec_node_cypher(session, node_id, cypher)
                 result: list[dict[str, Any]] = []
                 seen: set[str] = set()
-                for row in rows:
-                    parsed = self._parse_agtype(row)
-                    if not isinstance(parsed, dict):
-                        continue
-                    edges = parsed.get("edges") or []
+                for node, edges in self._iter_path_results(rows):
                     # 检查路径中所有边类型都匹配（边 dict 的 label 字段即边类型）
                     if not all(
                         isinstance(e, dict) and e.get("label") == edge_type
                         for e in edges
                     ):
-                        continue
-                    node = parsed.get("node")
-                    if not isinstance(node, dict):
                         continue
                     nid = node.get("properties", {}).get("id")
                     if nid and nid not in seen:
@@ -345,14 +360,9 @@ class AGEGraphStore(GraphStore):
             f"MATCH (n {{id: $node_id}})-[*1..{depth}]-(m) "
             f"RETURN DISTINCT m"
         )
-        params = {"node_id": str(node_id)}
-        rows = await self._exec_cypher(session, cypher, params)
-        # members 为 agtype 节点 dict，cast 收敛为声明的返回元素类型
-        return [
-            cast(dict[str, Any], p)
-            for p in (self._parse_agtype(r) for r in rows)
-            if p is not None
-        ]
+        rows = await self._exec_node_cypher(session, node_id, cypher)
+        # members 为 agtype 节点 dict
+        return self._parse_node_rows(rows)
 
     async def neighbors_with_context(
         self,
@@ -375,17 +385,9 @@ class AGEGraphStore(GraphStore):
             f"MATCH (n {{id: $node_id}})-[r*1..{depth}]-(m) "
             f"RETURN {{node: m, edges: r}} AS result"
         )
-        params = {"node_id": str(node_id)}
-        rows = await self._exec_cypher(session, cypher, params)
+        rows = await self._exec_node_cypher(session, node_id, cypher)
         seen: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            parsed = self._parse_agtype(row)
-            if not isinstance(parsed, dict):
-                continue
-            node = parsed.get("node")
-            edges = parsed.get("edges") or []
-            if not isinstance(node, dict):
-                continue
+        for node, edges in self._iter_path_results(rows):
             nid = node.get("properties", {}).get("id")
             if not nid:
                 continue

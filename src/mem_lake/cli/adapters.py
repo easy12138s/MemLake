@@ -16,8 +16,8 @@ _HTML_SUFFIXES = {".html", ".htm"}
 _INDEX_NAMES = {"index.html", "index.htm", "index.md"}
 
 
-class MarkdownHtmlAdapter:
-    """默认适配器：接受 .html/.htm（排除 index 导航壳），markitdown 全文转 markdown。"""
+class _HtmlAdapterBase:
+    """HTML 适配器公共基类：markitdown 转换 + 接受 .html/.htm（排除 index 导航壳）。"""
 
     def __init__(self) -> None:
         self._md = MarkItDown()
@@ -28,6 +28,13 @@ class MarkdownHtmlAdapter:
         return file.name.lower() not in _INDEX_NAMES
 
     def parse(self, file: Path, rel_path: str) -> list[ParsedRequirement]:
+        raise NotImplementedError
+
+
+class MarkdownHtmlAdapter(_HtmlAdapterBase):
+    """默认适配器：markitdown 全文转 markdown。"""
+
+    def parse(self, file: Path, rel_path: str) -> list[ParsedRequirement]:
         result = self._md.convert(file)
         content = (result.text_content or "").strip()
         if not content:
@@ -35,7 +42,7 @@ class MarkdownHtmlAdapter:
         return [ParsedRequirement(title=rel_path, content=content, rel_path=rel_path)]
 
 
-class AxureCleanedAdapter:
+class AxureCleanedAdapter(_HtmlAdapterBase):
     """对 Axure RP HTML 导出：markitdown 转 markdown 后做轻度后处理清洗。
 
     实测：markitdown 对 Axure 叶子页输出已干净（无 uNNNN/注释/svg 泄漏）；
@@ -44,14 +51,6 @@ class AxureCleanedAdapter:
 
     # 连续 2 个以上空行折叠为单个空行
     _BLANK_RE = re.compile(r"\n[ \t]*(?:\n[ \t]*)+")
-
-    def __init__(self) -> None:
-        self._md = MarkItDown()
-
-    def accepts(self, file: Path) -> bool:
-        if file.suffix.lower() not in _HTML_SUFFIXES:
-            return False
-        return file.name.lower() not in _INDEX_NAMES
 
     def parse(self, file: Path, rel_path: str) -> list[ParsedRequirement]:
         result = self._md.convert(file)

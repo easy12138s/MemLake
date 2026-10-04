@@ -59,6 +59,31 @@ def _extract_node_ids(agtype_dicts: Iterable[Any]) -> list[uuid.UUID]:
     return ids
 
 
+def _dedupe_append(
+    dicts: Iterable[Any], seen: set[str], out: list[dict[str, Any]]
+) -> None:
+    """agtype 邻居去重追加：按 properties.id 去重后追加到 out（非 dict 跳过）。"""
+    for d in dicts:
+        if not isinstance(d, dict):
+            continue
+        nid = (d.get("properties") or {}).get("id")
+        if nid and nid not in seen:
+            seen.add(nid)
+            out.append(d)
+
+
+def _filter_by_approved_ids(
+    dicts: Iterable[Any], approved_ids: set[str]
+) -> list[dict[str, Any]]:
+    """保留 properties.id 在 approved 集中的节点（图投影统一经 PG 状态过滤）。"""
+    return [
+        d
+        for d in dicts
+        if isinstance(d, dict)
+        and (d.get("properties") or {}).get("id") in approved_ids
+    ]
+
+
 class GraphSearcher:
     """图遍历检索器。
 
@@ -282,40 +307,22 @@ class GraphSearcher:
             dep_dicts = await self._graph_store.neighbors(
                 session, code_id, edge_type="depends_on", depth=_clamp_depth(max_depth)
             )
-            for dep in dep_dicts:
-                if isinstance(dep, dict):
-                    dep_id = (dep.get("properties") or {}).get("id")
-                    if dep_id and dep_id not in seen_dep_ids:
-                        seen_dep_ids.add(dep_id)
-                        all_dependencies.append(dep)
+            _dedupe_append(dep_dicts, seen_dep_ids, all_dependencies)
 
             # 3b. 实现方案（CodeSnippet --realized_by--> Solution）
             sol_dicts = await self._graph_store.neighbors(
                 session, code_id, edge_type="realized_by", depth=1
             )
-            for sol in sol_dicts:
-                if isinstance(sol, dict):
-                    sol_id = (sol.get("properties") or {}).get("id")
-                    if sol_id and sol_id not in seen_sol_ids:
-                        seen_sol_ids.add(sol_id)
-                        all_solutions.append(sol)
+            _dedupe_append(sol_dicts, seen_sol_ids, all_solutions)
 
         # 4. PG 过滤 codes/dependencies/solutions（archived 图投影保留但按状态过滤）
         approved_ids = await self._query_approved_ids(
             session, _extract_node_ids([*code_dicts, *all_dependencies, *all_solutions])
         )
 
-        def _filter_approved(dicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            return [
-                d
-                for d in dicts
-                if isinstance(d, dict)
-                and (d.get("properties") or {}).get("id") in approved_ids
-            ]
-
-        codes = _filter_approved(code_dicts)
-        dependencies = _filter_approved(all_dependencies)
-        solutions = _filter_approved(all_solutions)
+        codes = _filter_by_approved_ids(code_dicts, approved_ids)
+        dependencies = _filter_by_approved_ids(all_dependencies, approved_ids)
+        solutions = _filter_by_approved_ids(all_solutions, approved_ids)
 
         # 5. 仅对 approved 的方案展开设计意图（Solution --embodies--> DesignIntent）
         #    （归档方案不再展开其意图：方案已不构成影响范围，其意图同样不算）
@@ -328,12 +335,7 @@ class GraphSearcher:
             intent_dicts = await self._graph_store.neighbors(
                 session, sol_uuid, edge_type="embodies", depth=1
             )
-            for intent in intent_dicts:
-                if isinstance(intent, dict):
-                    intent_id = (intent.get("properties") or {}).get("id")
-                    if intent_id and intent_id not in seen_intent_ids:
-                        seen_intent_ids.add(intent_id)
-                        all_intents.append(intent)
+            _dedupe_append(intent_dicts, seen_intent_ids, all_intents)
 
         intent_approved_ids = await self._query_approved_ids(
             session, _extract_node_ids(all_intents)
@@ -386,10 +388,7 @@ class GraphSearcher:
         )
 
         def _ref(seg: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            return [
-                d for d in seg
-                if (d.get("properties") or {}).get("id") in ref_approved_ids
-            ]
+            return _filter_by_approved_ids(seg, ref_approved_ids)
 
         codes = [*codes, *_ref(grouped["CodeSnippet"])]
         solutions = [*solutions, *_ref(grouped["Solution"])]
