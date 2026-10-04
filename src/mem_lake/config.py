@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # 作为紧急熔断（单一判定源见 approval/service.submit_batch_with_mode）。
     LAX_MODE_ENABLED: bool = True
 
-    # ========== 业务阈值（FIX-21：收敛硬编码，可环境覆盖）==========
+    # ========== 业务阈值（可环境覆盖）==========
     # 单审批批次 items 上限（节点+边总数，防止一次灌入造成滥用）
     MAX_ITEMS_PER_BATCH: int = 50
     # 节点 title/content 等文本字段最大长度（字符，防御超长内容撑爆存储/嵌入）

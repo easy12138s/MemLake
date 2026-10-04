@@ -238,7 +238,7 @@ def register_review_tools(mcp: FastMCP) -> None:
             # 审批已提交（事务已 commit）：将新建节点（暂无 node_embedding 向量记录）
             # 异步入队补向量，复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
             # 入队失败不阻断审批结果——审批已生效，向量缺失由后续 reindex 兜底
-            #（AUDIT §2.11：避免"审批成功但工具报错"的 Agent 误判重试窗口）。
+            #（避免"审批成功但工具报错"的 Agent 误判重试窗口）。
             if created_node_ids:
                 await _safe_enqueue_embed(batch.project_id, created_node_ids)
             assert batch.reviewed_at is not None  # 审批通过后 reviewed_at 必已回填（列类型可为空）
@@ -317,7 +317,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                 )
             batch = result["batch"]
             # 审批已提交：将新建节点（暂无 node_embedding 向量记录）异步入队补向量，
-            # 复用 reindex worker；入队失败不阻断（AUDIT §2.11，见 review_approve）。
+            # 复用 reindex worker；入队失败不阻断（见 review_approve）。
             created_node_ids = result.get("created_node_ids") or []
             if created_node_ids:
                 await _safe_enqueue_embed(batch.project_id, created_node_ids)

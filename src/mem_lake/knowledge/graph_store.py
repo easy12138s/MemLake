@@ -81,7 +81,7 @@ class GraphStore(ABC):
         node_id: uuid.UUID,
         depth: int = 2,
     ) -> list[dict[str, Any]]:
-        """邻居遍历并透出路径边类型与跳数（FIX-10：收口检索层鸭子类型调用）。
+        """邻居遍历并透出路径边类型与跳数（收口检索层鸭子类型调用）。
 
         返回结构化结果列表，每项：{"node": <agtype 节点 dict>, "edge_types": [label...],
         "depth": <跳数>}。depth 为路径跳数（= len(edge_types)）。同一目标节点若经

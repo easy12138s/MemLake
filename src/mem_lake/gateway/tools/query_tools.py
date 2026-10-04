@@ -15,9 +15,8 @@
 - get_requirement_context 调 graph.traverse 获取需求关联节点
 - query_audit_log 调 audit.service.query_audit_logs 多条件过滤
 
-批次三工具面治理：get_role_skills 已删除（skills 改 GitHub 分发，见
-manage_tools._build_user_hint）；get_project_profile 已删除（get_project_info
-的 action=get + include_profile=true 完整覆盖）。
+skills 分发不经工具面（见 manage_tools._build_user_hint 的 GitHub 指引）；
+项目画像查询由 get_project_info（action=get + include_profile）覆盖。
 """
 
 import logging
@@ -278,8 +277,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                     limit=min(max(limit, 1), 200),
                     offset=max(offset, 0),
                 )
-                # node_id/title 为恒回字段（引用键+可读名，报告 P1-4 曾批评
-                # "只回 UUID 没名字"），fields 只裁可选维度
+                # node_id/title 为恒回字段（引用键+可读名），fields 只裁可选维度
                 keep = (set(fields) | {"node_id", "title"}) if fields is not None else None
 
                 def _item(r: Any) -> RequirementListItem:
@@ -360,14 +358,12 @@ def register_query_tools(mcp: FastMCP) -> None:
         图遍历为无向，故不提供 direction。需求节点不存在时 requirement=None，related_nodes 为空。
         """
         try:
-            # 深度校验（1~5）
             if not 1 <= depth <= 5:
                 raise ValueError("depth 必须在 1~5 之间")
 
             lifespan_ctx = get_lifespan_context()
 
             async with readonly_session() as session:
-                # 1. 获取需求节点详情
                 requirement_dict = None
                 try:
                     req_node = await get_node(session, requirement_id)
@@ -396,7 +392,6 @@ def register_query_tools(mcp: FastMCP) -> None:
                         total=0,
                     )
 
-                # 2. 图遍历获取关联节点
                 graph_searcher = GraphSearcher(lifespan_ctx.graph_store)
                 from mem_lake.search.filters import FilterSpec
                 filters = FilterSpec(
@@ -409,7 +404,6 @@ def register_query_tools(mcp: FastMCP) -> None:
                     filters=filters,
                 )
 
-                # 3. 转换为 RelatedNodeOutput（context_traverse 已透出真实 edge_type/depth）
                 related = [
                     RelatedNodeOutput(
                         node_id=r.node_id,
@@ -611,10 +605,8 @@ async def _get_project_info_core(
                 continue  # ProjectProfile 必归属项目，None 仅防御性跳过
             seen[pid] = _to_project_info(n, include_profile)
         projects = list(seen.values())
-        # ISSUE-07：scope 内但尚未创建 ProjectProfile 的项目补占位条目
-        # （name=None），避免「visible_uuids 有 id 但 projects 查不到任何项目名」
-        # 批次六（报告 P1-4）：占位条目标记 has_profile=False，输出级 hint
-        # 引导补建——Agent 不再需要靠猜区分「无数据」与「未建画像」
+        # scope 内尚未建画像的项目补占位条目（name=None、has_profile=False）
+        # + 输出级 hint 引导补建——Agent 无需区分「无数据」与「未建画像」
         hint = None
         placeholder_count = 0
         if not is_admin:
@@ -647,7 +639,7 @@ async def _get_project_info_core(
     elif action == "get":
         if project_id is None:
             raise ValueError("get 操作必须指定 project_id")
-        validate_fn(project_id)  # 越权抛 ToolError
+        validate_fn(project_id)
         nodes = await list_fn(project_ids=[project_id], limit=1)
         project = _to_project_info(nodes[0], include_profile) if nodes else None
         scope_meta = (

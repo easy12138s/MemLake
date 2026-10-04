@@ -139,7 +139,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[Any]:
         await session.commit()
     logger.info("业务表与 schema 初始化完成")
 
-    # FIX-01：Alembic 迁移版本校验（create_tables 之后，确保增量迁移未被遗漏登记）
+    # Alembic 迁移版本校验（create_tables 之后，确保增量迁移未被遗漏登记）
     async with AsyncSessionLocal() as session:
         await check_migrations_synced(session)
     logger.info("Alembic 迁移版本校验通过")

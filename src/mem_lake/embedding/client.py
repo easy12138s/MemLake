@@ -8,7 +8,7 @@
 - 服务端单次 /embed 文本数上限 MAX_EMBED_TEXTS=128，超限返回 422；客户端在此按
   MAX_TEXTS_PER_REQUEST 分块后合并结果（与 embedding_server 常量需两端同步维护）。
 - 对瞬时错误做指数退避重试：仅限 ConnectError（请求未到达服务端）。超时（ReadTimeout）
-  明确【不】重试——2026-09-02 实测：大批量 encode 耗时可超分钟级，客户端超时重试会把
+  明确【不】重试——实测：大批量 encode 耗时可超分钟级，客户端超时重试会把
   已到达服务端的同一大请求重复压栈，服务端多个 encode 并发叠加直接推高内存（OOM 诱因）。
 """
 
@@ -36,7 +36,7 @@ DEFAULT_TIMEOUT = 600.0
 class EmbeddingError(Exception):
     """Embedding 服务不可用、响应非 200 或维度不符时抛出。
 
-    retryable（09-29 报告 P2-1）：调用方可据此区分「该重试」与「该放弃」——
+    retryable：调用方可据此区分「该重试」与「该放弃」——
     ConnectError/5xx 为瞬时错误（retryable=True）；ReadTimeout 明确
     retryable=False（请求可能已到达服务端仍在计算，盲目重试会并发叠压，
     实测 OOM 诱因），应等待后查询或稍后再试。
@@ -118,7 +118,7 @@ class EmbeddingClient:
             except httpx.HTTPError as exc:
                 # 超时/读中断等：请求可能已到达服务端并在计算，重试会造成服务端
                 # 同一请求并发叠压（实测 OOM 诱因），故不重试，直接失败。
-                # str(ReadTimeout) 为空串，须带异常类型定位（真实反馈 ISSUE-10）
+                # str(ReadTimeout) 为空串，须带异常类型定位
                 raise EmbeddingError(
                     f"Embedding 服务请求失败: {type(exc).__name__}: {exc!r}"
                     "（请求可能已到达服务端仍在计算，勿立即重试以免叠压）",

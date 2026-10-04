@@ -1,4 +1,4 @@
-"""冲突策略与自动审批（FIX-24 从 service.py 拆出的 policy 模块）。
+"""冲突策略与自动审批。
 
 职责：
 - auto_process_batch：三层冲突检测 → 无冲突自动通过 / 有冲突升级人工（admin Agent 设计）。
@@ -6,9 +6,8 @@
 
 依赖说明：检测/提交/审批执行等协作函数通过本包的对外门面
 mem_lake.approval.service 在调用时解析（函数内 `import mem_lake.approval.service
-as _svc`）。原因：FIX-24 拆包后，门面再次导出这些符号；运行时按门面命名空间
-解析可保持既有行为（例如对被 patch 的 service 符号生效），同时避免模块加载期
-service ↔ policy 的循环依赖。
+as _svc`）。原因：门面 re-export 这些符号，运行时按门面命名空间解析可保持
+patch 行为（tests 即 patch 门面），同时避免加载期 service ↔ policy 循环依赖。
 """
 
 import uuid
@@ -103,10 +102,9 @@ async def auto_process_batch(
         _conflict_pid = _to_uuid(_pid_raw) if _pid_raw else None
         _conflict_sid = _to_uuid(_sid_raw) if _sid_raw else None
 
-        # 批次四（09-29 报告场景 D 根因）：asset 类型节点（CodeSnippet/Solution/
-        # DesignIntent/Pitfall）的候选域扩为 system 维度——反查该 project 所属
-        # 的全部 system，取这些 system 下全部项目集。跨 project 同类语义重复
-        # 不再静默通过（此前单 project 候选域导致查重失效→知识库自我稀释）。
+        # asset 类型节点（CodeSnippet/Solution/DesignIntent/Pitfall）的候选域
+        # 扩为 system 维度——反查该 project 所属全部 system，取其下全部项目集，
+        # 防跨 project 同类语义重复静默通过。
         # 未挂载任何 system 的 project 行为不变（候选域=本 project）。
         _conflict_pids: tuple[uuid.UUID, ...] | None = None
         if (
@@ -166,7 +164,7 @@ async def auto_process_batch(
             vector_searcher=vector_searcher,
             review_comment="auto_approved: no conflict detected",
             # 复用本函数 step2 已批量 embed 的冲突查询向量，消除 review_approve
-            # 内部重复 embed（AUDIT §2.12）
+            # 内部重复 embed
             conflict_query_vectors=conflict_query_vectors,
         )
         # 新建节点 id 取自审批后 batch.items 中 node+create 项的 target_id

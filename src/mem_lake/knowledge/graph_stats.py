@@ -1,4 +1,4 @@
-"""图统计与规则建边服务（ENH-01 能力内核）。
+"""图统计与规则建边服务。
 
 职责：
 - get_graph_stats：节点/边按 type、system 维度聚合（经 AGE Cypher，遵循 age_store

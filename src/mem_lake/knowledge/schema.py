@@ -75,7 +75,7 @@ ALLOWED_FIELDS: dict[str, set[str]] = {
 # Pitfall 严重级合法枚举（描述承诺 P0~P3，schema 层枚举校验）
 SEVERITY_ENUM: frozenset[str] = frozenset({"P0", "P1", "P2", "P3"})
 
-# 图遍历深度上界（FIX-15 纵深防御）：与工具层校验同值（query_tools 5），
+# 图遍历深度上界：与工具层校验同值（query_tools 5），
 # 存储/检索层 clamp 防止稠密图组合爆炸。所有遍历入口共享此常量。
 MAX_TRAVERSAL_DEPTH = 5
 
@@ -153,16 +153,14 @@ def validate_attribution(
     system_id: Any = None,
     project_id: Any = None,
 ) -> None:
-    """校验节点 system/project 归属约束（FIX-17 单一实现）。
+    """校验节点 system/project 归属约束（单一实现）。
 
     规则（system 维度建模）：
     - Requirement：system_id 必填，project_id 可空（悬浮需求）
     - 其余资产类型：project_id 必填（不可悬浮）
 
-    不合规抛 SchemaValidationError。此前该逻辑散落于 repository.create_node /
-    gateway.tools._shared / approval._validate_item_payload 三处独立实现且异常
-    类型不一致，统一收敛于此；调用方如需对外分层包装（如转 PayloadValidationError），
-    自行捕获本异常。
+    不合规抛 SchemaValidationError，统一在此单一实现；调用方如需对外分层
+    包装（如转 PayloadValidationError），自行捕获本异常。
 
     判空用 falsy（非 is None）：合法值为 UUID 对象（恒真值），payload 原始
     JSON 中的空串/缺失统一视为未填，在提交时点即拦截（而非推迟到审批执行）。

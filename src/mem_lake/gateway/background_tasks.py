@@ -4,10 +4,10 @@
 - 当前部署为单进程（Dockerfile.app CMD python -m mem_lake.main）；任务状态
   落库（reindex_task 表）保证跨重启一致且天然可审计，也为未来多 worker 部署
   预留（ACTIVE_TASKS 集合仅防 GC，防重入依赖 DB 状态而非进程内集合）。
-- reindex_project_vectors 工具改为「提交即返回 task_id」，真正重嵌由本模块的
-  _reindex_worker 在后台协程执行，彻底解耦客户端 MCP 调用超时。
+- reindex_project_vectors 工具提交即返回 task_id，真正重嵌由本模块的
+  _reindex_worker 在后台协程执行，避免客户端 MCP 调用超时。
 - worker 内部采用批量 embed + offset 分页遍历全部节点 + 每批独立事务，
-  既大幅提速（减少 HTTP 往返），又根治「>500 节点遗漏」与「56s 长事务」问题。
+  减少 HTTP 往返，避免长事务与分页遗漏。
 - 防重入：同一项目已有 pending/running 任务时，新提交直接返回已有 task_id，
   避免客户端超时重试又触发全量重嵌。
 """

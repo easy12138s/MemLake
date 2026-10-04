@@ -1,6 +1,6 @@
 """ReindexTask ORM 模型：异步向量重嵌任务的状态表。
 
-reindex_project_vectors 改为异步提交后，任务状态必须落库：当前单进程部署下
+reindex_project_vectors 为异步提交，任务状态必须落库：当前单进程部署下
 保证跨重启一致；未来多 worker 部署时内存状态亦不互通，落库是唯一可靠途径。
 表由 db/init.py 的 create_tables 在启动时通过 import 本模块注册到 Base.metadata。
 """

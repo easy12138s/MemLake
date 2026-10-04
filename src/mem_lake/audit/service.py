@@ -63,7 +63,7 @@ async def query_audit_logs(
     动态构建 WHERE 条件（非 None 才过滤），按 created_at DESC 排序，limit/offset 分页。
     project_id 过滤实现按项目隔离审计（Admin 审计追溯）。
     start_time/end_time 在 SQL 层过滤（created_at 范围），与分页组合正确
-    （应用层过滤会导致跨页漏数据，见 AUDIT §2.6）。
+    （应用层过滤会导致跨页漏数据）。
     """
     stmt = select(AuditLog)
     if actor is not None:

@@ -1,4 +1,4 @@
-"""审批执行写入（FIX-24 从 service.py 拆出的 executor 模块）。
+"""审批执行写入。
 
 职责：审批通过（review_approve）与拒绝（review_reject）的状态机推进，及
 node/edge 的执行写入（_execute_node_create / _execute_node_update /
@@ -91,8 +91,7 @@ async def review_approve(
     不 commit。
 
     conflict_query_vectors：调用方（auto_process_batch）已预计算的冲突查询向量
-    （与内部构造顺序一致），非 None 时跳过内部重新 embed，消除重复计算
-    （AUDIT §2.12）。
+    （与内部构造顺序一致），非 None 时跳过内部重新 embed，消除重复计算。
     """
     batch = await get_pending_batch(session, batch_id, verb="审批通过")
 
@@ -105,8 +104,7 @@ async def review_approve(
     # auto_process_batch 已预计算时复用，此处跳过内部重新 embed。
     create_items = iter_created_node_items(batch)
     if conflict_query_vectors is None:
-        # FIX-12：复用 _build_conflict_query_vectors（与 auto_process_batch 同一实现），
-        # 消除瘦身轮遗留的内联重复。
+        # 复用 _build_conflict_query_vectors（与 auto_process_batch 同一实现）。
         conflict_query_vectors = await _build_conflict_query_vectors(
             embedding_client, create_items
         )
@@ -167,11 +165,9 @@ async def review_approve(
             )
             # 边无 target_id，留空
 
-    # 2. 新建节点向量化延迟到后台异步执行：facet 向量（node_embedding）暂缺
-    # （FIX-08：content_vector 列已废弃，检索走 node_embedding，缺向量节点自动
-    # 排除），审批提交后由调用方经 start_embed_nodes_task 入队，复用 reindex
-    # worker 补向量。此处不再同步 embed，避免大批次审批阻塞 MCP 调用超时。
-    # 调用方从 batch.items（node+create 项的 target_id）即可取得新建节点 id。
+    # 2. 新建节点向量化延迟到后台异步执行（node_embedding 暂缺，缺向量节点
+    # 检索时自动排除）：由调用方经 start_embed_nodes_task 入队，复用 reindex
+    # worker 补向量，避免大批次审批阻塞 MCP 调用超时。
 
     # 3. 合并 conflict_hint
     merged_conflict_hint = _merge_conflict_hints(all_conflict_hints)

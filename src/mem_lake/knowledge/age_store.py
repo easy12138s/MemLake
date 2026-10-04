@@ -40,7 +40,7 @@ _AGE_TYPE_SUFFIX_RE = re.compile(r"::(vertex|edge|path)\b")
 # 用于动态构建 SET 子句时防止 Cypher 注入（属性键拼入 Cypher 语法部分）
 _EDGE_PROP_KEY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
-# 边属性键保留字（FIX-16）：与 _exec_cypher 的 params 命名空间冲突的键，
+# 边属性键保留字：与 _exec_cypher 的 params 命名空间冲突的键，
 # 允许覆盖会静默替换端点参数（from_id/to_id），必须拒绝。
 _RESERVED_EDGE_PROP_KEYS = frozenset({"from_id", "to_id"})
 
@@ -60,7 +60,7 @@ class AGEGraphStore(GraphStore):
     async def _ensure_age_session(self, session: AsyncSession) -> None:
         """确保会话已加载 AGE 扩展并设置事务级 search_path（幂等）。
 
-        FIX-19：cypher() 函数与裸 agtype 类型依赖 search_path 含 ag_catalog
+        cypher() 函数与裸 agtype 类型依赖 search_path 含 ag_catalog
         （AGE 对 PREPARE 参数化路径的硬依赖，全限定 `ag_catalog.cypher` 对
         无参数路径可行但参数化路径的 $1 类型匹配失败）。采用 `SET LOCAL`：
         仅在当前事务内生效，事务结束（commit/rollback）自动恢复原 search_path，
@@ -151,7 +151,7 @@ class AGEGraphStore(GraphStore):
             # json.loads 返回类型被 mypy 视为 Any，cast 收敛为声明的联合返回类型
             return cast(dict[str, Any] | list[Any], json.loads(s))
         except (json.JSONDecodeError, ValueError):
-            # FIX-14：解析失败留痕（原始值前 200 字符），避免静默丢数据无日志可查；
+            # 解析失败留痕（原始值前 200 字符），避免静默丢数据无日志可查；
             # 返回 None 的优雅降级保留（调用方判空）。
             logger.warning("agtype 解析失败，返回 None：%.200s", s)
             return None
@@ -197,7 +197,7 @@ class AGEGraphStore(GraphStore):
         携带 id/project_id/title/system_id 用于图查询过滤与展示。label 校验用
         validate_node_type（仅校验类型，不校验必填字段，因图节点不存完整属性）。
         system_id 缺失时写 ""（与 project_id 口径一致），保证图侧可按 system
-        维度直接分组/过滤（ENH-01 图能力规划前置）。
+        维度直接分组/过滤。
         """
         validate_node_type(label)
         cypher = (
@@ -236,7 +236,7 @@ class AGEGraphStore(GraphStore):
         # 校验属性键安全性（拼入 Cypher 语法部分，非参数值）
         for key in properties:
             if key in _RESERVED_EDGE_PROP_KEYS:
-                # FIX-16：保留字检查——from_id/to_id 已在 params 命名空间占用，
+                # 保留字检查——from_id/to_id 已在 params 命名空间占用，
                 # 允许覆盖会静默替换端点参数，抛 ValueError 拒绝。
                 raise ValueError(
                     f"非法边属性键: {key}，from_id/to_id 为保留字（防参数覆盖）"
@@ -319,7 +319,7 @@ class AGEGraphStore(GraphStore):
         - edge_type 已由 validate_edge_type 白名单校验（12 种合法类型），
           安全拼入 Cypher 字符串字面量（非用户输入）
         """
-        # FIX-15 纵深防御：depth 上界 clamp（稠密图无向变长遍历组合增长，所有分支生效）
+        # depth 上界 clamp（稠密图无向变长遍历组合增长，所有分支生效）
         depth = min(depth, MAX_TRAVERSAL_DEPTH)
         if edge_type is not None:
             validate_edge_type(edge_type)
@@ -379,7 +379,7 @@ class AGEGraphStore(GraphStore):
         去重：同一目标节点若经多条路径到达，保留跳数最小者（并列取首次遇见）。
         图遍历为无向（-[r]-），direction 无第一语义，故本方法不返回方向。
         """
-        # FIX-15 纵深防御：depth clamp 下界 1 / 上界 MAX_TRAVERSAL_DEPTH
+        # depth clamp 下界 1 / 上界 MAX_TRAVERSAL_DEPTH
         depth = min(max(depth, 1), MAX_TRAVERSAL_DEPTH)
         cypher = (
             f"MATCH (n {{id: $node_id}})-[r*1..{depth}]-(m) "

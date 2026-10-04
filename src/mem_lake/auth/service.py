@@ -186,7 +186,6 @@ async def revoke_access_key(
         raise AccessKeyNotFoundError(f"Access Key 不存在: {key_id}")
 
     if access_key.status == "revoked":
-        # 幂等：已吊销直接返回
         return
 
     await session.execute(
@@ -240,8 +239,8 @@ async def _fetch_access_keys(
 ) -> list[AccessKey]:
     """按 id 列表重新查回 Access Key（key_hash 已 defer），按创建时间倒序。
 
-    FIX-18：三个 update 函数（scope/systems/mode）更新后的重查块逐字复制，
-    收敛为本共享 helper，确保重查逻辑单一实现。
+    三个 update 函数（scope/systems/mode）更新后重查的共享 helper，
+    确保重查逻辑单一实现。
     """
     result = await session.execute(
         select(AccessKey)
@@ -293,7 +292,7 @@ async def update_access_key_scope(
         )
     )
 
-    # 重新查回（defer key_hash）用于出参，确保返回最新 project_scope（FIX-18 共享 helper）
+    # 重新查回（defer key_hash）用于出参，确保返回最新 project_scope
     updated = await _fetch_access_keys(session, target_ids)
 
     await write_audit_log(
@@ -355,7 +354,7 @@ async def update_access_key_systems(
         )
     )
 
-    # 重新查回（FIX-18 共享 helper）
+    # 重新查回（defer key_hash）用于出参
     updated = await _fetch_access_keys(session, target_ids)
 
     await write_audit_log(
@@ -405,7 +404,7 @@ async def update_access_key_mode(
         .values(lax_mode=lax_mode)
     )
 
-    # 重新查回（FIX-18 共享 helper）
+    # 重新查回（defer key_hash）用于出参
     updated = await _fetch_access_keys(session, target_ids)
 
     await write_audit_log(
@@ -477,7 +476,6 @@ async def _resolve_scope_targets(
     if key_ids:
         return [uuid.UUID(str(k)) for k in key_ids]
     if role_filter is None and not grant_all_projects:
-        # 未指定任何定位方式：视为非法入参，返回空（调用方据此返回 []）
         return []
     stmt = select(AccessKey.id)
     if role_filter is not None:

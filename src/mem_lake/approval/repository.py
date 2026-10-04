@@ -1,9 +1,9 @@
-"""审批批次 CRUD 与提交（FIX-24 从 service.py 拆出的 repository 模块）。
+"""审批批次 CRUD 与提交。
 
 职责：状态机常量与异常定义、批次 CRUD（submit_batch/_create_batch、
 list_pending_batches、get_batch_detail、_find_by_idempotency_key）。
 
-submit_batch 内的幂等重放 + SAVEPOINT（FIX-13）并发处理逻辑随提交一并收拢于此。
+submit_batch 内的幂等重放 + SAVEPOINT 并发处理逻辑随提交一并收拢于此。
 不 commit，由调用方（gateway 工具）控制事务边界。
 """
 
@@ -30,7 +30,7 @@ BATCH_TYPES: frozenset[str] = frozenset({
     "submit_dev_artifacts",
     "update_requirement_relations",
     "update_node",
-    "generate_rule_edges",  # ENH-01：规则边生成器提交的边批次
+    "generate_rule_edges",  # 规则边生成器提交的边批次
 })
 
 # 状态机常量
@@ -103,9 +103,9 @@ async def submit_batch(
             return await get_batch_detail(session, existing.id)
 
     try:
-        # FIX-13：_create_batch 包 begin_nested()（SAVEPOINT），IntegrityError 竞态时
-        # 自动回滚至 savepoint，外事务状态不受影响（SQLAlchemy 标准恢复模式），
-        # 取代此前手动 session.rollback()（会废弃整个外事务）。
+        # _create_batch 包 begin_nested()（SAVEPOINT）：IntegrityError 竞态时仅
+        # 回滚至 savepoint，外事务状态不受影响（直接 rollback 会废弃整个外事务，
+        # SQLAlchemy 标准恢复模式）。
         async with session.begin_nested():
             return await _create_batch(
                 session,
@@ -119,7 +119,7 @@ async def submit_batch(
     except IntegrityError:
         # 并发同 operation_id 提交：两个请求都通过幂等检查后各自插入，
         # 第二个撞唯一约束 uq_approval_batch_idempotency。SAVEPOINT 已回滚本次
-        # 未成功的插入（外事务仍可用），回查已存在的批次做幂等重放（AUDIT §2.17）。
+        # 未成功的插入（外事务仍可用），回查已存在的批次做幂等重放。
         if operation_id is None:
             raise
         existing = await _find_by_idempotency_key(

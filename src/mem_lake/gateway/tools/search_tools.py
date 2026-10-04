@@ -101,7 +101,7 @@ class HybridSearchOutput(BaseModel):
     candidates_total: int = Field(
         default=0,
         description="min_score 过滤后、top_n 截断前的真实候选数（同 query 恒定，"
-        "评估命中量以本字段为准——批次五语义修正：不再随 top_n 变化）",
+        "评估命中量以本字段为准）",
     )
     truncated: bool = Field(
         default=False,
@@ -176,14 +176,12 @@ class ListKnowledgeOutput(BaseModel):
     offset: int = Field(description="当前分页偏移")
 
 
-# 全文引擎查询构造：match_mode=any 时按空白拆词 OR 连接（websearch_to_tsquery
-# 原生支持 OR 关键字）；all 保持原样（空格即 AND/短语语义，现状不破坏）。
 def _build_fulltext_query(query: str, match_mode: str) -> str:
     """按 match_mode 构造全文引擎的查询串。
 
     - all（默认）：原样返回——websearch_to_tsquery 的空格分隔即 AND 语义
     - any：空白拆词后用 OR 连接，多词任一命中即召回（多词宽召回场景，
-      直击「多词混合查询全文 0 贡献、被向量噪声占据」的反馈问题）
+      多词宽召回场景）
     连续中文串不拆（无分隔信息），交由 zhparser 整体切词——与索引端口径一致。
     """
     if match_mode == "all":
@@ -318,7 +316,7 @@ def register_search_tools(mcp: FastMCP) -> None:
             project_id, system_id = resolve_and_validate_scope(project_id, system_id)
 
             # system 维度 → 该 system 下全部项目集（asset 节点无 system_id 列，
-            # 经 SystemProject 关联表展开；09-29 报告 P0-2 可见性统一）
+            # 经 SystemProject 关联表展开）
             project_ids: tuple[uuid.UUID, ...] | None = None
             if project_id is None and system_id is not None:
                 async with readonly_session() as session:
@@ -376,9 +374,8 @@ def register_search_tools(mcp: FastMCP) -> None:
 
             async with readonly_session() as session:
                 if project_id is None:
-                    # 批次六（09-29 报告缺口）：不传 project_id 时按需求自身
-                    # 归属校验——悬浮需求（project=None）走 system 权限，
-                    # 纯 system 绑定 Key 不再结构性不可用
+                    # 不传 project_id 时按需求自身归属校验：悬浮需求
+                    # （project=None）走 system 权限，纯 system 绑定 Key 可直接调用
                     anchor = await get_node(session, requirement_id)
                     if anchor.project_id is not None:
                         validate_project_access(anchor.project_id)
@@ -426,7 +423,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         PM 工具。融合检索召回后按向量余弦阈值过滤，检测与指定需求冲突的
         潜在重复/矛盾需求。自动排除自身节点，仅返回 score >= threshold 的结果。
         threshold 缺省读配置 CONFLICT_SIMILARITY_THRESHOLD（与审批流冲突检测同一
-        阈值来源，避免双源脱钩；AUDIT §2.10）。本工具为相似度过滤，不含审批层
+        阈值来源，避免双源脱钩）。本工具为相似度过滤，不含审批层
         detect_conflicts 的 L2 关键属性比对——二者定位不同（前者给 PM 主动
         排查，后者是审批质量门禁）。
         has_conflict=true 时 suggestion 推荐 review（人工核查）或 manual_merge（高相似度合并）。
@@ -474,8 +471,8 @@ def register_search_tools(mcp: FastMCP) -> None:
             suggestion = None
             if has_conflict:
                 # 最高相似度 >= CONFLICT_SUGGEST_PENDING(0.95) 推荐 manual_merge，否则 review
-                # （FIX-21：阈值可配置；conflicts 已在上面过滤 score is not None，
-                #   此处再显式过滤以收敛类型——生成的 score 必为 float 参与 max 比较）
+                # （阈值 CONFLICT_SUGGEST_PENDING 可配置；再显式过滤 score
+                #   is not None 以收敛类型供 max 比较）
                 max_score = max(c.score for c in conflicts if c.score is not None)
                 suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
                 suggestion = "manual_merge" if max_score >= suggest_threshold else "review"
@@ -553,9 +550,8 @@ async def _run_hybrid_search(
     """执行三引擎融合检索的共享辅助函数。
 
     search_similar_requirements 与 search_code_snippets 共用此函数，
-    仅 node_types 参数不同。min_score 过滤规则（ISSUE-02 修复）：**仅过滤
-    纯向量命中**——有全文命中的节点不受阈值影响（此前实现把向量低分捎带
-    召回的全文命中一并误杀，docstring 已声明的语义以本行为为准）。
+    仅 node_types 参数不同。min_score 过滤规则：**仅过滤纯向量命中**
+    ——有全文命中的节点不受阈值影响。
     semantic_tags=true 时，先用 embedding 将 tags 扩展为项目内语义相近标签再过滤。
 
     match_mode=any 时全文引擎按空白拆词 OR 连接（多词任一命中即召回），
@@ -566,8 +562,7 @@ async def _run_hybrid_search(
     project_ids：system 维度资产检索的展开形式（system 下全部项目集）——asset
     节点无 system_id 列，工具层经 SystemProject 关联表解析后传入。
 
-    出参仅含 fused（融合+精排后的最终结果）——引擎原始明细为调试数据，
-    已随 include_engine_details 一并删除（批次三工具面治理）。
+    出参仅含 fused（融合+精排后的最终结果）——引擎原始明细为调试数据，不入出参。
     """
     lifespan_ctx = get_lifespan_context()
 
@@ -597,9 +592,7 @@ async def _run_hybrid_search(
         tags_op=tags_op,
     )
 
-    # 引擎候选池联动 top_n（ISSUE-02 现象 A）：此前 top_k 恒默认 50，
-    # 用户请求 top_n=200/500 时候选池仍被 50 掐死、结果集莫名偏小。
-    # clamp 上限防极端 top_n 拖库。
+    # 引擎候选池联动 top_n（clamp 上限 500，防极端 top_n 拖库）。
     engine_top_k = min(max(top_n, 50), 500)
 
     # hybrid_search 内部为每引擎自建独立 session（AsyncSession 非并发安全）
@@ -617,14 +610,11 @@ async def _run_hybrid_search(
     vector_score_map = {
         r.node_id: r.score for r in result.get("vector", []) if r.score is not None
     }
-    # 全文引擎命中集：min_score 豁免依据（ISSUE-02 现象 B/C 修复）——
-    # 有全文命中的节点不受阈值影响。此前实现只看 vector_score_map 归属，
-    # 把"向量低分捎带召回 + 精确全文命中"的节点一并误杀（0 召回的根因）。
+    # 全文引擎命中集：min_score 豁免依据——有全文命中的节点不受阈值影响。
     fulltext_ids = {r.node_id for r in result.get("fulltext", [])}
 
-    # 批次五（报告 P0-3）：candidates_total = min_score 过滤后、top_n 截断前的
-    # 真实候选数——从融合全量池（fused_pool）计数，与 top_n 无关；此前从
-    # 截断后的 fused_raw 计数导致 top_n=3 → 3，Agent 无法自证穷举。
+    # candidates_total = min_score 过滤后、top_n 截断前的真实候选数
+    # ——从融合全量池（fused_pool）计数，与 top_n 无关。
     fused_pool = result.get("fused_pool") or result.get("fused", [])
 
     def _passes(r: "SearchResult") -> bool:

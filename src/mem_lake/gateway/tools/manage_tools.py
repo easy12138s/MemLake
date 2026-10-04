@@ -172,7 +172,7 @@ def _build_mcp_config(mcp_url: str, plaintext: str) -> str:
 def _build_user_hint(role: str) -> str:
     """生成给【用户】的一句话接入提示（不含 Key）。
 
-    批次三起 skills 不再经 MCP 工具分发（get_role_skills 已删除），改指引用户
+    skills 不经 MCP 工具分发，改指引用户
     让 Agent 从 GitHub 仓库自取安装——工具面少一个 schema，skills 内容更新
     走仓库发布，Agent 侧安装一次后所有会话生效。
     """
@@ -244,9 +244,8 @@ def _normalize_uuid_list(
     - 列表：[UUID | str, ...]
     - 字符串：逗号/空格/分号分隔（或 JSON 数组字符串），如 "id1,id2" / "[id1,id2]"
     部分客户端会将数组序列化成字符串，这里在工具层归一化，避免 pydantic 因
-    "收到字符串而非列表" 直接报错（AUDIT §2.16/P2#10）。
-    输入非空但全片段非法时抛 ValueError——此前静默跳过会导致 update_scope
-    变成无提示的空操作。
+    "收到字符串而非列表" 直接报错。
+    输入非空但全片段非法时抛 ValueError，避免 update_scope 变成无提示的空操作。
     """
     if value is None:
         return None
@@ -714,8 +713,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
                         created_by=key_id,
                         generate_vector=True,
                     )
-                    # create 时若项目已存在画像节点，附提示供调用方知情
-                    # （AUDIT §2.16/§2.4：多处"取最新画像"策略下重复画像会静默漂移）
+                    # create 时若项目已存在其他 approved 画像，附 warning 提示
+                    # （"取最新画像"策略下重复画像会静默漂移）
                     existing = await _has_approved_profile(
                         session, profile_id, node.id
                     )
@@ -733,8 +732,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 elif action == "update":
                     if not node_id:
                         raise ValueError("update 操作必须指定 node_id")
-                    # 校验目标节点确实是 ProjectProfile（AUDIT §2.16：此前
-                    # 可修改任意类型节点，语义漂移）
+                    # 校验目标节点确实是 ProjectProfile（防跨类型修改导致语义漂移）
                     from mem_lake.knowledge.repository import get_node
 
                     target = await get_node(session, node_id)
@@ -759,8 +757,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     # ProjectProfile 节点必归属项目（画像链路 project_id 恒有值）
                     assert node.project_id is not None
                     return ManageProjectProfileOutput(
-                        # 出参 project_id 取实际节点归属（AUDIT §2.16：此前
-                        # update 未传 project_id 时误用随机新生成的 profile_id）
+                        # 出参 project_id 取实际节点归属，而非调用方传入/生成的 profile_id
                         project_id=node.project_id,
                         node_id=node.id,
                         action="update",

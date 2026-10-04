@@ -28,7 +28,7 @@ from mem_lake.search.fusion import SearchResult, _truncate
 
 
 def _clamp_depth(depth: int) -> int:
-    """遍历深度 clamp（FIX-15 纵深防御）：上界 MAX_TRAVERSAL_DEPTH，下界 1。
+    """遍历深度 clamp：上界 MAX_TRAVERSAL_DEPTH，下界 1。
 
     存储层（age_store.neighbors）亦 clamp，此处检索层入口再兜一层，
     避免深度参数在到达存储层前被组合放大（如 impact_analysis 多跳展开）。
@@ -255,8 +255,7 @@ class GraphSearcher:
                 "pitfalls": [<node dict>, ...],     # described_by/references 挂载的踩坑
             }
         """
-        # 1. 需求节点：三态区分（09-29 报告：静默全空让 Agent 把
-        #    「UUID 不存在」误判为「无影响范围」）：
+        # 1. 需求节点三态区分（避免「UUID 不存在」被误判为「无影响范围」）：
         #    - DB 无行（拼错/幻觉 UUID）→ ValueError（工具层转 ToolError）
         #    - 行存在但归档/软删 → 全空结构（既有语义，归档不构成影响范围）
         #    - approved → 正常分析
@@ -303,7 +302,7 @@ class GraphSearcher:
             if code_id is None:
                 continue
 
-            # 3a. 依赖链遍历（depth=max_depth，FIX-15 clamp 上界）
+            # 3a. 依赖链遍历（depth=max_depth，clamp 上界）
             dep_dicts = await self._graph_store.neighbors(
                 session, code_id, edge_type="depends_on", depth=_clamp_depth(max_depth)
             )
@@ -347,10 +346,8 @@ class GraphSearcher:
             and (d.get("properties") or {}).get("id") in intent_approved_ids
         ]
 
-        # 6. 批次四（09-29 报告 P0-1）：存量契约资产纳入影响范围。
-        #    - described_by：Requirement --described_by--> Pitfall（自动建边链的坑）
-        #    - references：按官方写入契约显式声明挂到需求上的任意资产，
-        #      按 node 类型归入对应段（此前对这些边永久不可见 → 影响分析残缺）
+        # 6. 契约资产纳入影响范围：described_by 挂载的 Pitfall 与 references
+        #    显式声明的资产，按 node 类型归入对应段。
         pit_dicts = await self._graph_store.neighbors(
             session, requirement_id, edge_type="described_by", depth=1
         )

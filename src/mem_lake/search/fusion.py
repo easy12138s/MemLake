@@ -266,8 +266,8 @@ async def hybrid_search(
     )
 
     # 向量与全文 RRF 融合。融合不按 candidate_n 截断而取全量（上界=2×top_k）——
-    # 批次五（09-29 报告 P0-3）：candidates_total 需为「过滤后未截断」的真实候选数，
-    # 截断池会让计数随 top_n 变化。rerank 仅重排前 RERANK_TOP_K 名（候选池优化
+    # candidates_total 需为「过滤后未截断」的真实候选数，截断池会让计数随 top_n 变化。
+    # rerank 仅重排前 RERANK_TOP_K 名（候选池优化
     # 语义不变：A/B 验证候选池 30 使 hit@5 提升），尾部原序拼接后收口 top_n。
     fused_pool = rrf_fuse(
         [vector_results, fulltext_results], k=60, top_n=top_k * 2
@@ -287,7 +287,7 @@ async def hybrid_search(
 
     return {
         "fused": fused,
-        # 融合全量池（未按 top_n 截断）：供调用方统计真实候选数（批次五）
+        # 融合全量池（未按 top_n 截断）：供调用方统计真实候选数
         "fused_pool": fused_pool,
         "vector": vector_results,
         "fulltext": fulltext_results,

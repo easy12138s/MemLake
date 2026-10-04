@@ -63,7 +63,7 @@ logger = logging.getLogger("mem_lake.gateway.tools.write")
 def _check_content_length(value: str | None, label: str) -> None:
     """校验 content 长度不超过上限，超限抛 PayloadValidationError。
 
-    上限来自 Settings.MAX_CONTENT_LENGTH（FIX-21：业务阈值收敛可配置）。
+    上限来自 Settings.MAX_CONTENT_LENGTH（可环境变量覆盖）。
     value 为 None（update 不更新 content）时跳过长度校验。
     """
     max_len = get_settings().MAX_CONTENT_LENGTH
@@ -265,8 +265,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 validate_project_access(project_id)
             _check_content_length(requirement.content, "Requirement.content")
             key_id = get_current_key_id()
-            # 提交前校验关联引用的 requirement_id 存在且类型为 Requirement
-            # （AUDIT §2.15：此前缺存在性校验，错误引用延迟到审批通过才失败）
+            # 提交前校验引用存在且类型为 Requirement，避免错误引用延迟到审批通过才失败
             if related:
                 ref_ids = [
                     *(related.supersedes or []),
@@ -310,8 +309,7 @@ def register_write_tools(mcp: FastMCP) -> None:
             if not relations:
                 raise PayloadValidationError("relations 不能为空")
 
-            # 提交前校验两端节点存在且类型为 Requirement（AUDIT §2.15：
-            # 此前 docstring 声称"必须为 Requirement"但未实现校验）
+            # 提交前校验两端节点存在且类型为 Requirement，避免延迟到审批通过才失败
             ref_ids = [
                 *(str(r.from_id) for r in relations),
                 *(str(r.to_id) for r in relations),
@@ -563,7 +561,6 @@ async def _validate_dev_artifacts(
     3. 每条 relation 的 from_ref/to_ref：UUID 须存在（悬挂 UUID 拒）；
        非 UUID 须为批次内已声明的 ref 名；from_ref == to_ref 视为自引用拒。
     """
-    # 1. 收集已声明 ref，检测重复
     declared_refs: list[str] = []
     declared_refs.extend(a.ref for a in artifacts.code_snippets)
     declared_refs.extend(a.ref for a in artifacts.solutions)
@@ -574,7 +571,7 @@ async def _validate_dev_artifacts(
         dup = sorted({r for r in declared_refs if declared_refs.count(r) > 1})
         raise PayloadValidationError(f"产物 ref 重复（批次内必须唯一）: {dup}")
 
-    # 2 & 3：requirement_id 存在性 + 类型 + 归属项目；relations 引用校验
+    # requirement_id 存在性/类型/可见性；relations 引用校验
     async with readonly_session() as session:
         # 2. requirement_id 存在性 + 类型 + 对调用者可见（仅当显式提供需求时校验）
         if requirement_id is not None:
@@ -704,10 +701,8 @@ def _build_dev_items(
             )
 
     # 2. 自动构造 Requirement --> 产物 的语义边（仅当关联需求存在）。
-    #    批次四（09-29 报告 P0-1）：四类产物统一自动建边——此前仅 CodeSnippet
-    #    自动建 implements，坑/方案/意图按文档须显式 relations 声明，实践中
-    #    挂通用 references 边导致 analyze_impact_scope（implements/realized_by/
-    #    embodies/described_by 遍历链）永久不可见。
+    #    四类产物统一自动建边（implements/realized_by/embodies/described_by），
+    #    与 analyze_impact_scope 遍历链对齐；坑/方案/意图无需显式 relations 声明。
     if requirement_id is not None:
         auto_edge_map = (
             (artifacts.code_snippets, "implements"),

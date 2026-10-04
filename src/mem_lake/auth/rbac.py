@@ -3,10 +3,7 @@
 纯 Python 常量字典，无 DB 查询，无 Casbin。工具名严格对齐 PDD 3.5 / 6.1。
 M6 gateway 拦截层调用 has_tool_access 校验角色对工具的访问权限。
 
-批次三工具面治理：get_role_skills 已删除（skills 改 GitHub 分发，见
-manage_tools._build_user_hint）；get_project_profile 已删除（get_project_info
-的 action=get + include_profile 完整覆盖）；新增 list_requirements（清单式
-枚举，消「清单类任务只能靠检索试探」的无效调用）。
+list_requirements 为清单式枚举工具（避免清单类任务靠检索试探取并集）。
 
 manage_project_profile 为 PDD 3.4 + 8.5 要求的补充工具（admin 专属，直接写入
 ProjectProfile 节点不走审批流），PDD 6.1 admin 工具表未列出但 PDD 3.4/8.5 明确要求。
