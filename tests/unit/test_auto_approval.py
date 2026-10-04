@@ -444,7 +444,7 @@ class TestAutoProcessBatch:
         approved_batch.items = []
 
         with patch(
-            "mem_lake.approval.service.get_batch_detail",
+            "mem_lake.approval.repository.get_batch_detail",
             new=AsyncMock(return_value=batch),
         ), patch(
             "mem_lake.approval.service.review_approve",
@@ -492,7 +492,7 @@ class TestAutoProcessBatch:
         }
 
         with patch(
-            "mem_lake.approval.service.get_batch_detail",
+            "mem_lake.approval.repository.get_batch_detail",
             new=AsyncMock(return_value=batch),
         ), patch(
             "mem_lake.approval.service.detect_conflicts",
@@ -527,7 +527,7 @@ class TestAutoProcessBatch:
         batch.items = []
 
         with patch(
-            "mem_lake.approval.service.get_batch_detail",
+            "mem_lake.approval.repository.get_batch_detail",
             new=AsyncMock(return_value=batch),
         ):
             with pytest.raises(BatchStatusError):
@@ -565,7 +565,7 @@ class TestAutoProcessBatch:
         approved_batch.items = [item1, item2]
 
         with patch(
-            "mem_lake.approval.service.get_batch_detail",
+            "mem_lake.approval.repository.get_batch_detail",
             new=AsyncMock(return_value=batch),
         ), patch(
             "mem_lake.approval.service.detect_conflicts",
@@ -609,7 +609,7 @@ class TestAutoProcessBatch:
         approved_batch.items = [edge_item]
 
         with patch(
-            "mem_lake.approval.service.get_batch_detail",
+            "mem_lake.approval.repository.get_batch_detail",
             new=AsyncMock(return_value=batch),
         ), patch(
             "mem_lake.approval.service.review_approve",

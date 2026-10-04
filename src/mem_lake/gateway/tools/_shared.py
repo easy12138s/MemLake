@@ -6,7 +6,7 @@
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from fastmcp.exceptions import ToolError
@@ -14,10 +14,10 @@ from fastmcp.server.dependencies import get_context
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
+from mem_lake.approval.models import collect_created_node_ids, iter_created_node_items
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
-    IdempotencyConflictError,
     PayloadValidationError,
     submit_batch_with_mode,
 )
@@ -138,10 +138,8 @@ class WriteToolOutput(BaseModel):
                     "node_type": it.entity_type,
                     "title": (it.payload or {}).get("title"),
                 }
-                for it in batch.items
-                if it.item_type == "node"
-                and it.action == "create"
-                and it.target_id is not None
+                for it in iter_created_node_items(batch)
+                if it.target_id is not None
             ]
             edges_created = sum(
                 1
@@ -192,8 +190,6 @@ def to_tool_error(exc: Exception) -> ToolError:
         return ToolError(f"批次不存在: {exc}")
     if isinstance(exc, BatchStatusError):
         return ToolError(f"批次状态错误: {exc}")
-    if isinstance(exc, IdempotencyConflictError):
-        return ToolError(f"幂等冲突: {exc}")
     if isinstance(exc, NodeNotFoundError):
         return ToolError(f"节点不存在: {exc}")
 
@@ -294,7 +290,7 @@ def build_update_node_item(
 
     与 build_node_item（create）生成 action="update" 的 item。payload 契约对齐
     approval.models.ApprovalItem：{"node_id", "title", "content", "properties",
-    "tags", "source"}，审批通过时由 approval/service._execute_node_update 调用
+    "tags", "source"}，审批通过时由 approval/executor._execute_node_update 调用
     repository.update_node 落地（版本递增 + title 同步 AGE + 向量重算 + 审计）。
 
     字段语义与 repository.update_node 一致：None 表示不更新，properties 整体替换
@@ -351,7 +347,7 @@ def build_edge_item(
             }
         }
 
-    注意：from_ref/to_ref 在审批通过时由 approval/service._resolve_ref 解析：
+    注意：from_ref/to_ref 在审批通过时由 approval/executor._resolve_ref 解析：
         - 优先匹配同批次已创建节点的 ref（通过 approval_item.payload.ref 反查 target_id）
         - 其次匹配 UUID 字符串（已有节点）
         - 解析失败抛 PayloadValidationError
@@ -424,6 +420,15 @@ def resolve_and_validate_scope(
     if system_id is not None:
         validate_system_access(system_id)
     return project_id, system_id
+
+
+def ensure_utc(dt: datetime | None) -> datetime | None:
+    """naive datetime 补 UTC 时区（ORM 时间列不带时区，MCP date-time schema 需要偏移）。"""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 
@@ -523,13 +528,7 @@ async def submit_write_batch(
 
     # 宽松模式提交后收尾：已自动审批时异步入队补向量，并构造出参。
     # strict 模式（lax=False）不触发入队，仅构造包含 decision=None 的出参。
-    created = [
-        it.target_id
-        for it in (batch.items or [])
-        if it.item_type == "node"
-        and it.action == "create"
-        and it.target_id is not None
-    ]
+    created = collect_created_node_ids(batch)
     if lax and decision == "auto_approved" and created and project_id is not None:
         await _safe_enqueue_embed(project_id, created)
     return WriteToolOutput.from_batch(batch, decision=decision)

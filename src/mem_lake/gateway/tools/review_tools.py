@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+from mem_lake.approval.models import collect_created_node_ids
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
@@ -47,6 +48,7 @@ from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     ApprovalResultOutput,
     _safe_enqueue_embed,
+    ensure_utc,
     get_lifespan_context,
     to_tool_error,
 )
@@ -232,13 +234,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                     review_comment=review_comment,
                 )
                 # 新建节点 id 取自审批后 batch.items 中 node+create 项的 target_id
-                created_node_ids = [
-                    it.target_id
-                    for it in batch.items
-                    if it.item_type == "node"
-                    and it.action == "create"
-                    and it.target_id is not None
-                ]
+                created_node_ids = collect_created_node_ids(batch)
             # 审批已提交（事务已 commit）：将新建节点（暂无 node_embedding 向量记录）
             # 异步入队补向量，复用 reindex worker，避免大批次审批阻塞 MCP 调用超时。
             # 入队失败不阻断审批结果——审批已生效，向量缺失由后续 reindex 兜底
@@ -355,10 +351,9 @@ def _to_pending_batch_item(batch: "ApprovalBatch") -> PendingBatchItem:
 
     settings = get_settings()
     now = datetime.now(timezone.utc)
-    # 确保 submitted_at 是 timezone-aware
-    submitted_at = batch.submitted_at
-    if submitted_at.tzinfo is None:
-        submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+    # submitted_at 恒有值（非空列），补时区后计算批次年龄
+    submitted_at = ensure_utc(batch.submitted_at)
+    assert submitted_at is not None
     age_days = (now - submitted_at).days
 
     warning_days = settings.APPROVAL_WARNING_DAYS

@@ -141,3 +141,17 @@ class ApprovalItem(Base):
         # PDD 4.5 索引：(batch_id, seq)
         Index("idx_approval_item_batch", "batch_id", "seq"),
     )
+
+
+def iter_created_node_items(batch: "ApprovalBatch") -> list["ApprovalItem"]:
+    """批次内「新建节点」审批项（node + create）——冲突检测与写入执行共用口径。"""
+    return [it for it in (batch.items or []) if it.item_type == "node" and it.action == "create"]
+
+
+def collect_created_node_ids(batch: "ApprovalBatch") -> list[uuid.UUID]:
+    """批次内已回填 target_id 的新建节点 ID（写入回执 / 补向量入队共用口径）。"""
+    return [
+        it.target_id
+        for it in (batch.items or [])
+        if it.item_type == "node" and it.action == "create" and it.target_id is not None
+    ]

@@ -17,7 +17,6 @@ from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
-    IdempotencyConflictError,
     PayloadValidationError,
 )
 from mem_lake.gateway.tools._shared import (
@@ -397,12 +396,6 @@ class TestToToolError:
         err = to_tool_error(BatchStatusError("状态错误"))
         assert isinstance(err, ToolError)
         assert "批次状态错误" in str(err)
-
-    def test_idempotency_conflict_error(self):
-        """IdempotencyConflictError 转换为 ToolError。"""
-        err = to_tool_error(IdempotencyConflictError("幂等冲突"))
-        assert isinstance(err, ToolError)
-        assert "幂等冲突" in str(err)
 
     def test_node_not_found_error(self):
         """NodeNotFoundError 转换为 ToolError。"""

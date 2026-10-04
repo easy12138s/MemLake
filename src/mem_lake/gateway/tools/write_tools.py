@@ -24,6 +24,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 from pydantic import Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.approval.service import (
     PayloadValidationError,
@@ -48,6 +49,7 @@ from mem_lake.gateway.tools._shared import (
     submit_write_batch,
     to_tool_error,
 )
+from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     get_node,
@@ -127,7 +129,7 @@ class _ArtifactRefInput(StrictInputModel):
     """产物输入基类：ref 公共字段（批次内引用名）。
 
     四类产物（code/solution/intent/pitfall）均以 ref 作为批次内唯一引用键，
-    供 relations 的 from_ref/to_ref 在审批通过时解析（见 approval._resolve_ref）。
+    供 relations 的 from_ref/to_ref 在审批通过时解析（见 approval/executor._resolve_ref）。
     """
 
     ref: str = Field(
@@ -479,6 +481,22 @@ def register_write_tools(mcp: FastMCP) -> None:
 # ============================================================================
 
 
+async def _ensure_requirement_visible(
+    session: AsyncSession, node: KnowledgeNode, *, type_err: str, invisible_err: str
+) -> None:
+    """单节点 Requirement 类型 + 调用者可见性校验（错误文案由调用方给定）。"""
+    if node.type != "Requirement":
+        raise PayloadValidationError(type_err)
+    if not await is_requirement_visible(
+        session,
+        req_node=node,
+        role=get_current_role(),
+        project_scope=get_current_project_scope(),
+        system_scope=get_current_system_scope(),
+    ):
+        raise PayloadValidationError(invisible_err)
+
+
 async def _validate_requirement_refs(
     project_id: uuid.UUID | None, ref_ids: list[str], label: str
 ) -> None:
@@ -491,9 +509,6 @@ async def _validate_requirement_refs(
     """
     if not ref_ids:
         return
-    role = get_current_role()
-    project_scope = get_current_project_scope()
-    system_scope = get_current_system_scope()
     async with readonly_session() as session:
         try:
             uuids = [uuid.UUID(r) for r in ref_ids]
@@ -512,20 +527,12 @@ async def _validate_requirement_refs(
                 f"{label} 引用不存在: {missing}"
             )
         for n in nodes:
-            if n.type != "Requirement":
-                raise PayloadValidationError(
-                    f"{label} 引用非 Requirement 类型: {n.id} ({n.type})"
-                )
-            if not await is_requirement_visible(
+            await _ensure_requirement_visible(
                 session,
-                req_node=n,
-                role=role,
-                project_scope=project_scope,
-                system_scope=system_scope,
-            ):
-                raise PayloadValidationError(
-                    f"{label} 引用不在当前调用者可见范围: {n.id}"
-                )
+                n,
+                type_err=f"{label} 引用非 Requirement 类型: {n.id} ({n.type})",
+                invisible_err=f"{label} 引用不在当前调用者可见范围: {n.id}",
+            )
 
 
 async def _get_project_profile_id(project_id: uuid.UUID) -> uuid.UUID | None:
@@ -571,27 +578,16 @@ async def _validate_dev_artifacts(
     async with readonly_session() as session:
         # 2. requirement_id 存在性 + 类型 + 对调用者可见（仅当显式提供需求时校验）
         if requirement_id is not None:
-            role = get_current_role()
-            project_scope = get_current_project_scope()
-            system_scope = get_current_system_scope()
             try:
                 req_node = await get_node(session, requirement_id)
             except NodeNotFoundError:
                 raise PayloadValidationError(f"requirement_id 不存在: {requirement_id}")
-            if req_node.type != "Requirement":
-                raise PayloadValidationError(
-                    f"requirement_id 类型非 Requirement: {req_node.type}"
-                )
-            if not await is_requirement_visible(
+            await _ensure_requirement_visible(
                 session,
-                req_node=req_node,
-                role=role,
-                project_scope=project_scope,
-                system_scope=system_scope,
-            ):
-                raise PayloadValidationError(
-                    f"requirement_id 不在当前调用者可见范围: {requirement_id}"
-                )
+                req_node,
+                type_err=f"requirement_id 类型非 Requirement: {req_node.type}",
+                invisible_err=f"requirement_id 不在当前调用者可见范围: {requirement_id}",
+            )
 
         # 3. relations 引用校验
         errors: list[str] = []
@@ -679,72 +675,33 @@ def _build_dev_items(
     - code_snippets/solutions/design_intents/pitfalls 各项 → node item（含 ref）
     - 自动构造（requirement_id 存在时四类统一）：
       CodeSnippet→implements / Solution→realized_by / DesignIntent→embodies /
-      Pitfall→described_by（09-29 报告 P0-1 修复：边类型与 analyze_impact_scope
-      遍历链对齐，方案/意图/坑不再需要显式 relations 声明）
+      Pitfall→described_by（边类型与 analyze_impact_scope 遍历链对齐，
+      四类产物无需显式 relations 声明）
     - relations 中每项 → edge item（from_ref/to_ref 直接用输入字符串）
     """
     items: list[dict[str, Any]] = []
 
-    # 1. 构造 node items
-    for code in artifacts.code_snippets:
-        _check_content_length(code.content, f"CodeSnippet[{code.ref}].content")
-        items.append(
-            build_node_item(
-                ref=code.ref,
-                node_type="CodeSnippet",
-                title=code.title,
-                content=code.content,
-                properties=code.properties,
-                tags=code.tags,
-                project_id=project_id,
-                created_by=created_by,
+    # 1. 构造 node items（四类产物表驱动同构处理）
+    for art_list, node_type in (
+        (artifacts.code_snippets, "CodeSnippet"),
+        (artifacts.solutions, "Solution"),
+        (artifacts.design_intents, "DesignIntent"),
+        (artifacts.pitfalls, "Pitfall"),
+    ):
+        for art in art_list:
+            _check_content_length(art.content, f"{node_type}[{art.ref}].content")
+            items.append(
+                build_node_item(
+                    ref=art.ref,
+                    node_type=node_type,
+                    title=art.title,
+                    content=art.content,
+                    properties=art.properties,
+                    tags=art.tags,
+                    project_id=project_id,
+                    created_by=created_by,
+                )
             )
-        )
-
-    for solution in artifacts.solutions:
-        _check_content_length(solution.content, f"Solution[{solution.ref}].content")
-        items.append(
-            build_node_item(
-                ref=solution.ref,
-                node_type="Solution",
-                title=solution.title,
-                content=solution.content,
-                properties=solution.properties,
-                tags=solution.tags,
-                project_id=project_id,
-                created_by=created_by,
-            )
-        )
-
-    for intent in artifacts.design_intents:
-        _check_content_length(intent.content, f"DesignIntent[{intent.ref}].content")
-        items.append(
-            build_node_item(
-                ref=intent.ref,
-                node_type="DesignIntent",
-                title=intent.title,
-                content=intent.content,
-                properties=intent.properties,
-                tags=intent.tags,
-                project_id=project_id,
-                created_by=created_by,
-            )
-        )
-
-    for pitfall in artifacts.pitfalls:
-        _check_content_length(pitfall.content, f"Pitfall[{pitfall.ref}].content")
-        items.append(
-            build_node_item(
-                ref=pitfall.ref,
-                node_type="Pitfall",
-                title=pitfall.title,
-                content=pitfall.content,
-                properties=pitfall.properties,
-                tags=pitfall.tags,
-                project_id=project_id,
-                created_by=created_by,
-            )
-        )
 
     # 2. 自动构造 Requirement --> 产物 的语义边（仅当关联需求存在）。
     #    批次四（09-29 报告 P0-1）：四类产物统一自动建边——此前仅 CodeSnippet

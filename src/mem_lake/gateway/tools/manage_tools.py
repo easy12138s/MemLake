@@ -18,8 +18,8 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Literal
+from datetime import datetime
+from typing import Any, Literal, Sequence
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -61,6 +61,7 @@ from mem_lake.gateway.dependencies import (
 from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     StrictInputModel,
+    ensure_utc,
     get_lifespan_context,
     to_tool_error,
 )
@@ -414,8 +415,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 keys = await svc_list_access_keys(
                     session, role=role, status=status_filter, lax_mode=lax_mode
                 )
-                items = [_to_access_key_output(k) for k in keys]
-                return AccessKeyListOutput(items=items, total=len(items))
+                return _to_key_list_output(keys)
         except Exception as e:
             raise to_tool_error(e) from e
 
@@ -461,8 +461,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     grant_all_projects=grant_all_projects,
                     actor=key_id_actor,
                 )
-                items = [_to_access_key_output(k) for k in updated]
-                return AccessKeyListOutput(items=items, total=len(items))
+                return _to_key_list_output(updated)
         except Exception as e:
             raise to_tool_error(e) from e
 
@@ -481,18 +480,12 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 ak, plaintext = await svc_rotate_access_key(
                     session, key_id=key_id, actor=key_id_actor
                 )
-                _ak_scope = ak.project_scope or {}
-                _proj_list = (
-                    [str(p) for p in _ak_scope.get("projects", [])]
-                    if isinstance(_ak_scope, dict)
-                    else [str(x) for x in _ak_scope]
-                )
                 mcp_url = get_settings().MCP_PUBLIC_URL
                 return CreateAccessKeyOutput(
                     key_id=ak.id,
                     plaintext=plaintext,
                     role=ak.role,
-                    project_scope=_proj_list,
+                    project_scope=_project_scope_list(ak),
                     lax_mode=bool(ak.lax_mode),
                     mcp_config=_build_mcp_config(mcp_url, plaintext),
                     user_hint=_build_user_hint(ak.role),
@@ -536,8 +529,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     grant_all_projects=grant_all_projects,
                     actor=key_id_actor,
                 )
-                items = [_to_access_key_output(k) for k in updated]
-                return AccessKeyListOutput(items=items, total=len(items))
+                return _to_key_list_output(updated)
         except Exception as e:
             raise to_tool_error(e) from e
 
@@ -624,21 +616,20 @@ def register_manage_tools(mcp: FastMCP) -> None:
                 if exists is None:
                     raise ValueError(f"system 不存在: {system_id}")
 
+                pid_uuids = [uuid.UUID(str(p)) for p in (project_ids or [])]
                 if action == "set_projects":
-                    pids = [str(p) for p in (project_ids or [])]
                     await set_system_projects(
                         session,
                         system_id=system_id,
-                        project_ids=[uuid.UUID(p) for p in pids],
+                        project_ids=pid_uuids,
                     )
                     return ManageSystemOutput(
                         action="set_projects",
                         system_id=str(system_id),
-                        project_count=len(pids),
+                        project_count=len(pid_uuids),
                     )
 
                 if action == "add_projects":
-                    pid_uuids = [uuid.UUID(str(p)) for p in (project_ids or [])]
                     added = await add_system_projects(
                         session, system_id=system_id, project_ids=pid_uuids
                     )
@@ -649,7 +640,6 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     )
 
                 if action == "remove_projects":
-                    pid_uuids = [uuid.UUID(str(p)) for p in (project_ids or [])]
                     removed = await remove_system_projects(
                         session, system_id=system_id, project_ids=pid_uuids
                     )
@@ -889,6 +879,20 @@ def _profile_properties(profile: "ProjectProfileInput") -> dict[str, Any]:
     return props
 
 
+def _project_scope_list(access_key: AccessKey) -> list[str]:
+    """AccessKey.project_scope（dict/list 两形态）→ 项目 ID 字符串列表。"""
+    scope = access_key.project_scope
+    if isinstance(scope, dict):
+        return [str(p) for p in scope.get("projects", [])]
+    return [str(x) for x in (scope or [])]
+
+
+def _to_key_list_output(keys: Sequence[AccessKey]) -> AccessKeyListOutput:
+    """AccessKey 列表 → AccessKeyListOutput 装配。"""
+    items = [_to_access_key_output(k) for k in keys]
+    return AccessKeyListOutput(items=items, total=len(items))
+
+
 def _to_access_key_output(access_key: AccessKey) -> AccessKeyOutput:
     """从 AccessKey ORM 对象构造 AccessKeyOutput。
 
@@ -896,28 +900,15 @@ def _to_access_key_output(access_key: AccessKey) -> AccessKeyOutput:
     序列化为 ISO 串时缺少偏移，不满足 MCP 输出 schema 的 date-time（RFC 3339）校验。
     此处统一补 UTC 时区，使其输出带偏移，通过 schema 校验。
     """
-
-    def _as_utc_aware(dt: datetime | None) -> datetime | None:
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt
-
-    scope = (
-        access_key.project_scope
-        if isinstance(access_key.project_scope, dict)
-        else {"systems": [], "projects": [str(x) for x in (access_key.project_scope or [])]}
-    )
     # created_at 恒有值（server_default now），仅需补时区；断言其非空以便类型收敛
-    created_at = _as_utc_aware(access_key.created_at)
+    created_at = ensure_utc(access_key.created_at)
     assert created_at is not None
     return AccessKeyOutput(
         key_id=access_key.id,
         role=access_key.role,
-        project_scope=[str(p) for p in scope.get("projects", [])],
+        project_scope=_project_scope_list(access_key),
         status=access_key.status,
         lax_mode=bool(access_key.lax_mode),
         created_at=created_at,
-        revoked_at=_as_utc_aware(access_key.revoked_at),
+        revoked_at=ensure_utc(access_key.revoked_at),
     )
