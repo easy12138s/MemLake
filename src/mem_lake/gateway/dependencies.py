@@ -133,11 +133,9 @@ def validate_project_access(project_id: uuid.UUID) -> None:
     token = get_current_access_token()
     role = token.claims.get("role", "")
 
-    # admin 不受项目范围限制
     if role == "admin":
         return
 
-    # pm/dev 校验项目范围
     scope = token.claims.get("project_scope", []) or []
     scope_str = [str(pid) for pid in scope]
     if str(project_id) not in scope_str:

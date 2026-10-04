@@ -21,7 +21,7 @@ from mem_lake.embedding.client import EmbeddingClient
 
 logger = logging.getLogger("mem_lake.search.tag_expansion")
 
-# 标签语义扩展阈值默认值（FIX-21：收敛可配置，来源 Settings.TAG_EXPANSION_THRESHOLD）。
+# 标签语义扩展阈值默认值（来源 Settings.TAG_EXPANSION_THRESHOLD，可配置）。
 # 模块级函数签名默认值在 import 时求值，Settings 为进程单例且几乎不热替换，
 # 此处取一次快照即可；调用方也可显式传 threshold 覆盖。
 DEFAULT_THRESHOLD = get_settings().TAG_EXPANSION_THRESHOLD

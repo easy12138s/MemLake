@@ -1,8 +1,8 @@
 """SQLAlchemy ORM 模型：knowledge_node 表。
 
 对齐 PDD 4.2 节点主表 Schema。节点统一存储于 knowledge_node 表，通过 type 字段区分实体类型，
-properties JSONB 存储类型特有属性。向量检索走 node_embedding 表的 facet 多向量（FIX-08 后
-knowledge_node.content_vector 列废弃），content_tsv 支撑全文检索。
+properties JSONB 存储类型特有属性。向量检索走 node_embedding 表的 facet 多向量
+（knowledge_node.content_vector 列已废弃），content_tsv 支撑全文检索。
 node_embedding 的 HNSW 向量索引通过 pgvector-python 官方方案放入 __table_args__，随 create_all 创建
 （opclass 为 vector_ip_ops，配 1024 维归一化向量；参数 m=32、ef_construction=400）。
 content_tsv 使用 PostgreSQL 内置 TSVECTOR 类型（GIN 索引默认 tsvector_ops opclass）。
@@ -102,8 +102,7 @@ class KnowledgeNode(Base):
     )
     title: Mapped[str] = mapped_column(Text, comment="节点标题")
     content: Mapped[str] = mapped_column(Text, comment="节点正文内容")
-    # FIX-08：content_vector 列废弃（检索主路径走 node_embedding 多向量），
-    # 由 0003_drop_content_vector 迁移 DROP。此处不再定义。
+    # content_vector 列已废弃（0003_drop_content_vector 迁移 DROP），此处不定义。
     content_tsv: Mapped[Any] = mapped_column(
         TSVECTOR(), nullable=True, comment="全文检索向量（触发器自动维护）"
     )
@@ -154,9 +153,9 @@ class KnowledgeNode(Base):
             "requirement_key",
             name="uq_node_system_requirement_key",
         ),
-        # FIX-08：knowledge_node 的 HNSW 向量索引 idx_node_vector 随 content_vector
-        # 列一并废弃（0003_drop_content_vector 迁移 DROP）；向量检索索引在
-        # node_embedding 表（idx_node_embedding_vector，见 NodeEmbedding）。
+        # knowledge_node 的 HNSW 向量索引随 content_vector 列一并废弃
+        #（0003_drop_content_vector 迁移 DROP）；向量检索索引在 node_embedding 表
+        #（idx_node_embedding_vector，见 NodeEmbedding）。
     )
 
 
@@ -196,7 +195,7 @@ class NodeEmbedding(Base):
     __table_args__ = (
         Index("idx_node_embedding_node", "node_id"),
         Index("idx_node_embedding_node_facet", "node_id", "facet", unique=True),
-        # HNSW 向量索引（参数/opclass 与 FIX-04 统一，m=32/ef_construction=400/vector_ip_ops）
+        # HNSW 向量索引（m=32/ef_construction=400/vector_ip_ops）
         Index(
             "idx_node_embedding_vector",
             "content_vector",

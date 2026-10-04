@@ -10,7 +10,7 @@
 4. AuditLogMiddleware（on_call_tool）：记录工具调用审计日志
 
 写操作幂等由 DB 层唯一实现（approval/service.py _find_by_idempotency_key，
-持久化、跨重启，无 600s 时间窗限制），不在中间件层重复。
+持久化、跨重启），不在中间件层重复。
 
 中间件拒绝调用必须 raise ToolError（FastMCP 规范），不要返回 ToolResult。
 """
@@ -62,7 +62,7 @@ class AccessKeyAuthMiddleware(Middleware):
     读取 AccessToken（优先级高于 SDK context var），因此本中间件直接设置
     scope["user"] 即可让 get_access_token() 正常工作。
 
-    设计权衡（AUDIT §2.8）：每个请求执行一次 DB 查询 + bcrypt 校验（约
+    设计权衡：每个请求执行一次 DB 查询 + bcrypt 校验（约
     200-300ms CPU），不设缓存——这是有意取舍：吊销/轮换 Access Key 后立即
     生效，不引入缓存失效窗口。当前单实例部署的吞吐上限受此约束（远低于
     MCP_RATE_LIMIT_QPS 标称值）；若未来需要高吞吐，可评估带短 TTL 的
@@ -186,7 +186,7 @@ class RateLimitMiddleware(Middleware):
     实现：滑动窗口 + deque，窗口大小 1 秒，最大请求数 = QPS。
     单实例内存限流为既定设计（docker compose 单实例部署，PDD 既定范围）。
 
-    内存治理（AUDIT §2.9）：桶只在该 key 被访问时创建；除惰性归零删除外，
+    内存治理：桶只在该 key 被访问时创建；除惰性归零删除外，
     采用两条主动防线限制 `_buckets` 无界驻留：
     1. 定期清扫：每 `_prune_interval` 次调用全表清理一次所有过期桶（避免
        RATE_LIMIT_WINDOW_SEC 内访问过一次、此后长期不活跃的 key 桶永久驻留）。

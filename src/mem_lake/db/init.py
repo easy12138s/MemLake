@@ -137,7 +137,7 @@ async def init_database() -> None:
 
 
 async def check_migrations_synced(session: AsyncSession) -> None:
-    """启动时校验 Alembic 迁移版本与脚本目录一致（FIX-01 迁移机制）。
+    """启动时校验 Alembic 迁移版本与脚本目录一致。
 
     比对数：
     - 数据库 alembic_version 表登记的当前版本
@@ -159,7 +159,7 @@ async def check_migrations_synced(session: AsyncSession) -> None:
         raise RuntimeError(
             "数据库未登记 Alembic 迁移版本（缺 alembic_version 表）。"
             "全新安装请执行：alembic upgrade head；存量库请执行：alembic stamp head。"
-            "详细见 docs/架构优化修复方案.md FIX-01。"
+            "详见 DEPLOYMENT.md「更新版本」章节。"
         )
 
     result = await session.execute(text("SELECT version_num FROM alembic_version"))

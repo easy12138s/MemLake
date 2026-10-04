@@ -13,7 +13,7 @@ node_embedding + knowledge_node 关联表，不涉及 AGE 图。
 - HNSW 索引自动用于 ORDER BY <#> 查询（vector_ip_ops 操作符类）；<#> 返回负内积，
   归一化下 score = -max_inner_product = 余弦 ∈[-1,1]，负值截断为 0
 - 查询向量通过参数化传入，非字符串拼接，零注入风险
-- FIX-08：knowledge_node.content_vector 列已废弃（0003 迁移 DROP），检索主路径
+- knowledge_node.content_vector 列已废弃（0003 迁移 DROP），检索主路径
   走 node_embedding 多向量（facet max-pooling），单主向量不再落库
 """
 

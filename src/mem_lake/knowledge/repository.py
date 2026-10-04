@@ -72,8 +72,8 @@ async def _node_write_audit_detail(
 ) -> dict[str, Any]:
     """构造节点创建审计 detail（create_node 与 batch_insert_requirements 共用）。
 
-    FIX-08：vector_generated 判定基于 NodeEmbedding 记录存在性（content_vector
-    列废弃，检索主路径走 node_embedding），而非 content_vector 判空。
+    vector_generated 判定基于 NodeEmbedding 记录存在性（检索主路径走
+    node_embedding），而非列判空。
     """
     return {
         "node_type": node.type,
@@ -85,7 +85,7 @@ async def _node_write_audit_detail(
 
 
 async def _node_has_embedding(session: AsyncSession, node_id: uuid.UUID) -> bool:
-    """判断节点是否已有 facet 向量记录（FIX-08：替代 content_vector 判空）。"""
+    """判断节点是否已有 facet 向量记录（以记录存在性判定）。"""
     result = await session.execute(
         select(NodeEmbedding.id).where(NodeEmbedding.node_id == node_id).limit(1)
     )
@@ -125,13 +125,12 @@ async def create_node(
 
     不 commit，由调用方控制事务。
 
-    注（FIX-08）：不再向 knowledge_node.content_vector 写主向量——检索主路径走
-    node_embedding 多向量，content_vector 列废弃。此处仅写 facet 向量，避免为
-    无用途列多算一次 content embed。
+    注：不写 knowledge_node.content_vector（列已废弃）——检索主路径走
+    node_embedding 多向量，此处仅写 facet 向量。
     """
     validate_node(node_type, properties)
 
-    # ---- system / project 归属强约束（FIX-17：schema.validate_attribution 单一实现）----
+    # ---- system / project 归属强约束（schema.validate_attribution 单一实现）----
     validate_attribution(node_type, system_id=system_id, project_id=project_id)
 
     requirement_key = None
@@ -160,8 +159,7 @@ async def create_node(
     await session.flush()  # 触发 server_default 生成 id 与 created_at
 
     # 多向量 facet 写入（32k 适配 D）：generate_vector 必须提供 embedding_client 才可写。
-    # FIX-08：content_vector 停写，单主向量 embed 一并消除，仅写 facet 多向量；
-    # generate_vector=True 但缺 client 仍抛错（facet 向量写入依赖 client）。
+    # generate_vector=True 但缺 client 抛错（facet 向量写入依赖 client）。
     if generate_vector:
         if embedding_client is None:
             raise ValueError(
@@ -238,7 +236,7 @@ async def _write_facets_batch(
     node_meta: list[tuple[uuid.UUID, str, str, str, dict[str, Any]]],
     embedding_client: EmbeddingClient,
 ) -> int:
-    """批量写入多向量 facet（FIX-25 单一实现，三调用点复用）。
+    """批量写入多向量 facet（create_node/update_node/batch 系列共用实现）。
 
     node_meta 每项为 (node_id, node_type, title, content, properties)。所有节点的
     所有 facet 文本一次批量 embed（减少 HTTP 往返），写回 node_embedding 表，
@@ -283,8 +281,8 @@ async def _store_facet_vectors(
 ) -> int:
     """写入单个节点的多向量 facet（32k 适配 D）。
 
-    FIX-25：收敛为 _write_facets_batch 的单元素调用（create_node/update_node 复用
-    同一实现），保持幂等（先清后写）。返回写入的 facet 行数（0 表示空节点不写）。
+    _write_facets_batch 的单节点封装（幂等：先清后写）。
+    返回写入的 facet 行数（0 表示空节点不写）。
     """
     return await _write_facets_batch(
         session,
@@ -389,7 +387,6 @@ async def update_node(
     node.version += 1
 
     # 标题/正文/属性任一变更时重生成 facet 向量（embed 输入含属性段，属性变更影响向量）。
-    # FIX-08：content_vector 停写，单主向量 embed 一并消除，仅重算 facet 多向量。
     if regenerate_vector and any(
         k in changes for k in ("title", "content", "properties")
     ):
@@ -541,7 +538,7 @@ async def list_requirements(
 ) -> tuple[list[KnowledgeNode], int]:
     """清单式枚举 Requirement（分页 + 属性过滤），返回 (rows, total)。
 
-    消「清单类任务只能靠检索试探取并集」的无效调用（反馈 ISSUE-01）：
+    消「清单类任务只能靠检索试探取并集」的无效调用：
     - project_id / system_id 双维度过滤（均不传由调用方做 Key scope 兜底；
       悬浮需求 project 为空，system 维度可枚举全系统需求）
     - module 精确 / source_doc 前缀（properties JSONB）——「列出 V2.15 批次
@@ -566,7 +563,7 @@ async def list_requirements(
             KnowledgeNode.properties["source_doc"].astext.like(source_doc_prefix + "%")
         )
     if requirement_key is not None:
-        # 批次五（报告 P2-3）：SYS-xxxx 直查，消「已知唯一 ID 却要翻分页」
+        # requirement_key 直查（已知唯一 ID 免翻分页）
         clauses.append(KnowledgeNode.requirement_key == requirement_key)
     if tags:
         # 复用 FilterSpec 的 tags AND/OR 编译（其自带 status/is_deleted 子句与
@@ -579,7 +576,7 @@ async def list_requirements(
         await session.execute(select(func.count()).select_from(KnowledgeNode).where(*clauses))
     ).scalar_one()
 
-    # 批次五（报告 P2-2）：fields 仅作签名透传——SQL 层不做列投影
+    # fields 仅作签名透传——SQL 层不做列投影
     #（scalars() 会把多列 Row 坍缩为首列），出参裁剪由工具层按 fields 过滤
     stmt = (
         select(KnowledgeNode)
@@ -624,14 +621,12 @@ async def batch_regenerate_vectors(
 ) -> int:
     """批量重新生成节点 facet 向量（不 commit，由调用方事务控制）。
 
-    FIX-08：content_vector 停写，仅重算多向量 facet（node_embedding）。汇集所有
-    节点所有 facet 文本，一次批量 embed（相比逐节点 embed_one 大幅减少 HTTP 往返），
-    供 reindex 后台任务使用。
+    汇集所有节点所有 facet 文本，一次批量 embed（相比逐节点 embed_one 大幅减少
+    HTTP 往返），供 reindex 后台任务使用。
     """
     if not nodes:
         return 0
-    # FIX-25：收敛到 _write_facets_batch 单一实现（汇集所有节点所有 facet 文本一次
-    # 批量 embed，幂等写回），与 create_node/update_node/batch_insert_requirements 复用。
+    # 收敛到 _write_facets_batch 单一实现（批量 embed、幂等写回）。
     await _write_facets_batch(
         session,
         node_meta=[
@@ -672,7 +667,7 @@ async def batch_insert_requirements(
     - session.add_all + flush 落 PG，同步 AGE 图节点与审计日志
     - 返回 {"created": len(nodes)}
 
-    FIX-08：content_vector 停写，单主向量 embed 一并消除，仅写 facet 多向量。
+    仅写 facet 多向量。
     """
     if not nodes:
         return {"created": 0}
@@ -689,7 +684,7 @@ async def batch_insert_requirements(
     await session.flush()  # 触发 server_default 生成 id 与 created_at
 
     # 写 facet 行：节点 id 需在 flush 后解析，故在 flush 之后汇总 node_meta 并收敛到
-    # _write_facets_batch（FIX-25：与 create_node/update_node/batch_regenerate_vectors 复用）。
+    # _write_facets_batch（与 create_node/update_node/batch_regenerate_vectors 复用）。
     if embedding_client:
         await _write_facets_batch(
             session,
@@ -774,7 +769,7 @@ async def list_project_profiles(
 
 
 # ============================================================================
-# System / SystemProject 域 repository（FIX-26：OR 操作收口于本层）
+# System / SystemProject 域 repository（set/add/remove 归属操作收口于本层）
 # ============================================================================
 
 
@@ -819,7 +814,7 @@ async def get_system_by_code(session: AsyncSession, code: str) -> System | None:
 async def get_system_ids_by_project(
     session: AsyncSession, *, project_id: uuid.UUID
 ) -> list[uuid.UUID]:
-    """反查 project 归属的全部 system 域 ID（批次四：跨 project 冲突候选域）。"""
+    """反查 project 归属的全部 system 域 ID（用于跨 project 冲突候选域展开）。"""
     result = await session.execute(
         select(SystemProject.system_id).where(SystemProject.project_id == project_id)
     )

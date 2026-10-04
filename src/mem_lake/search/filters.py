@@ -114,10 +114,10 @@ def compile_sqlalchemy(spec: FilterSpec | None) -> list[ColumnElement[bool]]:
 
 
 def node_active_approved() -> list[ColumnElement[bool]]:
-    """"approved 且未软删除"共享谓词（FIX-20 统一实现）。
+    """"approved 且未软删除"共享谓词（统一实现）。
 
     「内容可被检索」的含义 = status == 'approved' 且 is_deleted = False。
-    此前散落于 repository/search/approval/cli 12 处独立实现，收敛为本函数：
+    统一收敛为本函数：
     - 各调用点 `.where(*node_active_approved())` 组合到既有条件
     - 语义与 compile_sqlalchemy 默认 FilterSpec（status="approved" + exclude_deleted）一致
     """

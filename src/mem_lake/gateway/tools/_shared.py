@@ -111,7 +111,7 @@ class WriteToolOutput(BaseModel):
         description=(
             "已入库节点清单（宽松模式 auto_approved 时返回）："
             "[{ref, node_id, node_type, title}]——写入回执的确定性依据"
-            "（09-29 报告 P1-2：此前不返回 node_id，写入最后一公里靠 Agent 反查）"
+            ""
         ),
     )
     edges_created: int | None = Field(
@@ -250,7 +250,7 @@ def build_node_item(
         raise PayloadValidationError(f"节点 {ref} 缺少 properties 字段")
     if not created_by:
         raise PayloadValidationError(f"节点 {ref} 缺少 created_by")
-    # 归属约束统一走 schema.validate_attribution（FIX-17 单一实现）；
+    # 归属约束统一走 schema.validate_attribution（单一实现）；
     # 工具层对外仍包装为 PayloadValidationError（含 ref 便于定位批次内项）。
     try:
         validate_attribution(node_type, system_id=system_id, project_id=project_id)
@@ -445,7 +445,7 @@ async def _safe_enqueue_embed(
 
     事务已 commit，入队仅是后台优化（新建节点暂无 node_embedding 向量记录，搜索可安全
     跳过）。入队失败（如 DB 短暂不可用）只记录告警，不阻断结果返回——已生效，向量
-    缺失由后续 reindex 兜底（AUDIT §2.11）。
+    缺失由后续 reindex 兜底。
     """
     # 惰性导入避免与 background_tasks 的循环依赖
     from mem_lake.gateway.background_tasks import start_embed_nodes_task

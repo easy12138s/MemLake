@@ -1,4 +1,4 @@
-"""审批 payload / 结构校验（FIX-24 从 service.py 拆出的 validation 模块）。
+"""审批 payload / 结构校验。
 
 职责：提交批次时对 items 的结构（_validate_item_structure）与 payload 的
 合规性（_validate_item_payload）做校验。校验失败抛 PayloadValidationError。
@@ -54,7 +54,7 @@ def _validate_item_payload(item: dict[str, Any], idx: int) -> None:
     if item_type == "node" and action == "create":
         # node + create：校验节点类型、必填字段与必填顶层字段。
         # 归属约束（Requirement 必填 system_id、其余必填 project_id）统一走
-        # schema.validate_attribution（FIX-17 单一实现），保留 title/content/created_by 校验。
+        # schema.validate_attribution（单一实现），保留 title/content/created_by 校验。
         required_top = ("title", "content", "created_by")
         for required in required_top:
             if not payload.get(required):

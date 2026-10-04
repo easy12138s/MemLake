@@ -1,9 +1,9 @@
 """嵌入文本构造：将节点 title/content 与关键属性拼接为向量化输入。
 
-PDD 3.3：向量检索基于 node_embedding 表的 facet 向量（FIX-08 后 content_vector
-列废弃）。仅用 title+content 会丢失 properties 中的判别性信息（如 Pitfall.root_cause
+PDD 3.3：向量检索基于 node_embedding 表的 facet 向量（content_vector 列已废弃）。
+仅用 title+content 会丢失 properties 中的判别性信息（如 Pitfall.root_cause
 / CodeSnippet.name），导致按属性关键词无法召回。此处按节点类型纳入关键属性，
-提升语义召回（对应 dev 测试报告 P2）。
+提升语义召回。
 """
 
 from typing import Any
@@ -20,7 +20,7 @@ EMBED_PROPERTY_FIELDS: dict[str, list[str]] = {
 }
 
 # 单条属性值最大字符数，防止超长属性撑爆嵌入输入。
-# 32k 上下文适配（A）：模型原生支持 32768 token，原 512 上限会丢弃长属性
+# 模型原生支持 32768 token，4096 上限远小于模型上限
 # （如 Pitfall.root_cause / solution）的判别信息。放宽到 4096 仍远小于模型上限，
 # 单 facet 文本即使用 Qwen3-Embedding-0.6B 也不会触及 token 截断守卫。
 _EMBED_VALUE_MAX_LEN = 4096
@@ -85,8 +85,7 @@ def build_embed_facets(
 
     返回 dict 至少含 "content" facet（title+content）；其余为节点类型关键属性中
     非空的字段，各自独立成 facet。空节点（无 title/content/属性）返回空 dict，
-    调用方据此跳过向量写入（与无 facet 记录的既有语义一致，FIX-08 后以
-    node_embedding 记录存在性判定）。
+    调用方据此跳过向量写入（以 node_embedding 记录存在性判定节点是否有向量）。
 
     用于 create_node / update_node / regenerate_vector / batch_regenerate_vectors
     的逐 facet EmbeddingClient 输入；检索侧使用 max-pooling 融合。
