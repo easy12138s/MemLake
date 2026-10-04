@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     EMBEDDING_HOST: str = "localhost"
     EMBEDDING_PORT: int = 8001
 
+    # ========== 可视化控制台 ==========
+    VISUAL_ENABLED: bool = False
+    VISUAL_HOST: str = "0.0.0.0"
+    VISUAL_PORT: int = 8090
+    VISUAL_USERNAME: str = "memlake_view"
+    VISUAL_PASSWORD: str = "easy12138s"
+    VISUAL_SESSION_SECRET: str = ""  # 空=每次进程启动随机生成（重启后需重新登录）
+    VISUAL_GRAPH_MAX_NODES: int = 1000
+
     # ========== Rerank 精排 ==========
     # bge-reranker-base（CrossEncoder）路径。空字符串=不启用精排。
     # 留空时 ENABLE_RERANK 即使为 True 也不生效，检索退回 RRF 原序。
