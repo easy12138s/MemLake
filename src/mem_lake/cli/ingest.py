@@ -76,6 +76,27 @@ async def resolve_system(
     )
 
 
+async def _load_requirement_rows(
+    session: AsyncSession,
+    project_id: uuid.UUID | None,
+    system_id: uuid.UUID | None,
+) -> list[KnowledgeNode]:
+    """加载 project+system 范围内的 Requirement 节点（未软删除）。
+
+    范围按 project 判别式与 system_id 双维度限定（system 归属可能跨 project/时间变化）：
+    project_id=None 只匹配 project_id IS NULL（悬浮），否则匹配该 project。
+    """
+    result = await session.execute(
+        select(KnowledgeNode).where(
+            KnowledgeNode.type == "Requirement",
+            KnowledgeNode.project_id == project_id,
+            KnowledgeNode.system_id == system_id,
+            KnowledgeNode.is_deleted == False,  # noqa: E712
+        )
+    )
+    return list(result.scalars().all())
+
+
 async def _load_existing_source_docs(
     session: AsyncSession,
     project_id: uuid.UUID | None,
@@ -87,16 +108,7 @@ async def _load_existing_source_docs(
     project_id=None 只匹配 project_id IS NULL（悬浮），否则匹配该 project。
     过滤 type=='Requirement' 且 properties.source_doc 非空。单次查询。
     """
-    rows = (
-        await session.execute(
-            select(KnowledgeNode).where(
-                KnowledgeNode.type == "Requirement",
-                KnowledgeNode.project_id == project_id,
-                KnowledgeNode.system_id == system_id,
-                KnowledgeNode.is_deleted == False,  # noqa: E712
-            )
-        )
-    ).scalars().all()
+    rows = await _load_requirement_rows(session, project_id, system_id)
     docs: set[str] = set()
     for row in rows:
         source_doc = (row.properties or {}).get("source_doc")
@@ -242,16 +254,7 @@ async def _link_split_groups(
     if not groups:
         return 0
 
-    rows = (
-        await session.execute(
-            select(KnowledgeNode).where(
-                KnowledgeNode.type == "Requirement",
-                KnowledgeNode.project_id == project_id,
-                KnowledgeNode.system_id == system_id,
-                KnowledgeNode.is_deleted == False,  # noqa: E712
-            )
-        )
-    ).scalars().all()
+    rows = await _load_requirement_rows(session, project_id, system_id)
     node_by_source_doc = {
         doc: row
         for row in rows

@@ -297,6 +297,20 @@ def _spawn_worker(
     return task
 
 
+async def _start_task(
+    project_id: uuid.UUID | None,
+    actor: str,
+    batch_size: int | None,
+    *,
+    target_node_ids: list[uuid.UUID] | None,
+) -> tuple[uuid.UUID, int]:
+    """建任务记录 + 启动后台 worker（start_embed_nodes_task / start_reindex_task 共用信封）。"""
+    size = batch_size or DEFAULT_BATCH_SIZE
+    task_id = await create_task_record(project_id, actor, target_node_ids=target_node_ids)
+    _spawn_worker(project_id, task_id, actor, size, get_embedding_client())
+    return task_id, size
+
+
 async def start_embed_nodes_task(
     project_id: uuid.UUID | None,
     node_ids: list[uuid.UUID],
@@ -312,12 +326,9 @@ async def start_embed_nodes_task(
     """
     if not node_ids:
         raise ValueError("start_embed_nodes_task: node_ids 不能为空")
-    size = batch_size or DEFAULT_BATCH_SIZE
-    task_id = await create_task_record(
-        project_id, actor, target_node_ids=list(node_ids)
+    task_id, _ = await _start_task(
+        project_id, actor, batch_size, target_node_ids=list(node_ids)
     )
-    embedding_client = get_embedding_client()
-    _spawn_worker(project_id, task_id, actor, size, embedding_client)
     logger.info(
         "embed-nodes task %s started: project=%s node_count=%d",
         task_id,
@@ -331,10 +342,7 @@ async def start_reindex_task(
     project_id: uuid.UUID, actor: str, batch_size: int | None = None
 ) -> uuid.UUID:
     """异步提交重嵌任务：建记录 + 启动后台 worker，返回 task_id。"""
-    size = batch_size or DEFAULT_BATCH_SIZE
-    task_id = await create_task_record(project_id, actor)
-    embedding_client = get_embedding_client()
-    _spawn_worker(project_id, task_id, actor, size, embedding_client)
+    task_id, size = await _start_task(project_id, actor, batch_size, target_node_ids=None)
     logger.info(
         "reindex task %s started: project=%s batch_size=%d", task_id, project_id, size
     )
@@ -374,13 +382,9 @@ async def reconcile_orphan_tasks() -> int:
                 error=None,
                 finished_at=None,
             )
-            task = asyncio.create_task(
-                _reindex_worker(
-                    t.project_id, t.id, t.created_by, DEFAULT_BATCH_SIZE, embedding_client
-                )
+            _spawn_worker(
+                t.project_id, t.id, t.created_by, DEFAULT_BATCH_SIZE, embedding_client
             )
-            ACTIVE_TASKS.add(task)
-            task.add_done_callback(ACTIVE_TASKS.discard)
         else:
             await _patch_task(
                 t.id,

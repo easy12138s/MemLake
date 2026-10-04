@@ -23,7 +23,7 @@ import re
 import uuid
 from typing import Any
 
-from sqlalchemy import ColumnElement, delete, func, select, text
+from sqlalchemy import ColumnElement, Select, delete, func, select, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -477,6 +477,21 @@ async def add_edge(
     )
 
 
+def _apply_status_filter(
+    stmt: Select, status: str | None
+) -> Select:
+    """status 过滤（list/count_nodes_by_project 共用口径，防两处漂移）。
+
+    status=None 返回所有节点（含 archived），不过滤状态与软删除；
+    status=approved 追加排除软删除。
+    """
+    if status is not None:
+        stmt = stmt.where(KnowledgeNode.status == status)
+        if status == "approved":
+            stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
+    return stmt
+
+
 async def list_nodes_by_project(
     session: AsyncSession,
     *,
@@ -494,11 +509,9 @@ async def list_nodes_by_project(
     - status="archived"：仅返回 archived 节点（is_deleted 隐含 True）
     - status=None：返回所有节点（含 archived），不过滤状态与软删除
     """
-    stmt = select(KnowledgeNode).where(KnowledgeNode.project_id == project_id)
-    if status is not None:
-        stmt = stmt.where(KnowledgeNode.status == status)
-        if status == "approved":
-            stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
+    stmt = _apply_status_filter(
+        select(KnowledgeNode).where(KnowledgeNode.project_id == project_id), status
+    )
     if node_type is not None:
         stmt = stmt.where(KnowledgeNode.type == node_type)
 
@@ -592,13 +605,12 @@ async def count_nodes_by_project(
 
     供 reindex 后台任务预估总量、驱动进度展示。
     """
-    stmt = select(func.count()).select_from(KnowledgeNode).where(
-        KnowledgeNode.project_id == project_id
+    stmt = _apply_status_filter(
+        select(func.count()).select_from(KnowledgeNode).where(
+            KnowledgeNode.project_id == project_id
+        ),
+        status,
     )
-    if status is not None:
-        stmt = stmt.where(KnowledgeNode.status == status)
-        if status == "approved":
-            stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
     result = await session.execute(stmt)
     return int(result.scalar() or 0)
 
