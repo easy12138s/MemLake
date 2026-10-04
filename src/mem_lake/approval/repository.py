@@ -50,10 +50,6 @@ class BatchStatusError(Exception):
     """批次状态不允许当前操作时抛出（如已审批的批次再次审批）。"""
 
 
-class IdempotencyConflictError(Exception):
-    """幂等键冲突时抛出（同 operation_id 已有不同内容的批次）。"""
-
-
 async def submit_batch(
     session: AsyncSession,
     *,
@@ -256,6 +252,21 @@ async def get_batch_detail(
     batch = result.scalar_one_or_none()
     if batch is None:
         raise BatchNotFoundError(f"批次不存在: {batch_id}")
+    return batch
+
+
+async def get_pending_batch(
+    session: AsyncSession, batch_id: uuid.UUID, *, verb: str
+) -> ApprovalBatch:
+    """查回批次并校验处于 pending_review（审批/拒绝/自动处理的状态机入口共用）。
+
+    verb 用于错误文案（如「审批通过」「自动处理」）。
+    """
+    batch = await get_batch_detail(session, batch_id)
+    if batch.status != STATUS_PENDING_REVIEW:
+        raise BatchStatusError(
+            f"批次状态不允许{verb}: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
+        )
     return batch
 
 

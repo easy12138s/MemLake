@@ -21,7 +21,6 @@ from mem_lake.db.base import Base
 
 # Access Key 明文格式常量
 ACCESS_KEY_PREFIX = "ak_"
-KEY_FORMAT = "ak_{id_hex}.{secret}"
 
 
 class AccessKey(Base):

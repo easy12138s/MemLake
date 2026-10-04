@@ -17,10 +17,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.approval.executor import _build_conflict_query_vectors, _to_uuid
-from mem_lake.approval.models import ApprovalBatch
-from mem_lake.approval.repository import (
-    STATUS_PENDING_REVIEW,
-    BatchStatusError,
+from mem_lake.approval.models import (
+    ApprovalBatch,
+    collect_created_node_ids,
+    iter_created_node_items,
 )
 from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.knowledge.graph_store import GraphStore
@@ -74,22 +74,12 @@ async def auto_process_batch(
     """
     from mem_lake.approval import service as _svc  # 门面：运行时解析，避免加载期循环依赖
 
-    batch = await _svc.get_batch_detail(session, batch_id)
+    batch = await _svc.get_pending_batch(session, batch_id, verb="自动处理")
 
-    # 1. 状态校验
-    if batch.status != STATUS_PENDING_REVIEW:
-        raise BatchStatusError(
-            f"批次状态不允许自动处理: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
-        )
-
-    # 2. 遍历 node+create 项执行三层冲突检测
+    # 1. 遍历 node+create 项执行三层冲突检测
     # 批量化（_build_conflict_query_vectors）：所有查询文本一次性 embed，
     # 再逐条用预计算向量比对。
-    create_items = [
-        it
-        for it in batch.items
-        if it.item_type == "node" and it.action == "create"
-    ]
+    create_items = iter_created_node_items(batch)
     conflict_query_vectors = await _build_conflict_query_vectors(
         embedding_client, create_items
     )
@@ -180,13 +170,7 @@ async def auto_process_batch(
             conflict_query_vectors=conflict_query_vectors,
         )
         # 新建节点 id 取自审批后 batch.items 中 node+create 项的 target_id
-        created_node_ids = [
-            it.target_id
-            for it in approved_batch.items
-            if it.item_type == "node"
-            and it.action == "create"
-            and it.target_id is not None
-        ]
+        created_node_ids = collect_created_node_ids(approved_batch)
         return {
             "decision": "auto_approved",
             "conflict_hint": {

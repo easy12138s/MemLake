@@ -4,7 +4,7 @@
 1. write_tools._validate_dev_artifacts（dev 引用悬浮/跨项目需求）
 2. write_tools._validate_requirement_refs（PM related / update_requirement_relations 引用）
 3. Retrieve 侧 dev 可见过滤的组成依据（业务层组合）
-4. approval._resolve_ref 落边前的目标可见性复核
+4. approval/executor._resolve_ref 落边前的目标可见性复核
 
 可见规则（决策定稿）：
 - admin：恒可见

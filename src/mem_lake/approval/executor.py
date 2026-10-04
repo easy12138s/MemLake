@@ -19,13 +19,11 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.approval.conflict import detect_conflicts
-from mem_lake.approval.models import ApprovalBatch, ApprovalItem
+from mem_lake.approval.models import ApprovalBatch, ApprovalItem, iter_created_node_items
 from mem_lake.approval.repository import (
     STATUS_APPROVED,
-    STATUS_PENDING_REVIEW,
     STATUS_REJECTED,
-    BatchStatusError,
-    get_batch_detail,
+    get_pending_batch,
 )
 from mem_lake.approval.validation import PayloadValidationError
 from mem_lake.audit.service import write_audit_log
@@ -96,26 +94,16 @@ async def review_approve(
     （与内部构造顺序一致），非 None 时跳过内部重新 embed，消除重复计算
     （AUDIT §2.12）。
     """
-    batch = await get_batch_detail(session, batch_id)
+    batch = await get_pending_batch(session, batch_id, verb="审批通过")
 
-    # 1. 状态校验
-    if batch.status != STATUS_PENDING_REVIEW:
-        raise BatchStatusError(
-            f"批次状态不允许审批通过: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
-        )
-
-    # 2. 遍历 items 执行写入
+    # 1. 遍历 items 执行写入
     all_conflict_hints: list[dict[str, Any]] = []
 
     # 冲突检测批量向量化：所有新建节点的查询文本一次性 embed（prompt_name="query"，
     # 与 VectorSearcher.search 语义一致），避免每节点各 embed 一次（2N → 2）。
     # 查询文本用 build_embed_text，与 conflict.detect_conflicts 内部构造一致。
     # auto_process_batch 已预计算时复用，此处跳过内部重新 embed。
-    create_items = [
-        it
-        for it in batch.items
-        if it.item_type == "node" and it.action == "create"
-    ]
+    create_items = iter_created_node_items(batch)
     if conflict_query_vectors is None:
         # FIX-12：复用 _build_conflict_query_vectors（与 auto_process_batch 同一实现），
         # 消除瘦身轮遗留的内联重复。
@@ -179,7 +167,7 @@ async def review_approve(
             )
             # 边无 target_id，留空
 
-    # 2.1 新建节点向量化延迟到后台异步执行：facet 向量（node_embedding）暂缺
+    # 2. 新建节点向量化延迟到后台异步执行：facet 向量（node_embedding）暂缺
     # （FIX-08：content_vector 列已废弃，检索走 node_embedding，缺向量节点自动
     # 排除），审批提交后由调用方经 start_embed_nodes_task 入队，复用 reindex
     # worker 补向量。此处不再同步 embed，避免大批次审批阻塞 MCP 调用超时。
@@ -235,15 +223,9 @@ async def review_reject(
 
     不 commit。
     """
-    batch = await get_batch_detail(session, batch_id)
+    batch = await get_pending_batch(session, batch_id, verb="审批拒绝")
 
-    # 1. 状态校验
-    if batch.status != STATUS_PENDING_REVIEW:
-        raise BatchStatusError(
-            f"批次状态不允许审批拒绝: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
-        )
-
-    # 2. 更新批次状态
+    # 1. 更新批次状态
     batch.status = STATUS_REJECTED
     batch.reviewed_by = reviewed_by
     batch.reviewed_at = datetime.now(timezone.utc)

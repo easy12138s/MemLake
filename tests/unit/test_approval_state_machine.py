@@ -7,7 +7,7 @@
 - payload 校验（_validate_item_payload：node+create 必填字段、edge+create 类型与 from_id/to_id）
 - conflict_hint 合并逻辑（_merge_conflict_hints：空列表、无冲突、有冲突、聚合建议）
 - _to_uuid 类型转换边界
-- 异常类型层级（PayloadValidationError / BatchStatusError / BatchNotFoundError / IdempotencyConflictError）
+- 异常类型层级（PayloadValidationError / BatchStatusError / BatchNotFoundError）
 
 不依赖 DB：所有测试直接调用纯函数或常量，验证逻辑正确性。
 DB 依赖场景（如状态转换的实际写入、幂等键 DB 唯一约束）由 test_approval_flow.py 集成测试覆盖。
@@ -27,7 +27,6 @@ from mem_lake.approval.service import (
     TERMINAL_STATUSES,
     BatchNotFoundError,
     BatchStatusError,
-    IdempotencyConflictError,
     PayloadValidationError,
     _merge_conflict_hints,
     _to_uuid,
@@ -124,20 +123,18 @@ class TestExceptionHierarchy:
         for exc_cls in (
             BatchNotFoundError,
             BatchStatusError,
-            IdempotencyConflictError,
             PayloadValidationError,
         ):
             assert issubclass(exc_cls, Exception)
 
     def test_exceptions_distinct(self):
-        """4 个异常类互不相同，便于调用方按类型捕获。"""
+        """3 个异常类互不相同，便于调用方按类型捕获。"""
         excs = {
             BatchNotFoundError,
             BatchStatusError,
-            IdempotencyConflictError,
             PayloadValidationError,
         }
-        assert len(excs) == 4
+        assert len(excs) == 3
 
     def test_batch_status_error_message_format(self):
         """BatchStatusError 消息含当前状态与期望状态（便于排障）。"""
