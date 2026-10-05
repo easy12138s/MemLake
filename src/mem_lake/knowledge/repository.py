@@ -833,6 +833,22 @@ async def count_system_projects(
     return int(result.scalar() or 0)
 
 
+async def count_nodes_by_status(session: AsyncSession) -> dict[str, int]:
+    """知识节点按状态计数（排除软删除；可视化总览用，只读）。"""
+    result = await session.execute(
+        select(KnowledgeNode.status, func.count())
+        .where(KnowledgeNode.is_deleted == False)  # noqa: E712
+        .group_by(KnowledgeNode.status)
+    )
+    return {status: int(cnt) for status, cnt in result.all()}
+
+
+async def count_system_mounts(session: AsyncSession) -> int:
+    """system_project 挂载记录总数（可视化总览用，只读）。"""
+    result = await session.execute(select(func.count()).select_from(SystemProject))
+    return int(result.scalar() or 0)
+
+
 async def get_system_project_ids(
     session: AsyncSession, *, system_id: uuid.UUID
 ) -> set[uuid.UUID]:
