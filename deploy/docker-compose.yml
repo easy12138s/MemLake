@@ -78,8 +78,8 @@ services:
       dockerfile: deploy/Dockerfile.app
     ports:
       - "8000:8000"
-      # 可视化控制台（VISUAL_ENABLED=true 时启用；对外映射前务必修改默认口令）
-      # - "8090:8090"
+      # 可视化控制台（VISUAL_ENABLED=true 时监听；VISUAL_ENABLED=false 时端口映射存在但无进程、连接拒绝）
+      - "8090:8090"
     depends_on:
       postgres:
         condition: service_healthy
