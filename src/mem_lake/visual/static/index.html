@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemLake 控制台</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="login-view" class="login hidden">
+  <form id="login-form" class="login-card">
+    <h2>MemLake 可视化控制台</h2>
+    <input id="login-username" placeholder="账号" autocomplete="username" required>
+    <input id="login-password" type="password" placeholder="口令" autocomplete="current-password" required>
+    <button type="submit">登录</button>
+    <p id="login-error" class="error"></p>
+  </form>
+</div>
+<div id="app-view" class="app hidden">
+  <aside class="nav">
+    <h1>MemLake</h1>
+    <a href="#/dashboard" data-view="dashboard">总览</a>
+    <button id="logout-btn" class="logout">登出</button>
+  </aside>
+  <main id="view-root"></main>
+</div>
+<script src="/static/vendor/echarts.min.js"></script>
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

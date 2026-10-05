@@ -145,3 +145,15 @@ async def test_overview_shape(monkeypatch):
         assert data["systems"] == {"systems": 1, "project_mounts": 2}
         assert data["reindex_tasks"] == {"pending": 1, "running": 0, "done": 0, "failed": 0}
         assert data["health"] == {"database": True, "embedding": True}
+
+
+async def test_static_routes():
+    async with make_client() as client:
+        r = await client.get("/")
+        assert r.status_code == 200
+        assert "MemLake" in r.text
+        r = await client.get("/static/app.css")
+        assert r.status_code == 200
+        r = await client.get("/static/vendor/echarts.min.js")
+        assert r.status_code == 200
+        assert len(r.content) > 100_000
