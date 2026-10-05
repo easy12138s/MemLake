@@ -27,8 +27,10 @@ async def login(request: Request) -> JSONResponse:
     if state.visual_guard.is_locked(ip):
         return JSONResponse({"error": "失败次数过多，请 5 分钟后重试"}, status_code=429)
     try:
-        body: dict = await request.json()
+        body = await request.json()
     except ValueError:
+        body = {}
+    if not isinstance(body, dict):
         body = {}
     username = str(body.get("username", ""))
     password = str(body.get("password", ""))
