@@ -109,7 +109,19 @@ if __name__ == "__main__":
     servers = build_uvicorn_servers(settings)
     if len(servers) == 1:
         # 单 Server：保持 uvicorn.run 的既有信号/事件循环行为不变
-        servers[0].run()
+        try:
+            servers[0].run()
+        except KeyboardInterrupt:
+            pass
     else:
-        servers[0].config.setup_event_loop()
-        asyncio.run(_serve_until_first_exit(servers))
+        # 双 Server：get_loop_factory 对齐 Server.run 的循环构造（0.36+ API），
+        # KeyboardInterrupt 吞掉以对齐 uvicorn.run 语义
+        try:
+            asyncio.run(
+                _serve_until_first_exit(servers),
+                # asyncio.run 的 loop_factory 形参为 Py3.12+（项目实跑 3.13）；
+                # mypy 按 pyproject python_version=3.11 检查故定点忽略
+                loop_factory=servers[0].config.get_loop_factory(),  # type: ignore[call-arg]
+            )
+        except KeyboardInterrupt:
+            pass
