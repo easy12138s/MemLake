@@ -3,19 +3,21 @@
 启动方式：
 - 开发：uvicorn mem_lake.main:app --host 0.0.0.0 --port 8000 --reload
 - 部署（Dockerfile.app CMD）：python -m mem_lake.main，单进程单 worker
+- VISUAL_ENABLED=true 时同进程并发启动可视化控制台（:8090）
 
 多 worker 说明：限流（内存令牌桶）与后台任务（ACTIVE_TASKS 进程内集合）均为
 单实例设计；如需 uvicorn --workers N 多进程部署，须先改造这两处为共享存储
 （如 Redis），否则限流与任务防重入失效。
 """
 
+import asyncio
 import logging
 
 import uvicorn
 from starlette.requests import Request
 from starlette.responses import Response
 
-from mem_lake.config import get_settings
+from mem_lake.config import Settings, get_settings
 from mem_lake.gateway import create_mcp_server
 from mem_lake.observability.logging import configure_logging
 from mem_lake.observability.metrics import get_metrics_body, get_metrics_media_type
@@ -58,15 +60,56 @@ logger.info(
 )
 
 
+def build_uvicorn_servers(settings: Settings) -> list[uvicorn.Server]:
+    """构造启动期需运行的 uvicorn Server 列表（MCP 网关 + 可选可视化控制台）。"""
+    servers = [
+        uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=settings.MCP_SERVER_HOST,
+                port=settings.MCP_SERVER_PORT,
+                access_log=False,
+            )
+        )
+    ]
+    if settings.VISUAL_ENABLED:
+        from mem_lake.visual import create_visual_app
+
+        servers.append(
+            uvicorn.Server(
+                uvicorn.Config(
+                    create_visual_app(),
+                    host=settings.VISUAL_HOST,
+                    port=settings.VISUAL_PORT,
+                    access_log=False,
+                )
+            )
+        )
+    return servers
+
+
+async def _serve_until_first_exit(servers: list[uvicorn.Server]) -> None:
+    """并发 serve 多个 Server；任一退出（含收到信号）时令其余同步退出。
+
+    双 Server 各自捕获信号时只有一个实例会收到 handle_exit，故以
+    FIRST_COMPLETED 等待 + 主动置其余 should_exit 收口。
+    """
+    tasks = [asyncio.ensure_future(s.serve()) for s in servers]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for s in servers:
+            s.should_exit = True
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 if __name__ == "__main__":
     # 直接 python -m mem_lake.main 启动（开发用 / 容器 CMD）
-    # 服务模块级 app（已含 /metrics 与 lifespan），与 `uvicorn mem_lake.main:app` 一致
     settings = get_settings()
-    uvicorn.run(
-        app,
-        host=settings.MCP_SERVER_HOST,
-        port=settings.MCP_SERVER_PORT,
-        # 关闭每请求 HTTP access 日志（GET/POST /mcp 噪音）；工具调用业务日志
-        # 已由 AuditLogMiddleware 的 TOOL_CALL 结构化日志覆盖，不重复打请求行
-        access_log=False,
-    )
+    servers = build_uvicorn_servers(settings)
+    if len(servers) == 1:
+        # 单 Server：保持 uvicorn.run 的既有信号/事件循环行为不变
+        servers[0].run()
+    else:
+        servers[0].config.setup_event_loop()
+        asyncio.run(_serve_until_first_exit(servers))
