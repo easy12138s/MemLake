@@ -78,6 +78,8 @@ services:
       dockerfile: deploy/Dockerfile.app
     ports:
       - "8000:8000"
+      # 可视化控制台（VISUAL_ENABLED=true 时启用；对外映射前务必修改默认口令）
+      # - "8090:8090"
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,6 +91,14 @@ services:
       DATABASE_URL: postgresql+psycopg_async://${POSTGRES_USER:-memlake}:${POSTGRES_PASSWORD:-memlake}@postgres:5432/${POSTGRES_DB:-memlake}
       EMBEDDING_HOST: embedding
       EMBEDDING_PORT: "8001"
+      # 可视化控制台（默认不启动）
+      VISUAL_ENABLED: ${VISUAL_ENABLED:-false}
+      VISUAL_HOST: ${VISUAL_HOST:-0.0.0.0}
+      VISUAL_PORT: ${VISUAL_PORT:-8090}
+      VISUAL_USERNAME: ${VISUAL_USERNAME:-memlake_view}
+      VISUAL_PASSWORD: ${VISUAL_PASSWORD:-easy12138s}
+      VISUAL_SESSION_SECRET: ${VISUAL_SESSION_SECRET:-}
+      VISUAL_GRAPH_MAX_NODES: ${VISUAL_GRAPH_MAX_NODES:-1000}
     env_file:
       - ../.env
     healthcheck:
