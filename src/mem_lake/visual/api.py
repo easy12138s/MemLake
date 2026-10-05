@@ -1,8 +1,23 @@
 """可视化控制台只读 API 端点（login/logout/me；overview 见后续任务）。"""
 
+from typing import cast
+
+import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from mem_lake.approval.repository import count_pending_batches
+from mem_lake.auth.service import get_access_key_stats
+from mem_lake.config import get_settings
+from mem_lake.gateway.background_tasks import get_task_status_counts
+from mem_lake.gateway.dependencies import readonly_session
+from mem_lake.knowledge.age_store import get_graph_store
+from mem_lake.knowledge.graph_stats import get_graph_quality_report, get_graph_stats
+from mem_lake.knowledge.repository import (
+    count_nodes_by_status,
+    count_system_mounts,
+    list_systems,
+)
 from mem_lake.visual.auth import (
     COOKIE_NAME,
     SESSION_TTL_SECONDS,
@@ -67,3 +82,49 @@ async def me(request: Request) -> JSONResponse:
     if username is None:
         return JSONResponse({"error": "未认证"}, status_code=401)
     return JSONResponse({"username": username})
+
+
+async def embedding_health_ok() -> bool:
+    """embedding 服务 /health 可达性探测（2s 超时，失败不抛）。"""
+    settings = get_settings()
+    url = f"http://{settings.EMBEDDING_HOST}:{settings.EMBEDDING_PORT}/health"
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(url)
+            # resp.status_code 在 --follow-imports=skip 下被 mypy 视为 Any，cast 收敛为 bool
+            return cast(bool, resp.status_code == 200)
+    except httpx.HTTPError:
+        return False
+
+
+async def overview(request: Request) -> JSONResponse:
+    """总览统计（只读聚合；会话保护）。"""
+    if session_user(request) is None:
+        return JSONResponse({"error": "未认证"}, status_code=401)
+    async with readonly_session() as session:
+        graph = await get_graph_stats(session, get_graph_store())
+        quality = await get_graph_quality_report(session, get_graph_store())
+        nodes_by_status = await count_nodes_by_status(session)
+        batches_pending = await count_pending_batches(session)
+        keys = await get_access_key_stats(session)
+        systems = await list_systems(session)
+        mounts = await count_system_mounts(session)
+        tasks = await get_task_status_counts(session)
+    return JSONResponse(
+        {
+            "graph": {
+                "nodes_by_type": graph["nodes_by_type"],
+                "edges_by_type": graph["edges_by_type"],
+            },
+            "quality": quality,
+            "nodes_by_status": nodes_by_status,
+            "batches_pending": batches_pending,
+            "keys": keys,
+            "systems": {"systems": len(systems), "project_mounts": mounts},
+            "reindex_tasks": tasks,
+            "health": {
+                "database": True,
+                "embedding": await embedding_health_ok(),
+            },
+        }
+    )

@@ -3,6 +3,7 @@ import httpx
 from starlette.applications import Starlette
 
 from mem_lake.config import Settings
+from mem_lake.visual import api as visual_api
 from mem_lake.visual import create_visual_app
 
 
@@ -82,3 +83,65 @@ async def test_login_non_dict_json_body():
             headers={"Content-Type": "application/json"},
         )
         assert r.status_code == 401
+
+
+async def test_overview_requires_session(monkeypatch):
+    async with make_client() as client:
+        r = await client.get("/api/overview")
+        assert r.status_code == 401
+
+
+async def test_overview_shape(monkeypatch):
+    async def fake_stats(session, graph_store):
+        return {"nodes_by_type": {"Requirement": 3}, "nodes_by_system": {},
+                "edges_by_type": {"implements": 2}, "edges_by_system": {}}
+
+    async def fake_quality(session, graph_store):
+        return {"total_nodes": 3, "total_edges": 2, "orphan_nodes": 1,
+                "duplicate_groups_count": 0, "duplicate_node_count": 0,
+                "connected_components": 1}
+
+    async def fake_nodes_by_status(session):
+        return {"approved": 3}
+
+    async def fake_batches(session):
+        return 1
+
+    async def fake_keys(session):
+        return {"admin": {"active": 1}}
+
+    async def fake_systems(session):
+        return ["sys-1"]
+
+    async def fake_mounts(session):
+        return 2
+
+    async def fake_tasks(session):
+        return {"pending": 1, "running": 0, "done": 0, "failed": 0}
+
+    async def fake_health():
+        return True
+
+    monkeypatch.setattr(visual_api, "get_graph_stats", fake_stats)
+    monkeypatch.setattr(visual_api, "get_graph_quality_report", fake_quality)
+    monkeypatch.setattr(visual_api, "count_nodes_by_status", fake_nodes_by_status)
+    monkeypatch.setattr(visual_api, "count_pending_batches", fake_batches)
+    monkeypatch.setattr(visual_api, "get_access_key_stats", fake_keys)
+    monkeypatch.setattr(visual_api, "list_systems", fake_systems)
+    monkeypatch.setattr(visual_api, "count_system_mounts", fake_mounts)
+    monkeypatch.setattr(visual_api, "get_task_status_counts", fake_tasks)
+    monkeypatch.setattr(visual_api, "embedding_health_ok", fake_health)
+
+    async with make_client() as client:
+        await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        r = await client.get("/api/overview")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["graph"]["nodes_by_type"] == {"Requirement": 3}
+        assert data["quality"]["orphan_nodes"] == 1
+        assert data["nodes_by_status"] == {"approved": 3}
+        assert data["batches_pending"] == 1
+        assert data["keys"] == {"admin": {"active": 1}}
+        assert data["systems"] == {"systems": 1, "project_mounts": 2}
+        assert data["reindex_tasks"] == {"pending": 1, "running": 0, "done": 0, "failed": 0}
+        assert data["health"] == {"database": True, "embedding": True}
