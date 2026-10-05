@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import bindparam, select, text, update
+from sqlalchemy import bindparam, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
@@ -483,3 +483,15 @@ async def _resolve_scope_targets(
     # grant_all_projects=True 且不带 role_filter：不加 role 过滤 → 全部 Key
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def get_access_key_stats(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Access Key 按 role+status 分组计数（可视化总览用，只读）。"""
+    result = await session.execute(
+        select(AccessKey.role, AccessKey.status, func.count())
+        .group_by(AccessKey.role, AccessKey.status)
+    )
+    stats: dict[str, dict[str, int]] = {}
+    for role, status, cnt in result.all():
+        stats.setdefault(role, {})[status] = int(cnt)
+    return stats

@@ -10,7 +10,7 @@ submit_batch 内的幂等重放 + SAVEPOINT 并发处理逻辑随提交一并收
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -268,6 +268,16 @@ async def get_pending_batch(
             f"批次状态不允许{verb}: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
         )
     return batch
+
+
+async def count_pending_batches(session: AsyncSession) -> int:
+    """待审批批次总数（可视化总览用，只读）。"""
+    result = await session.execute(
+        select(func.count())
+        .select_from(ApprovalBatch)
+        .where(ApprovalBatch.status == STATUS_PENDING_REVIEW)
+    )
+    return int(result.scalar() or 0)
 
 
 async def _find_by_idempotency_key(

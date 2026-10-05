@@ -18,7 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.embedding.client import EmbeddingClient, get_embedding_client
 from mem_lake.gateway.dependencies import (
@@ -84,6 +85,14 @@ async def get_task_record(task_id: uuid.UUID) -> ReindexTask | None:
             select(ReindexTask).where(ReindexTask.id == task_id)
         )
         return result.scalar_one_or_none()
+
+
+async def get_task_status_counts(session: AsyncSession) -> dict[str, int]:
+    """重嵌任务按状态计数（可视化总览用，只读）。"""
+    result = await session.execute(
+        select(ReindexTask.status, func.count()).group_by(ReindexTask.status)
+    )
+    return {status: int(cnt) for status, cnt in result.all()}
 
 
 async def find_running_task(project_id: uuid.UUID) -> ReindexTask | None:
