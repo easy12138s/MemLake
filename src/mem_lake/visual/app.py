@@ -6,7 +6,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from mem_lake.config import Settings, get_settings
-from mem_lake.visual.api import login, logout, me
+from mem_lake.visual.api import login, logout, me, overview
 from mem_lake.visual.auth import LoginGuard
 
 
@@ -19,6 +19,7 @@ def create_visual_app(settings: Settings | None = None) -> Starlette:
     settings = settings or get_settings()
     app = Starlette(
         routes=[
+            Route("/api/overview", overview, methods=["GET"]),
             Route("/api/login", login, methods=["POST"]),
             Route("/api/logout", logout, methods=["POST"]),
             Route("/api/me", me, methods=["GET"]),
