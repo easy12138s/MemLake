@@ -114,14 +114,9 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             pass
     else:
-        # 双 Server：get_loop_factory 对齐 Server.run 的循环构造（0.36+ API），
+        # 双 Server：纯 asyncio.run（3.11 兼容，不启用 uvloop——观测台模式可接受）；
         # KeyboardInterrupt 吞掉以对齐 uvicorn.run 语义
         try:
-            asyncio.run(
-                _serve_until_first_exit(servers),
-                # asyncio.run 的 loop_factory 形参为 Py3.12+（项目实跑 3.13）；
-                # mypy 按 pyproject python_version=3.11 检查故定点忽略
-                loop_factory=servers[0].config.get_loop_factory(),  # type: ignore[call-arg]
-            )
+            asyncio.run(_serve_until_first_exit(servers))
         except KeyboardInterrupt:
             pass
