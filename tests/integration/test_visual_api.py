@@ -65,6 +65,18 @@ async def test_count_nodes_by_status(db_session):
             system_id=uuid.uuid4(),
         )
     )
+    db_session.add(
+        KnowledgeNode(
+            type="Requirement",
+            title="visual-test-deleted",
+            content="visual-test-deleted",
+            properties={"priority": "P2", "module": "visual"},
+            status="approved",
+            created_by="visual-test",
+            system_id=uuid.uuid4(),
+            is_deleted=True,
+        )
+    )
     await db_session.flush()
     counts = await count_nodes_by_status(db_session)
     assert counts.get("approved", 0) == base.get("approved", 0) + 1
