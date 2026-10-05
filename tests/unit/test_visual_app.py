@@ -66,3 +66,19 @@ async def test_login_invalid_body():
             headers={"Content-Type": "application/json"},
         )
         assert r.status_code == 401
+
+
+async def test_login_non_dict_json_body():
+    async with make_client() as client:
+        r = await client.post(
+            "/api/login",
+            content=b"[1, 2]",
+            headers={"Content-Type": "application/json"},
+        )
+        assert r.status_code == 401
+        r = await client.post(
+            "/api/login",
+            content=b'"plain-string"',
+            headers={"Content-Type": "application/json"},
+        )
+        assert r.status_code == 401
