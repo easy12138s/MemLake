@@ -1,0 +1,32 @@
+* { box-sizing: border-box; margin: 0; }
+body { font-family: system-ui, -apple-system, "PingFang SC", sans-serif;
+       background: #f5f6f8; color: #222; }
+.hidden { display: none !important; }
+.login { display: flex; align-items: center; justify-content: center;
+         min-height: 100vh; background: #1e2430; }
+.login-card { display: flex; flex-direction: column; gap: 12px;
+              background: #fff; padding: 32px; border-radius: 8px;
+              width: 320px; }
+.login-card h2 { font-size: 18px; margin-bottom: 8px; }
+.login-card input, .login-card button { padding: 10px; border: 1px solid #ccc;
+              border-radius: 4px; font-size: 14px; }
+.login-card button { background: #2b5fd9; color: #fff; border: none; cursor: pointer; }
+.error { color: #c0392b; font-size: 13px; min-height: 16px; }
+.app { display: flex; min-height: 100vh; }
+.nav { width: 180px; background: #1e2430; color: #dde3ee; padding: 16px;
+       display: flex; flex-direction: column; gap: 8px; }
+.nav h1 { font-size: 16px; margin-bottom: 12px; color: #fff; }
+.nav a { color: #dde3ee; text-decoration: none; padding: 8px 10px;
+         border-radius: 4px; font-size: 14px; }
+.nav a:hover, .nav a.active { background: #2b3b55; }
+.logout { margin-top: auto; background: none; border: 1px solid #4a5568;
+           color: #dde3ee; padding: 6px; border-radius: 4px; cursor: pointer; }
+#view-root { flex: 1; padding: 24px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+         gap: 12px; margin-bottom: 20px; }
+.card { background: #fff; border-radius: 8px; padding: 16px;
+        display: flex; flex-direction: column; gap: 6px; }
+.card span { font-size: 13px; color: #666; }
+.card b { font-size: 24px; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.chart { background: #fff; border-radius: 8px; height: 340px; }

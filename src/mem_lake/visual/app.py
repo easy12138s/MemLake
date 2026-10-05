@@ -1,13 +1,24 @@
 """可视化控制台应用工厂：路由装配与会话状态初始化。"""
 
 import secrets
+from pathlib import Path
 
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.requests import Request
+from starlette.responses import FileResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from mem_lake.config import Settings, get_settings
 from mem_lake.visual.api import login, logout, me, overview
 from mem_lake.visual.auth import LoginGuard
+
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+async def _index(request: Request) -> FileResponse:
+    """控制台 shell 页面。"""
+    return FileResponse(_STATIC_DIR / "index.html")
 
 
 def create_visual_app(settings: Settings | None = None) -> Starlette:
@@ -19,10 +30,12 @@ def create_visual_app(settings: Settings | None = None) -> Starlette:
     settings = settings or get_settings()
     app = Starlette(
         routes=[
-            Route("/api/overview", overview, methods=["GET"]),
+            Route("/", _index, methods=["GET"]),
             Route("/api/login", login, methods=["POST"]),
             Route("/api/logout", logout, methods=["POST"]),
             Route("/api/me", me, methods=["GET"]),
+            Route("/api/overview", overview, methods=["GET"]),
+            Mount("/static", StaticFiles(directory=_STATIC_DIR), name="static"),
         ]
     )
     app.state.visual_settings = settings
