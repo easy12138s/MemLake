@@ -1,6 +1,9 @@
 import { api } from "/static/js/app.js";
 
+const charts = [];
+
 export async function render(root) {
+  charts.splice(0).forEach((c) => c.dispose());
   root.innerHTML = `
     <h2>总览</h2>
     <div id="ov-cards" class="cards"></div>
@@ -24,10 +27,12 @@ export async function render(root) {
     .join("");
   pie(root.querySelector("#chart-nodes"), "节点分布", data.graph.nodes_by_type);
   pie(root.querySelector("#chart-edges"), "边分布", data.graph.edges_by_type);
+  return () => charts.forEach((c) => c.dispose());
 }
 
 function pie(el, title, kv) {
   const chart = echarts.init(el);
+  charts.push(chart);
   chart.setOption({
     title: { text: title, left: "center" },
     tooltip: { trigger: "item" },

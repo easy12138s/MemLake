@@ -74,6 +74,7 @@ async def login(request: Request) -> JSONResponse:
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
+        secure=request.url.scheme == "https",
         path="/",
     )
     return resp

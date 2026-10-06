@@ -7,7 +7,7 @@ from mem_lake.visual import api as visual_api
 from mem_lake.visual import create_visual_app
 
 
-def make_client(**overrides) -> httpx.AsyncClient:
+def make_client(base_url="http://test", **overrides) -> httpx.AsyncClient:
     settings = Settings(
         VISUAL_SESSION_SECRET="test-secret",
         VISUAL_USERNAME="vu",
@@ -15,9 +15,7 @@ def make_client(**overrides) -> httpx.AsyncClient:
         **overrides,
     )
     app: Starlette = create_visual_app(settings)
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base_url)
 
 
 async def test_me_requires_session():
@@ -157,3 +155,18 @@ async def test_static_routes():
         r = await client.get("/static/vendor/echarts.min.js")
         assert r.status_code == 200
         assert len(r.content) > 100_000
+
+
+async def test_login_cookie_not_secure_over_http():
+    async with make_client() as client:
+        r = await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        assert r.status_code == 200
+        assert "secure" not in r.headers["set-cookie"].lower()
+
+
+async def test_login_cookie_secure_over_https():
+    """HTTPS 请求（反代终结 TLS 场景）Cookie 加 Secure 属性。"""
+    async with make_client(base_url="https://test") as client:
+        r = await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        assert r.status_code == 200
+        assert "secure" in r.headers["set-cookie"].lower()
