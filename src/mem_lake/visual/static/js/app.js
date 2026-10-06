@@ -36,6 +36,7 @@ $("#logout-btn").addEventListener("click", async () => {
 
 const views = {
   dashboard: () => import("/static/js/dashboard.js").then((m) => m.render($("#view-root"))),
+  graph: () => import("/static/js/graph.js").then((m) => m.render($("#view-root"))),
 };
 
 let currentCleanup = null;
