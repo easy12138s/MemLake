@@ -9,6 +9,7 @@ import uuid
 
 import httpx
 import pytest
+from sqlalchemy import select
 from starlette.applications import Starlette
 
 from mem_lake.config import Settings
@@ -144,3 +145,91 @@ async def test_list_embedded_node_ids(db_session):
     await db_session.flush()
     assert await list_embedded_node_ids(db_session, node_ids=[a.id, b.id]) == {a.id}
     assert await list_embedded_node_ids(db_session, node_ids=[]) == set()
+
+
+# ============ 端点级（真实 DB，形状断言） ============
+
+async def test_graph_endpoint_requires_session():
+    async with make_client() as client:
+        r = await client.get("/api/graph")
+        assert r.status_code == 401
+
+
+async def test_graph_endpoint_shape():
+    """/api/graph 形状：节点键齐备、正文裁剪 ≤100、边两端均在本页节点集内。"""
+    async with make_client() as client:
+        await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        r = await client.get("/api/graph?limit=100")
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data["truncated"], bool)
+        node_ids = {n["id"] for n in data["nodes"]}
+        for n in data["nodes"]:
+            for key in ("id", "type", "title", "status", "system_id", "project_id",
+                        "requirement_key", "content_preview", "vector_ready"):
+                assert key in n
+            assert isinstance(n["content_preview"], str)
+            assert len(n["content_preview"]) <= 100
+        for e in data["edges"]:
+            assert e["source"] in node_ids
+            assert e["target"] in node_ids
+            assert e["edge_type"]
+
+
+async def test_graph_endpoint_limit_clamped_to_settings():
+    """VISUAL_GRAPH_MAX_NODES 硬顶：limit=5000 静默钳制为 100。"""
+    async with make_client(VISUAL_GRAPH_MAX_NODES=100) as client:
+        await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        r = await client.get("/api/graph?limit=5000")
+        assert r.status_code == 200
+        assert len(r.json()["nodes"]) <= 100
+
+
+async def test_node_detail_endpoint_401_400_404():
+    async with make_client() as client:
+        r = await client.get(f"/api/node/{uuid.uuid4()}")
+        assert r.status_code == 401
+        await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        r = await client.get("/api/node/not-a-uuid")
+        assert r.status_code == 400
+        r = await client.get(f"/api/node/{uuid.uuid4()}")
+        assert r.status_code == 404
+
+
+async def test_node_detail_endpoint_shape(db_session):
+    """取共享库已提交节点做详情形状断言（生产数据不可控，不对邻居数断言）。"""
+    row = (await db_session.execute(
+        select(KnowledgeNode.id)
+        .where(KnowledgeNode.status == "approved")
+        .where(KnowledgeNode.is_deleted == False)  # noqa: E712
+        .limit(1)
+    )).first()
+    assert row is not None
+    async with make_client() as client:
+        await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        r = await client.get(f"/api/node/{row[0]}")
+        assert r.status_code == 200
+        data = r.json()
+        for key in ("id", "type", "title", "status", "content", "properties", "tags",
+                    "version", "created_by", "created_at", "vector_ready",
+                    "edges", "neighbors"):
+            assert key in data
+        assert isinstance(data["vector_ready"], bool)
+        assert isinstance(data["edges"], list)
+        assert isinstance(data["neighbors"], list)
+        for e in data["edges"]:
+            assert data["id"] in (e["source"], e["target"])
+
+
+async def test_systems_endpoint():
+    async with make_client() as client:
+        r = await client.get("/api/systems")
+        assert r.status_code == 401
+        await client.post("/api/login", json={"username": "vu", "password": "vp"})
+        r = await client.get("/api/systems")
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data["systems"], list)
+        for s in data["systems"]:
+            for key in ("id", "name", "description"):
+                assert key in s
