@@ -445,6 +445,35 @@ class AGEGraphStore(GraphStore):
                 edges.append(parsed)
         return edges
 
+    async def incident_edges(
+        self,
+        session: AsyncSession,
+        node_ids: list[uuid.UUID],
+    ) -> list[dict[str, Any]]:
+        """触及集合任一端点的边（一跳邻接查询，/api/graph/tree 数据源）。
+
+        与 subgraph_edges（两端均须在集合内）互补：树视图以需求集合为锚点
+        取一跳关联（需求-资产/需求-需求），资产端点不在集合内也须返回。
+        参数绑定与解析复用 subgraph_edges 的既有模式。
+        """
+        if not node_ids:
+            return []
+        cypher = (
+            "MATCH (n)-[r]->(m) "
+            "WHERE n.id IN $ids OR m.id IN $ids "
+            "RETURN {source: n.id, target: m.id, edge_type: type(r), "
+            "properties: properties(r)} AS e"
+        )
+        rows = await self._exec_cypher(
+            session, cypher, {"ids": [str(i) for i in node_ids]}
+        )
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            parsed = self._parse_agtype(row)
+            if isinstance(parsed, dict) and parsed.get("source") and parsed.get("target"):
+                edges.append(parsed)
+        return edges
+
 
 @lru_cache
 def get_graph_store() -> AGEGraphStore:

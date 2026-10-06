@@ -30,9 +30,7 @@ def make_client(**overrides) -> httpx.AsyncClient:
         **overrides,
     )
     app: Starlette = create_visual_app(settings)
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
 def _node(
@@ -65,8 +63,8 @@ async def test_list_graph_nodes_default_and_status(db_session):
     db_session.add(_node("特测-其他域", system_id=uuid.uuid4()))
     await db_session.flush()
 
-    rows, truncated = await list_graph_nodes(db_session, system_id=sid, limit=10)
-    assert truncated is False
+    rows, total = await list_graph_nodes(db_session, system_id=sid, limit=10)
+    assert total == 1
     assert [r.title for r in rows] == ["特测-生效"]
 
     rows, _ = await list_graph_nodes(db_session, system_id=sid, status="archived", limit=10)
@@ -94,9 +92,7 @@ async def test_list_graph_nodes_type_and_q(db_session):
     )
     await db_session.flush()
 
-    rows, _ = await list_graph_nodes(
-        db_session, system_id=sid, node_types=("CodeSnippet",), limit=10
-    )
+    rows, _ = await list_graph_nodes(db_session, system_id=sid, node_types=("CodeSnippet",), limit=10)
     assert {r.type for r in rows} == {"CodeSnippet"}
 
     rows, _ = await list_graph_nodes(db_session, system_id=sid, q="登录需求特测", limit=10)
@@ -106,15 +102,20 @@ async def test_list_graph_nodes_type_and_q(db_session):
     assert [r.requirement_key for r in rows] == ["ZZQG-0001"]
 
 
-async def test_list_graph_nodes_truncated(db_session):
-    """limit+1 探测截断：2 条 limit=1 → truncated=True、返回 1 条。"""
+async def test_list_graph_nodes_pagination(db_session):
+    """offset/total 分页：2 条 limit=1 → total=2；offset=1 取第二条。"""
     sid = uuid.uuid4()
-    db_session.add(_node("截断A", system_id=sid))
-    db_session.add(_node("截断B", system_id=sid))
+    db_session.add(_node("分页A", system_id=sid))
+    db_session.add(_node("分页B", system_id=sid))
     await db_session.flush()
-    rows, truncated = await list_graph_nodes(db_session, system_id=sid, limit=1)
-    assert truncated is True
+    rows, total = await list_graph_nodes(db_session, system_id=sid, limit=1)
+    assert total == 2
     assert len(rows) == 1
+    rows2, total2 = await list_graph_nodes(db_session, system_id=sid, limit=1, offset=1)
+    assert total2 == 2
+    assert len(rows2) == 1
+    # 稳定排序：两页合起来无遗漏无重复
+    assert {r.title for r in rows + rows2} == {"分页A", "分页B"}
 
 
 async def test_list_graph_nodes_invalid_params(db_session):
@@ -149,6 +150,7 @@ async def test_list_embedded_node_ids(db_session):
 
 # ============ 端点级（真实 DB，形状断言） ============
 
+
 async def test_graph_endpoint_requires_session():
     async with make_client() as client:
         r = await client.get("/api/graph")
@@ -162,11 +164,23 @@ async def test_graph_endpoint_shape():
         r = await client.get("/api/graph?limit=100")
         assert r.status_code == 200
         data = r.json()
-        assert isinstance(data["truncated"], bool)
+        # 分页契约：total（命中总数）/offset/limit 透传
+        assert isinstance(data["total"], int)
+        assert data["limit"] == 100
+        assert data["offset"] == 0
         node_ids = {n["id"] for n in data["nodes"]}
         for n in data["nodes"]:
-            for key in ("id", "type", "title", "status", "system_id", "project_id",
-                        "requirement_key", "content_preview", "vector_ready"):
+            for key in (
+                "id",
+                "type",
+                "title",
+                "status",
+                "system_id",
+                "project_id",
+                "requirement_key",
+                "content_preview",
+                "vector_ready",
+            ):
                 assert key in n
             assert isinstance(n["content_preview"], str)
             assert len(n["content_preview"]) <= 100
@@ -198,21 +212,35 @@ async def test_node_detail_endpoint_401_400_404():
 
 async def test_node_detail_endpoint_shape(db_session):
     """取共享库已提交节点做详情形状断言（生产数据不可控，不对邻居数断言）。"""
-    row = (await db_session.execute(
-        select(KnowledgeNode.id)
-        .where(KnowledgeNode.status == "approved")
-        .where(KnowledgeNode.is_deleted == False)  # noqa: E712
-        .limit(1)
-    )).first()
+    row = (
+        await db_session.execute(
+            select(KnowledgeNode.id)
+            .where(KnowledgeNode.status == "approved")
+            .where(KnowledgeNode.is_deleted == False)  # noqa: E712
+            .limit(1)
+        )
+    ).first()
     assert row is not None
     async with make_client() as client:
         await client.post("/api/login", json={"username": "vu", "password": "vp"})
         r = await client.get(f"/api/node/{row[0]}")
         assert r.status_code == 200
         data = r.json()
-        for key in ("id", "type", "title", "status", "content", "properties", "tags",
-                    "version", "created_by", "created_at", "vector_ready",
-                    "edges", "neighbors"):
+        for key in (
+            "id",
+            "type",
+            "title",
+            "status",
+            "content",
+            "properties",
+            "tags",
+            "version",
+            "created_by",
+            "created_at",
+            "vector_ready",
+            "edges",
+            "neighbors",
+        ):
             assert key in data
         assert isinstance(data["vector_ready"], bool)
         assert isinstance(data["edges"], list)
