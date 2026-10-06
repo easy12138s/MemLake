@@ -13,8 +13,8 @@ ARG EMBEDDING_PROVIDER=local
 ARG DOWNLOAD_MODEL=true
 ARG DOWNLOAD_RERANK_MODEL=true
 
-# 使用清华 PyPI 镜像加速
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# 使用阿里云 PyPI 镜像加速（清华源容器内 IPv6 解析 403，与 Dockerfile.app 同口径）
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple
 
 # ---------------------------------------------------------------------------
 # 依赖安装：remote 模式只装轻量转发栈（httpx），local 模式装 torch + sentence-transformers。
@@ -36,7 +36,7 @@ RUN if [ "$EMBEDDING_PROVIDER" = "remote" ]; then \
         pip install --no-cache-dir --timeout 120 --retries 10 --no-deps "torch>=2.2" \
             --index-url https://download.pytorch.org/whl/cpu \
         && pip install --no-cache-dir --timeout 120 --retries 10 \
-            --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+            --index-url https://mirrors.aliyun.com/pypi/simple \
             sentence-transformers==6.0.0 \
             transformers==5.15.1 \
             fastapi>=0.115.0 \
