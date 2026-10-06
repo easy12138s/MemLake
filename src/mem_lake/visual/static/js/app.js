@@ -7,6 +7,11 @@ export async function api(path, opts = {}) {
   return body;
 }
 
+export function esc(s) {
+  const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return String(s).replace(/[&<>"']/g, (c) => map[c]);
+}
+
 function showLogin() { $("#login-view").classList.remove("hidden"); $("#app-view").classList.add("hidden"); }
 function showApp() { $("#login-view").classList.add("hidden"); $("#app-view").classList.remove("hidden"); }
 
@@ -22,14 +27,39 @@ $("#login-form").addEventListener("submit", async (e) => {
   } catch (err) { $("#login-error").textContent = String(err.message || err); }
 });
 
-$("#logout-btn").addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }); showLogin(); });
+$("#logout-btn").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  cleanupCurrentView();
+  $("#view-root").innerHTML = "";
+  showLogin();
+});
 
-const views = { dashboard: () => import("/static/js/dashboard.js").then((m) => m.render($("#view-root"))) };
+const views = {
+  dashboard: () => import("/static/js/dashboard.js").then((m) => m.render($("#view-root"))),
+};
+
+let currentCleanup = null;
+
+function cleanupCurrentView() {
+  if (currentCleanup) { currentCleanup(); currentCleanup = null; }
+}
+
 async function route() {
   const name = (location.hash || "#/dashboard").replace("#/", "");
   document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === name));
-  await (views[name] || views.dashboard)();
+  const root = $("#view-root");
+  cleanupCurrentView();
+  root.innerHTML = "";
+  try {
+    const result = await (views[name] || views.dashboard)();
+    if (typeof result === "function") currentCleanup = result;
+  } catch (err) {
+    if (String(err.message || err) !== "未认证") {
+      root.innerHTML = `<p class="error">视图加载失败：${esc(String(err.message || err))}</p>`;
+    }
+  }
 }
+
 window.addEventListener("hashchange", route);
 
 async function boot() {

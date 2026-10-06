@@ -13,6 +13,7 @@ COOKIE_NAME = "memlake_visual_session"
 SESSION_TTL_SECONDS = 12 * 3600
 LOCK_MAX_FAILURES = 5
 LOCK_SECONDS = 300
+MAX_TRACKED_IPS = 10_000
 
 
 def _sign(payload: str, secret: str) -> str:
@@ -62,7 +63,15 @@ def check_credentials(
 
 
 class LoginGuard:
-    """进程内按 IP 防爆破：窗口期内连续失败 LOCK_MAX_FAILURES 次锁定 LOCK_SECONDS 秒。"""
+    """进程内按 IP 防爆破：窗口期内连续失败 LOCK_MAX_FAILURES 次锁定 LOCK_SECONDS 秒。
+
+    内存护栏（批次二顺手改进）：
+    - is_locked 探测未知 IP 不留持久键（原实现会插入空列表键，可被海量
+      伪造 IP 探测无限撑大 dict）
+    - register_failure 在达到 MAX_TRACKED_IPS 时先清理过期条目，仍满则
+      逐出最早失败的 IP（伪造海量来源 IP 时防膨胀；代价为被逐出 IP 的
+      计数清零，观测台可接受）
+    """
 
     def __init__(self) -> None:
         self._failures: dict[str, list[float]] = {}
@@ -70,12 +79,29 @@ class LoginGuard:
     def is_locked(self, ip: str, *, now: float | None = None) -> bool:
         now = now if now is not None else time.time()
         fails = [t for t in self._failures.get(ip, []) if now - t < LOCK_SECONDS]
-        self._failures[ip] = fails
+        if fails:
+            self._failures[ip] = fails
+        else:
+            self._failures.pop(ip, None)
         return len(fails) >= LOCK_MAX_FAILURES
 
     def register_failure(self, ip: str, *, now: float | None = None) -> None:
         now = now if now is not None else time.time()
+        if ip not in self._failures and len(self._failures) >= MAX_TRACKED_IPS:
+            self._prune_expired(now)
+        if ip not in self._failures and len(self._failures) >= MAX_TRACKED_IPS:
+            oldest = min(self._failures, key=lambda k: self._failures[k][0])
+            del self._failures[oldest]
         self._failures.setdefault(ip, []).append(now)
 
     def reset(self, ip: str) -> None:
         self._failures.pop(ip, None)
+
+    def _prune_expired(self, now: float) -> None:
+        """清理全部过期失败条目（仅容量触顶时调用，避免 O(n) 常态开销）。"""
+        for ip in list(self._failures):
+            fails = [t for t in self._failures[ip] if now - t < LOCK_SECONDS]
+            if fails:
+                self._failures[ip] = fails
+            else:
+                del self._failures[ip]
