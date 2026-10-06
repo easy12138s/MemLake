@@ -10,7 +10,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from mem_lake.config import Settings, get_settings
-from mem_lake.visual.api import login, logout, me, overview
+from mem_lake.visual.api import graph, login, logout, me, node_detail, overview, systems
 from mem_lake.visual.auth import LoginGuard
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -35,6 +35,9 @@ def create_visual_app(settings: Settings | None = None) -> Starlette:
             Route("/api/logout", logout, methods=["POST"]),
             Route("/api/me", me, methods=["GET"]),
             Route("/api/overview", overview, methods=["GET"]),
+            Route("/api/graph", graph, methods=["GET"]),
+            Route("/api/node/{node_id}", node_detail, methods=["GET"]),
+            Route("/api/systems", systems, methods=["GET"]),
             Mount("/static", StaticFiles(directory=_STATIC_DIR), name="static"),
         ]
     )
