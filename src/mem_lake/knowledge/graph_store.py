@@ -88,3 +88,16 @@ class GraphStore(ABC):
         多条路径到达，保留跳数最小者。遍历为无向，direction 无第一语义，不返回方向。
         供 get_requirement_context 替换 unknown 占位（search.graph.context_traverse）。
         """
+
+    @abstractmethod
+    async def subgraph_edges(
+        self,
+        session: AsyncSession,
+        node_ids: list[uuid.UUID],
+    ) -> list[dict[str, Any]]:
+        """返回 node_ids 集合内部的有向边（两端点均在集合内）。
+
+        每项：{"source": str, "target": str, "edge_type": str, "properties": dict}。
+        source/target 为图节点 id 属性字符串（与 knowledge_node.id 一致）；
+        node_ids 为空返回空列表（不触 AGE）。
+        """

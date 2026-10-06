@@ -587,3 +587,80 @@ class TestReservedEdgePropKeys:
                 edge_type="implements",
                 properties={"to_id": "覆盖端点"},
             )
+
+
+# ============ subgraph_edges：有界子图边查询（可视化批次二尖刺）============
+
+class TestSubgraphEdges:
+    """subgraph_edges 测试：集合内有向边、边界条件与列表绑定规模。"""
+
+    async def test_subgraph_edges_within_set(self, db_session, store):
+        """集合内边全部返回（source/target/edge_type 正确），集合外端点边排除。"""
+        project_id = uuid.uuid4()
+        a, b, c, x = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        for nid, title in ((a, "A"), (b, "B"), (c, "C"), (x, "X")):
+            await store.add_node(
+                db_session, nid, "Requirement", _props(nid, project_id, title)
+            )
+        await store.add_edge(db_session, a, b, "relates_to", {"created_by": "t"})
+        await store.add_edge(db_session, b, c, "relates_to", {})
+        await store.add_edge(db_session, x, a, "relates_to", {})  # x 在集合外
+        edges = await store.subgraph_edges(db_session, [a, b, c])
+        assert {(e["source"], e["target"]) for e in edges} == {
+            (str(a), str(b)),
+            (str(b), str(c)),
+        }
+        for e in edges:
+            assert e["edge_type"] == "relates_to"
+            assert isinstance(e["properties"], dict)
+
+    async def test_subgraph_edges_direction_preserved(self, db_session, store):
+        """有向语义：a->b 仅以 source=a, target=b 出现一次。"""
+        project_id = uuid.uuid4()
+        a, b = uuid.uuid4(), uuid.uuid4()
+        await store.add_node(db_session, a, "Requirement", _props(a, project_id, "A"))
+        await store.add_node(db_session, b, "Requirement", _props(b, project_id, "B"))
+        await store.add_edge(db_session, a, b, "relates_to", {})
+        edges = await store.subgraph_edges(db_session, [a, b])
+        assert len(edges) == 1
+        assert edges[0]["source"] == str(a)
+        assert edges[0]["target"] == str(b)
+
+    async def test_subgraph_edges_properties_carried(self, db_session, store):
+        """边属性透传（properties(r) 路径）。"""
+        project_id = uuid.uuid4()
+        a, b = uuid.uuid4(), uuid.uuid4()
+        await store.add_node(db_session, a, "Requirement", _props(a, project_id, "A"))
+        await store.add_node(db_session, b, "Requirement", _props(b, project_id, "B"))
+        await store.add_edge(db_session, a, b, "relates_to", {"created_by": "pm-1"})
+        edges = await store.subgraph_edges(db_session, [a, b])
+        assert len(edges) == 1
+        assert edges[0]["properties"] == {"created_by": "pm-1"}
+
+    async def test_subgraph_edges_empty_ids(self, db_session, store):
+        """空列表短路返回，不触 AGE。"""
+        assert await store.subgraph_edges(db_session, []) == []
+
+    async def test_subgraph_edges_no_edges(self, db_session, store):
+        """集合内节点间无边：返回空。"""
+        project_id = uuid.uuid4()
+        a, b = uuid.uuid4(), uuid.uuid4()
+        await store.add_node(db_session, a, "Requirement", _props(a, project_id, "A"))
+        await store.add_node(db_session, b, "Requirement", _props(b, project_id, "B"))
+        assert await store.subgraph_edges(db_session, [a, b]) == []
+
+    async def test_subgraph_edges_unknown_ids(self, db_session, store):
+        """全部为不存在的 id：返回空（IN 匹配 0 行，非报错）。"""
+        edges = await store.subgraph_edges(db_session, [uuid.uuid4(), uuid.uuid4()])
+        assert edges == []
+
+    async def test_subgraph_edges_large_id_list(self, db_session, store):
+        """1000 元素列表（VISUAL_GRAPH_MAX_NODES 硬顶规模）绑定可行——尖刺核心断言。"""
+        project_id = uuid.uuid4()
+        a, b = uuid.uuid4(), uuid.uuid4()
+        await store.add_node(db_session, a, "Requirement", _props(a, project_id, "A"))
+        await store.add_node(db_session, b, "Requirement", _props(b, project_id, "B"))
+        await store.add_edge(db_session, a, b, "relates_to", {})
+        ids = [a, b] + [uuid.uuid4() for _ in range(998)]
+        edges = await store.subgraph_edges(db_session, ids)
+        assert {(e["source"], e["target"]) for e in edges} == {(str(a), str(b))}
