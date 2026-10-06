@@ -23,7 +23,7 @@ import re
 import uuid
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, delete, func, select, text
+from sqlalchemy import ColumnElement, Select, delete, func, or_, select, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,13 +79,13 @@ async def _node_write_audit_detail(
         "node_type": node.type,
         "title": node.title,
         "version": node.version,
-        "vector_generated": await _node_has_embedding(session, node.id),
+        "vector_generated": await node_has_embedding(session, node.id),
         "system_id": str(node.system_id) if node.system_id else None,
     }
 
 
-async def _node_has_embedding(session: AsyncSession, node_id: uuid.UUID) -> bool:
-    """判断节点是否已有 facet 向量记录（以记录存在性判定）。"""
+async def node_has_embedding(session: AsyncSession, node_id: uuid.UUID) -> bool:
+    """判断节点是否已有 facet 向量记录（以记录存在性判定；审计详情与可视化详情页共用）。"""
     result = await session.execute(
         select(NodeEmbedding.id).where(NodeEmbedding.node_id == node_id).limit(1)
     )
@@ -847,6 +847,66 @@ async def count_system_mounts(session: AsyncSession) -> int:
     """system_project 挂载记录总数（可视化总览用，只读）。"""
     result = await session.execute(select(func.count()).select_from(SystemProject))
     return int(result.scalar() or 0)
+
+
+async def list_embedded_node_ids(
+    session: AsyncSession, *, node_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """批量返回已有 facet 向量记录的节点 id（可视化图页 vector_ready 标记用）。"""
+    if not node_ids:
+        return set()
+    result = await session.execute(
+        select(NodeEmbedding.node_id).where(NodeEmbedding.node_id.in_(node_ids))
+    )
+    return {row[0] for row in result.all()}
+
+
+async def list_graph_nodes(
+    session: AsyncSession,
+    *,
+    system_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
+    node_types: tuple[str, ...] | None = None,
+    status: str | None = "approved",
+    q: str | None = None,
+    limit: int = 500,
+) -> tuple[list[KnowledgeNode], bool]:
+    """图可视化节点页查询（可视化控制台 /api/graph 数据源，只读）。
+
+    - 复用 FilterSpec 编译（node_types 白名单校验随其 __post_init__ 抛错）
+    - status 口径（archived 即软删除标记，两键等价）：approved（默认，不含
+      软删除）/ archived（exclude_deleted=False）/ None（全部状态含软删除）
+    - q：title / requirement_key ILIKE 模糊匹配
+    - created_at 倒序 + id 倒序（稳定序），取 limit+1 探测截断
+    - 返回 (rows[:limit], truncated)；不 commit
+    """
+    if status is not None and status not in ("approved", "archived"):
+        raise ValueError(f"非法 status: {status!r}，合法值: approved/archived/None")
+    spec = FilterSpec(
+        system_id=system_id,
+        project_id=project_id,
+        node_types=node_types,
+        status=status or "",
+        exclude_deleted=status != "archived" and status is not None,
+    )
+    clauses = compile_sqlalchemy(spec)
+    if q:
+        like = f"%{q}%"
+        clauses.append(
+            or_(
+                KnowledgeNode.title.ilike(like),
+                KnowledgeNode.requirement_key.ilike(like),
+            )
+        )
+    stmt = (
+        select(KnowledgeNode)
+        .where(*clauses)
+        .order_by(KnowledgeNode.created_at.desc(), KnowledgeNode.id.desc())
+        .limit(limit + 1)
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    truncated = len(rows) > limit
+    return rows[:limit], truncated
 
 
 async def get_system_project_ids(
