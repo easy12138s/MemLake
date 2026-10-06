@@ -1,6 +1,7 @@
 """可视化控制台只读 API 端点（login/logout/me；overview 见后续任务）。"""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import httpx
@@ -8,7 +9,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from mem_lake.approval.repository import count_pending_batches
-from mem_lake.auth.service import get_access_key_stats
+from mem_lake.audit.service import ActorUsageStats, get_actor_usage_stats
+from mem_lake.auth.models import AccessKey
+from mem_lake.auth.service import get_access_key_stats, get_access_key_summary, list_access_keys
 from mem_lake.config import get_settings
 from mem_lake.gateway.background_tasks import get_task_status_counts
 from mem_lake.gateway.dependencies import readonly_session
@@ -21,6 +24,7 @@ from mem_lake.knowledge.repository import (
     count_system_mounts,
     get_node,
     get_nodes_by_ids,
+    get_project_profiles_by_ids,
     list_embedded_node_ids,
     list_graph_nodes,
     list_systems,
@@ -152,9 +156,7 @@ def _graph_params(request: Request) -> dict[str, Any]:
                 raise ValueError(f"非法 {name}") from e
     types_raw = request.query_params.get("types", "")
     if types_raw:
-        params["node_types"] = tuple(
-            t.strip() for t in types_raw.split(",") if t.strip()
-        )
+        params["node_types"] = tuple(t.strip() for t in types_raw.split(",") if t.strip())
     status_raw = request.query_params.get("status", "approved")
     if status_raw not in ("approved", "archived", "all"):
         raise ValueError("非法 status，合法值: approved/archived/all")
@@ -167,6 +169,13 @@ def _graph_params(request: Request) -> dict[str, Any]:
     except ValueError as e:
         raise ValueError("非法 limit") from e
     params["limit"] = max(1, min(limit, settings.VISUAL_GRAPH_MAX_NODES))
+    try:
+        offset = int(request.query_params.get("offset", "0"))
+    except ValueError as e:
+        raise ValueError("非法 offset") from e
+    if offset < 0:
+        raise ValueError("非法 offset（须 >= 0）")
+    params["offset"] = offset
     return params
 
 
@@ -186,19 +195,15 @@ def _graph_node_payload(node: KnowledgeNode, embedded: set[uuid.UUID]) -> dict[s
 
 
 async def graph(request: Request) -> JSONResponse:
-    """网图数据：nodes + edges + truncated（会话保护，只读）。"""
+    """网图数据：nodes + edges + 分页信息（会话保护，只读）。"""
     if session_user(request) is None:
         return JSONResponse({"error": "未认证"}, status_code=401)
     try:
         params = _graph_params(request)
         async with readonly_session() as session:
-            rows, truncated = await list_graph_nodes(session, **params)
+            rows, total = await list_graph_nodes(session, **params)
             ids = [row.id for row in rows]
-            embedded: set[uuid.UUID] = (
-                await list_embedded_node_ids(session, node_ids=ids)
-                if ids
-                else set()
-            )
+            embedded: set[uuid.UUID] = await list_embedded_node_ids(session, node_ids=ids) if ids else set()
             edges = await get_graph_store().subgraph_edges(session, ids)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -206,7 +211,128 @@ async def graph(request: Request) -> JSONResponse:
         {
             "nodes": [_graph_node_payload(row, embedded) for row in rows],
             "edges": edges,
-            "truncated": truncated,
+            # 分页导航信息：total 命中总数、offset/limit 当前窗口（limit+1 探测
+            # 截断的旧语义由 total 取代，前端据 total 计算总页数）
+            "total": total,
+            "offset": params["offset"],
+            "limit": params["limit"],
+        }
+    )
+
+
+async def graph_tree(request: Request) -> JSONResponse:
+    """列表视图树数据：需求为顶点 + 一跳关联资产 + 项目标题桶（会话保护，只读）。
+
+    与 /api/graph 的差异：边为「本页需求的一跳邻接」，资产不受网图单页上限
+    截断（需求分页、资产随需求全量带回），供前端按 系统域→项目→需求 组树。
+    """
+    if session_user(request) is None:
+        return JSONResponse({"error": "未认证"}, status_code=401)
+    try:
+        params = _graph_params(request)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    # 树模式每页为「需求条数」，密度高于网图节点数，上限独立收敛
+    req_limit = min(params["limit"], 200)
+    async with readonly_session() as session:
+        reqs, total = await list_graph_nodes(
+            session,
+            system_id=params.get("system_id"),
+            project_id=params.get("project_id"),
+            node_types=("Requirement",),
+            status=params.get("status"),
+            q=params.get("q"),
+            limit=req_limit,
+            offset=params["offset"],
+        )
+        req_ids = [r.id for r in reqs]
+        if not req_ids:
+            return JSONResponse(
+                {
+                    "requirements": [],
+                    "assets": [],
+                    "links": [],
+                    "projects": [],
+                    "total": total,
+                    "offset": params["offset"],
+                    "limit": req_limit,
+                }
+            )
+        # 一跳邻接（任一端是本页需求即可）：树视图要的是需求→资产边，
+        # 资产端不在需求集合内，不能用两端均在集合内的 subgraph_edges
+        edges = await get_graph_store().incident_edges(session, req_ids)
+        req_id_strs = {str(r.id) for r in reqs}
+        candidate_links: list[dict[str, Any]] = []
+        asset_ids: set[uuid.UUID] = set()
+        for edge in edges:
+            src, dst = edge["source"], edge["target"]
+            if src not in req_id_strs and dst not in req_id_strs:
+                continue  # 防御：incident 语义下不应出现
+            candidate_links.append(
+                {"source": src, "target": dst, "edge_type": edge["edge_type"]}
+            )
+            other = dst if src in req_id_strs else src
+            try:
+                asset_ids.add(uuid.UUID(other))
+            except ValueError:
+                continue
+        rows = (
+            await get_nodes_by_ids(
+                session, node_ids=list(asset_ids), status=None, include_deleted=True
+            )
+            if asset_ids
+            else []
+        )
+        # 悬空边过滤：AGE 为投影非真相源，对端在 PG 不可见（漂移）的边不呈现
+        found_ids = {str(row.id) for row in rows}
+        links = [
+            link
+            for link in candidate_links
+            if (link["source"] if link["target"] in req_id_strs else link["target"]) in found_ids
+        ]
+        assets = [
+            {
+                "id": str(row.id),
+                "type": row.type,
+                "title": row.title,
+                "status": row.status,
+                "project_id": str(row.project_id) if row.project_id else None,
+            }
+            for row in rows
+            if row.type != "ProjectProfile"
+        ]
+        # 项目标题桶：project_id 是业务外键（非节点主键），
+        # 经 ProjectProfile.project_id 锚点回查（不依赖 AGE 边——归属在 PG 字段）
+        biz_project_ids = list({r.project_id for r in reqs if r.project_id})
+        proj_rows = await get_project_profiles_by_ids(
+            session, project_ids=biz_project_ids
+        )
+        projects = [
+            # 前端按 project_id 建桶：id 字段返回业务 project_id（分组键）
+            {"id": str(row.project_id), "title": row.title}
+            for row in proj_rows
+            if row.project_id is not None
+        ]
+    return JSONResponse(
+        {
+            "requirements": [
+                {
+                    "id": str(r.id),
+                    "title": r.title,
+                    "status": r.status,
+                    "requirement_key": r.requirement_key,
+                    "system_id": str(r.system_id) if r.system_id else None,
+                    "project_id": str(r.project_id) if r.project_id else None,
+                    "created_at": r.created_at.isoformat(),
+                }
+                for r in reqs
+            ],
+            "assets": assets,
+            "links": links,
+            "projects": projects,
+            "total": total,
+            "offset": params["offset"],
+            "limit": req_limit,
         }
     )
 
@@ -235,9 +361,7 @@ async def node_detail(request: Request) -> JSONResponse:
             except (TypeError, ValueError):
                 continue
         # 邻居信息以 PG 为真相源（图投影非真相源）：批量回查补 status/title
-        rows = await get_nodes_by_ids(
-            session, node_ids=nb_ids, status=None, include_deleted=True
-        )
+        rows = await get_nodes_by_ids(session, node_ids=nb_ids, status=None, include_deleted=True)
         neighbors = [
             {
                 "id": str(row.id),
@@ -252,11 +376,7 @@ async def node_detail(request: Request) -> JSONResponse:
         # 关联边 = {node} ∪ 邻居 子集中触及本节点的边
         all_edges = await store.subgraph_edges(session, [node_id, *nb_ids])
         node_id_str = str(node_id)
-        edges = [
-            e
-            for e in all_edges
-            if e["source"] == node_id_str or e["target"] == node_id_str
-        ]
+        edges = [e for e in all_edges if e["source"] == node_id_str or e["target"] == node_id_str]
     return JSONResponse(
         {
             "id": str(node.id),
@@ -285,11 +405,129 @@ async def systems(request: Request) -> JSONResponse:
         return JSONResponse({"error": "未认证"}, status_code=401)
     async with readonly_session() as session:
         rows = await list_systems(session)
+    return JSONResponse({"systems": [{"id": str(s.id), "name": s.name, "description": s.description} for s in rows]})
+
+
+def build_keys_payload(
+    page: list[AccessKey],
+    summary: dict[str, int],
+    system_names: dict[uuid.UUID, tuple[str, str | None]],
+    project_names: dict[uuid.UUID, str],
+    usage: dict[str, ActorUsageStats],
+    *,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    """组装用户页载荷（纯函数，可单测）：Key 列表 + scope 名称 + 使用统计 + 汇总。"""
+    keys: list[dict[str, Any]] = []
+    for k in page:
+        scope = k.project_scope or {}
+        systems: list[dict[str, str | None]] = []
+        for raw in scope.get("systems") or []:
+            try:
+                sid = uuid.UUID(str(raw))
+            except (ValueError, TypeError):
+                continue
+            name, code = system_names.get(sid, (None, None))
+            systems.append({"id": str(sid), "name": name, "code": code})
+        projects: list[dict[str, str | None]] = []
+        for raw in scope.get("projects") or []:
+            try:
+                pid = uuid.UUID(str(raw))
+            except (ValueError, TypeError):
+                continue
+            projects.append({"id": str(pid), "name": project_names.get(pid)})
+        u = usage.get(str(k.id))
+        keys.append(
+            {
+                "key_id": str(k.id),
+                "role": k.role,
+                "status": k.status,
+                "lax_mode": k.lax_mode,
+                "created_at": k.created_at.isoformat(),
+                "revoked_at": k.revoked_at.isoformat() if k.revoked_at else None,
+                "scope_unlimited": k.role == "admin",
+                "scope": {"systems": systems, "projects": projects},
+                "usage": {
+                    "total_calls": u.total_calls if u else 0,
+                    "error_calls": u.error_calls if u else 0,
+                    "last_used_at": (
+                        u.last_used_at.isoformat() if u and u.last_used_at else None
+                    ),
+                },
+            }
+        )
+    return {
+        "total": summary["total"],
+        "limit": limit,
+        "offset": offset,
+        "summary": summary,
+        "keys": keys,
+    }
+
+
+async def keys(request: Request) -> JSONResponse:
+    """用户 / Access Key 使用情况：列表 + scope 名称 + 使用统计（会话保护，只读，后端筛分页）。"""
+    if session_user(request) is None:
+        return JSONResponse({"error": "未认证"}, status_code=401)
+
+    role = request.query_params.get("role")
+    if role is not None and role not in ("admin", "pm", "dev"):
+        return JSONResponse({"error": "非法 role，合法值: admin/pm/dev"}, status_code=400)
+    status = request.query_params.get("status")
+    if status is not None and status not in ("active", "revoked"):
+        return JSONResponse({"error": "非法 status，合法值: active/revoked"}, status_code=400)
+
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+        offset = int(request.query_params.get("offset", "0"))
+    except ValueError:
+        return JSONResponse({"error": "非法 limit/offset（整数）"}, status_code=400)
+    if not 1 <= limit <= 200:
+        return JSONResponse({"error": "limit 须在 1..200"}, status_code=400)
+    if offset < 0:
+        return JSONResponse({"error": "offset 须 >= 0"}, status_code=400)
+
+    active_since = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=24)
+
+    async with readonly_session() as session:
+        summary = await get_access_key_summary(
+            session, role=role, status=status, active_since=active_since
+        )
+        page = await list_access_keys(
+            session, role=role, status=status, limit=limit, offset=offset
+        )
+        usage = await get_actor_usage_stats(session)
+
+        systems = await list_systems(session)
+        system_names = {s.id: (s.name, s.code) for s in systems}
+
+        project_ids: set[uuid.UUID] = set()
+        for k in page:
+            for raw in (k.project_scope or {}).get("projects") or []:
+                try:
+                    project_ids.add(uuid.UUID(str(raw)))
+                except (ValueError, TypeError):
+                    continue
+        project_names: dict[uuid.UUID, str] = {}
+        if project_ids:
+            proj_rows = await get_project_profiles_by_ids(
+                session, project_ids=list(project_ids)
+            )
+            project_names = {
+                row.project_id: row.title
+                for row in proj_rows
+                if row.project_id is not None
+            }
+
     return JSONResponse(
-        {
-            "systems": [
-                {"id": str(s.id), "name": s.name, "description": s.description}
-                for s in rows
-            ]
-        }
+        build_keys_payload(
+            page,
+            summary,
+            system_names,
+            project_names,
+            usage,
+            limit=limit,
+            offset=offset,
+        )
     )

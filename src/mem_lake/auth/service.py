@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import bindparam, func, select, text, update
+from sqlalchemy import DateTime, String, bindparam, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
@@ -210,6 +210,8 @@ async def list_access_keys(
     role: str | None = None,
     status: str | None = None,
     lax_mode: bool | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[AccessKey]:
     """按条件列出 Access Key（不含 key_hash，避免泄漏）。
 
@@ -217,6 +219,7 @@ async def list_access_keys(
     - role=None：不过滤角色
     - status=None：返回所有状态（active + revoked）
     - lax_mode=None：不过滤审核模式；True/False 时按宽松/严格过滤
+    - limit=None：全量返回；传入则分页（可视化用户页分页用）
     - 返回的 AccessKey 对象的 key_hash 字段为 None（通过 defer 排除）
 
     不 commit。
@@ -230,8 +233,54 @@ async def list_access_keys(
         stmt = stmt.where(AccessKey.lax_mode == lax_mode)
 
     stmt = stmt.order_by(AccessKey.created_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def get_access_key_summary(
+    session: AsyncSession,
+    *,
+    role: str | None = None,
+    status: str | None = None,
+    active_since: datetime,
+) -> dict[str, int]:
+    """满足 role/status 筛选的 Access Key 汇总 {total, active, revoked, active_24h}。
+
+    - total 同时作为分页总数（与 list_access_keys 同过滤口径）
+    - active_24h 统计近 24h 内有 tool_call 审计记录的 Key 数
+      （audit_log.actor 与 access_key.id 的字符串形式对应）
+    - active_since 为 naive UTC 时间（对齐 audit_log.created_at 无时区列）
+
+    不 commit。
+    """
+    result = await session.execute(
+        text(
+            """
+            SELECT
+                count(*) AS total,
+                count(*) FILTER (WHERE status = 'active') AS active,
+                count(*) FILTER (WHERE status = 'revoked') AS revoked,
+                count(*) FILTER (WHERE EXISTS (
+                    SELECT 1 FROM audit_log a
+                    WHERE a.action = 'tool_call'
+                      AND a.actor = access_key.id::text
+                      AND a.created_at >= :active_since
+                )) AS active_24h
+            FROM access_key
+            WHERE (:role IS NULL OR role = :role)
+              AND (:status IS NULL OR status = :status)
+            """
+        ).bindparams(
+            # 显式类型：None 值下 psycopg 需据此推断参数类型，避免 AmbiguousParameter
+            bindparam("role", role, type_=String()),
+            bindparam("status", status, type_=String()),
+            bindparam("active_since", active_since, type_=DateTime()),
+        )
+    )
+    row = result.mappings().one()
+    return {key: int(value) for key, value in dict(row).items()}
 
 
 async def _fetch_access_keys(

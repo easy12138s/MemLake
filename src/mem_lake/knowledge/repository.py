@@ -870,15 +870,17 @@ async def list_graph_nodes(
     status: str | None = "approved",
     q: str | None = None,
     limit: int = 500,
-) -> tuple[list[KnowledgeNode], bool]:
+    offset: int = 0,
+) -> tuple[list[KnowledgeNode], int]:
     """图可视化节点页查询（可视化控制台 /api/graph 数据源，只读）。
 
     - 复用 FilterSpec 编译（node_types 白名单校验随其 __post_init__ 抛错）
     - status 口径（archived 即软删除标记，两键等价）：approved（默认，不含
       软删除）/ archived（exclude_deleted=False）/ None（全部状态含软删除）
     - q：title / requirement_key ILIKE 模糊匹配
-    - created_at 倒序 + id 倒序（稳定序），取 limit+1 探测截断
-    - 返回 (rows[:limit], truncated)；不 commit
+    - created_at 倒序 + id 倒序（稳定序），limit/offset 分页遍历全量
+      （可视化页码导航用，突破单页上限）
+    - 返回 (rows, total)：total 为命中总数（count 查询，前端算总页数）；不 commit
     """
     if status is not None and status not in ("approved", "archived"):
         raise ValueError(f"非法 status: {status!r}，合法值: approved/archived/None")
@@ -898,15 +900,40 @@ async def list_graph_nodes(
                 KnowledgeNode.requirement_key.ilike(like),
             )
         )
+    total = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(KnowledgeNode).where(*clauses)
+            )
+        ).scalar_one()
+    )
     stmt = (
         select(KnowledgeNode)
         .where(*clauses)
         .order_by(KnowledgeNode.created_at.desc(), KnowledgeNode.id.desc())
-        .limit(limit + 1)
+        .limit(limit)
+        .offset(offset)
     )
     rows = list((await session.execute(stmt)).scalars().all())
-    truncated = len(rows) > limit
-    return rows[:limit], truncated
+    return rows, total
+
+
+async def get_project_profiles_by_ids(
+    session: AsyncSession, *, project_ids: list[uuid.UUID]
+) -> list[KnowledgeNode]:
+    """按业务 project_id 批量取项目档案节点（可视化列表视图项目标题桶）。
+
+    语义注意：project_id 是业务外键（system_project 挂载/资产归属维度），
+    非 ProjectProfile 节点主键；ProjectProfile.project_id 才是关联锚点。
+    同一 project_id 理论上唯一对应一个档案节点，重复时由调用方取先到者。
+    """
+    if not project_ids:
+        return []
+    stmt = select(KnowledgeNode).where(
+        KnowledgeNode.type == "ProjectProfile",
+        KnowledgeNode.project_id.in_(project_ids),
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def get_system_project_ids(

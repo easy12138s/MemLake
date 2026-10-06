@@ -4,28 +4,140 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MemLake 控制台</title>
+<!-- 设计 token（memlake-visual-redesign.design 原样落地） -->
+<style id="theme-vars">
+:root {
+  --ml-background: #0b0c0f;
+  --ml-foreground: #f0f1f5;
+  --ml-card: #14161c;
+  --ml-card-foreground: #f0f1f5;
+  --ml-popover: #1c1e27;
+  --ml-popover-foreground: #f0f1f5;
+  --ml-primary: #2b7fff;
+  --ml-primary-foreground: #ffffff;
+  --ml-muted: #1c1e27;
+  --ml-muted-foreground: #9ca3af;
+  --ml-border: #272a35;
+  --ml-input: #272a35;
+  --ml-ring: #2b7fff;
+  --ml-radius-sm: 4px;
+  --ml-radius-md: 8px;
+  --ml-radius-lg: 12px;
+  --ml-surface: #14161c;
+  --ml-surface-2: #1c1e27;
+  --ml-surface-3: #252836;
+  --ml-ink: #f0f1f5;
+  --ml-ink-2: #a0a8b8;
+  --ml-ink-3: #6e7681;
+  --ml-line: #272a35;
+  --ml-line-subtle: #1c1e27;
+  --ml-brand: #2b7fff;
+  --ml-brand-ink: #ffffff;
+  --ml-brand-subtle: rgba(43, 127, 255, 0.12);
+  --ml-state-success: #22c55e;
+  --ml-state-warning: #f59e0b;
+  --ml-state-error: #ef4444;
+  --ml-state-info: #3b82f6;
+  --ml-viz-projectprofile: #5470c6;
+  --ml-viz-requirement: #91cc75;
+  --ml-viz-codesnippet: #fac858;
+  --ml-viz-solution: #ee6666;
+  --ml-viz-designintent: #73c0de;
+  --ml-viz-decision: #3ba272;
+  --ml-viz-pitfall: #fc8451;
+  --ml-shadow-dropdown: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 1px rgba(0, 0, 0, 0.15);
+  --ml-shadow-popover: 0 8px 24px -8px rgba(0, 0, 0, 0.45);
+  --ml-shadow-modal: 0 24px 60px -20px rgba(0, 0, 0, 0.6);
+  --ml-font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --ml-font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+}
+</style>
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/vendor/tailwindcss-browser.min.js"></script>
+<script src="/static/vendor/lucide.min.js"></script>
+<style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--ml-background);
+    --color-foreground: var(--ml-foreground);
+    --color-card: var(--ml-card);
+    --color-card-foreground: var(--ml-card-foreground);
+    --color-popover: var(--ml-popover);
+    --color-popover-foreground: var(--ml-popover-foreground);
+    --color-primary: var(--ml-primary);
+    --color-primary-foreground: var(--ml-primary-foreground);
+    --color-muted: var(--ml-muted);
+    --color-muted-foreground: var(--ml-muted-foreground);
+    --color-border: var(--ml-border);
+    --color-input: var(--ml-input);
+    --color-ring: var(--ml-ring);
+    --radius-sm: var(--ml-radius-sm);
+    --radius-md: var(--ml-radius-md);
+    --radius-lg: var(--ml-radius-lg);
+    --font-sans: var(--ml-font-sans);
+    --font-mono: var(--ml-font-mono);
+  }
+  @layer base {
+    body { @apply bg-background text-foreground font-sans antialiased; }
+  }
+  /* 视图切换时的隐藏与全屏（graph 页画布占满剩余高度；ID 选择器覆盖 utility 的 padding/max-width） */
+  #view-root.fullscreen {
+    height: calc(100vh - 64px); margin-top: 64px; padding: 0; max-width: none;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+</style>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<div id="login-view" class="login hidden">
-  <form id="login-form" class="login-card">
-    <h2>MemLake 可视化控制台</h2>
-    <input id="login-username" placeholder="账号" autocomplete="username" required>
-    <input id="login-password" type="password" placeholder="口令" autocomplete="current-password" required>
-    <button type="submit">登录</button>
-    <p id="login-error" class="error"></p>
-  </form>
+<div id="login-view" class="hidden relative flex min-h-screen items-center justify-center px-4 py-8">
+  <div class="fixed inset-0 flex items-center justify-center pointer-events-none z-0">
+    <div class="w-[560px] h-[560px] rounded-full bg-primary/10 blur-[100px]"></div>
+  </div>
+  <section class="relative z-10 w-full max-w-[380px] bg-card border border-border rounded-lg p-6 sm:p-8 shadow-[var(--ml-shadow-popover)]">
+    <div class="flex items-center justify-center gap-3 mb-8">
+      <i data-lucide="hexagon" class="w-8 h-8 text-primary"></i>
+      <span class="text-xl font-semibold text-foreground tracking-tight">MemLake</span>
+    </div>
+    <form id="login-form" class="space-y-5">
+      <div class="space-y-2">
+        <label for="login-username" class="block text-sm font-medium text-foreground">用户名</label>
+        <input id="login-username" type="text" autocomplete="username" placeholder="请输入用户名"
+               class="w-full px-3 py-2.5 bg-input border border-border rounded-md text-foreground placeholder:text-[var(--ml-ink-3)] focus:outline-none focus:ring-2 focus:ring-ring transition-shadow">
+      </div>
+      <div class="space-y-2">
+        <label for="login-password" class="block text-sm font-medium text-foreground">密码</label>
+        <input id="login-password" type="password" autocomplete="current-password" placeholder="请输入密码"
+               class="w-full px-3 py-2.5 bg-input border border-border rounded-md text-foreground placeholder:text-[var(--ml-ink-3)] focus:outline-none focus:ring-2 focus:ring-ring transition-shadow">
+      </div>
+      <button id="login-submit" type="submit"
+              class="w-full mt-2 bg-primary text-primary-foreground font-medium py-2.5 rounded-md transition-transform hover:-translate-y-px focus:outline-none focus:ring-2 focus:ring-ring">登录</button>
+      <p id="login-error" class="hidden text-sm text-[var(--ml-state-error)] text-center" role="alert"></p>
+    </form>
+  </section>
 </div>
-<div id="app-view" class="app hidden">
-  <aside class="nav">
-    <h1>MemLake</h1>
-    <a href="#/dashboard" data-view="dashboard">总览</a>
-    <a href="#/graph" data-view="graph">知识图谱</a>
-    <button id="logout-btn" class="logout">登出</button>
-  </aside>
-  <main id="view-root"></main>
+<div id="app-view" class="hidden">
+  <nav id="top-nav" class="fixed top-0 left-0 right-0 z-50 h-16 flex items-center justify-between px-6 bg-[var(--ml-surface)]/95 backdrop-blur border-b border-[var(--ml-line)]">
+    <div class="flex items-center gap-8">
+      <a href="#/dashboard" class="flex items-center gap-2.5 text-[var(--ml-brand)]">
+        <i data-lucide="hexagon" class="w-6 h-6"></i>
+        <span class="text-lg font-semibold text-[var(--ml-ink)]">MemLake</span>
+      </a>
+      <div class="flex items-center gap-1">
+        <a href="#/dashboard" data-view="dashboard" class="px-3 py-1.5 rounded-md text-sm font-medium text-[var(--ml-ink-2)] hover:text-[var(--ml-ink)] transition-colors">总览</a>
+        <a href="#/graph" data-view="graph" class="px-3 py-1.5 rounded-md text-sm font-medium text-[var(--ml-ink-2)] hover:text-[var(--ml-ink)] transition-colors">知识图谱</a>
+        <a href="#/monitor" data-view="monitor" class="px-3 py-1.5 rounded-md text-sm font-medium text-[var(--ml-ink-2)] hover:text-[var(--ml-ink)] transition-colors">监控</a>
+        <a href="#/keys" data-view="keys" class="px-3 py-1.5 rounded-md text-sm font-medium text-[var(--ml-ink-2)] hover:text-[var(--ml-ink)] transition-colors">用户</a>
+      </div>
+    </div>
+    <div class="flex items-center gap-4">
+      <span id="nav-user" class="text-sm text-[var(--ml-ink-2)]"></span>
+      <button id="logout-btn" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-[var(--ml-ink-2)] hover:text-[var(--ml-ink)] hover:bg-[var(--ml-surface-2)] transition-colors">
+        <i data-lucide="log-out" class="w-4 h-4"></i>
+        <span>登出</span>
+      </button>
+    </div>
+  </nav>
+  <main id="view-root" class="px-6 pb-6 pt-[88px] max-w-[1920px] mx-auto w-full"></main>
 </div>
-<script src="/static/vendor/echarts.min.js"></script>
 <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

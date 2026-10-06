@@ -12,18 +12,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-# 使用清华 PyPI 镜像加速（fastmcp 等包体积较大）
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple
+# 使用腾讯 PyPI 镜像加速（2026-10-06 实测：腾讯 ~4.4MB/s vs 阿里云 ~93KB/s，
+# 本机链路对阿里云出口带宽受限；fastmcp/onnxruntime 等包体积较大）
+RUN pip config set global.index-url https://mirrors.cloud.tencent.com/pypi/simple
 
 WORKDIR /app
 COPY pyproject.toml /app/
+# 依赖层：src 置空只触发第三方依赖安装，pyproject 不变则此层长期命中缓存，
+# 代码变更不会导致 fastmcp 等大依赖重新下载（改代码重建从分钟级降到秒级）
+RUN mkdir -p /app/src && pip install --no-cache-dir /app
 COPY src/ /app/src/
 # Alembic 迁移脚本：app 容器启动前执行 alembic upgrade head（FIX-01 迁移机制），
 # 全新库自动建表并登记版本，存量库自动增量迁移；配合 lifespan 内的版本校验。
 COPY alembic.ini /app/
 COPY alembic/ /app/alembic/
 
-# 安装项目（不含 sentence-transformers 可选依赖，app 容器通过 HTTP 调用 embedding 服务）
+# 代码层：依赖已就位，仅重装项目自身（不含 sentence-transformers 可选依赖，
+# app 容器通过 HTTP 调用 embedding 服务）
 RUN pip install --no-cache-dir /app
 
 EXPOSE 8000
