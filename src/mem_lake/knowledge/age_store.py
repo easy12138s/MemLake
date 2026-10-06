@@ -413,6 +413,38 @@ class AGEGraphStore(GraphStore):
             }
         return [v for v in seen.values()]
 
+    async def subgraph_edges(
+        self,
+        session: AsyncSession,
+        node_ids: list[uuid.UUID],
+    ) -> list[dict[str, Any]]:
+        """有界子图边查询：端点 id 列表经 PREPARE/agtype 参数绑定（IN $ids）。
+
+        尖刺验证（2026-10-06 真实库只读探针 + TestSubgraphEdges）：
+        - IN $ids 列表绑定可行（agtype map 内 JSON 数组），1000 元素
+          （VISUAL_GRAPH_MAX_NODES 服务端硬顶规模）实测通过
+        - properties(r) / type(r) 均可在 RETURN map 字面量内使用
+        - 空列表短路返回，不触 AGE
+        有向模式 (n)-[r]->(m) 保留 from/to 方向；集合外端点的边不返回。
+        """
+        if not node_ids:
+            return []
+        cypher = (
+            "MATCH (n)-[r]->(m) "
+            "WHERE n.id IN $ids AND m.id IN $ids "
+            "RETURN {source: n.id, target: m.id, edge_type: type(r), "
+            "properties: properties(r)} AS e"
+        )
+        rows = await self._exec_cypher(
+            session, cypher, {"ids": [str(i) for i in node_ids]}
+        )
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            parsed = self._parse_agtype(row)
+            if isinstance(parsed, dict) and parsed.get("source") and parsed.get("target"):
+                edges.append(parsed)
+        return edges
+
 
 @lru_cache
 def get_graph_store() -> AGEGraphStore:
