@@ -30,3 +30,36 @@ body { font-family: system-ui, -apple-system, "PingFang SC", sans-serif;
 .card b { font-size: 24px; }
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .chart { background: #fff; border-radius: 8px; height: 340px; }
+
+/* ===== 图可视化页（批次二） ===== */
+.graph-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+                 margin-bottom: 12px; }
+.graph-toolbar select, .graph-toolbar input { padding: 4px 8px; border: 1px solid #ccc;
+                 border-radius: 4px; font-size: 13px; background: #fff; }
+.graph-toolbar input { width: 220px; }
+.chips { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; }
+.chips label { font-size: 12px; color: #444; white-space: nowrap; }
+.notice { padding: 8px 12px; margin-bottom: 10px; background: #fff7e6;
+          border: 1px solid #ffd591; border-radius: 4px; color: #ad4e00; }
+.graph-layout { display: flex; gap: 12px; align-items: stretch; }
+.graph-chart { flex: 1 1 auto; height: 70vh; min-height: 480px; background: #fff;
+               border-radius: 8px; }
+.graph-detail { flex: 0 0 320px; width: 320px; max-height: 70vh; overflow-y: auto;
+                background: #fff; border-radius: 8px; padding: 16px; }
+.graph-detail h3 { font-size: 15px; }
+.graph-detail h4 { font-size: 13px; margin: 12px 0 4px; color: #555; }
+.graph-detail pre { white-space: pre-wrap; word-break: break-all; background: #f7f7f7;
+                    padding: 8px; border-radius: 4px; font-size: 12px; }
+.detail-content { max-height: 220px; overflow-y: auto; }
+.tip-preview { max-width: 280px; max-height: 5em; overflow: hidden; color: #666; }
+.link { color: #1890ff; cursor: pointer; }
+.link:hover { text-decoration: underline; }
+.graph-detail ul { list-style: none; padding: 0; }
+.graph-detail li { padding: 3px 0; }
+.tag { display: inline-block; padding: 1px 8px; margin: 2px; background: #e6f4ff;
+       border-radius: 8px; font-size: 12px; }
+.muted { color: #999; font-size: 12px; }
+.graph-detail table { border-collapse: collapse; width: 100%; }
+.graph-detail td { padding: 3px 6px; font-size: 12px; border-bottom: 1px solid #f0f0f0; }
+.loading { color: #999; padding: 16px; }
+.empty { color: #999; padding: 32px; text-align: center; }
