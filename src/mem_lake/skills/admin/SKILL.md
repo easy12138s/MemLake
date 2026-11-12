@@ -108,6 +108,7 @@ version: 1.13.0
 ### 共享类
 - **list_requirements** — 清单式枚举需求（分页+过滤；requirement_key 直查、fields 裁剪）
 - **get_requirement_context** — 查询需求上下文
+- **get_node_info** — 按 node_id 反查归属（project/system/悬浮状态）
 
 > **Admin 专属工具详细参数表和示例见 `admin/REFERENCE.md`；与 PM/Dev 共享工具的参数表见 `pm/REFERENCE.md` 与 `dev/REFERENCE.md`**
 

@@ -43,6 +43,7 @@ def test_pm_tools_exact():
 
     批次三调整（工具面治理）：-get_role_skills（GitHub 分发）-get_project_profile
     （get_project_info 吸收）+list_requirements（清单枚举）。
+    反馈跟进：+get_node_info（归属反查，ISSUE-14）。
     """
     expected = {
         "publish_requirement",
@@ -53,16 +54,19 @@ def test_pm_tools_exact():
         "update_node",
         "list_requirements",
         "get_requirement_context",
+        "get_node_info",
         "get_project_info",
     }
     assert PM_TOOLS == expected
 
 
 def test_dev_tools_exact():
-    """DEV_TOOLS 精确匹配工具名（批次三：-skills/-profile +list_requirements）。"""
+    """DEV_TOOLS 精确匹配工具名（批次三：-skills/-profile +list_requirements；
+    反馈跟进：+get_node_info 归属反查）。"""
     expected = {
         "list_requirements",
         "get_requirement_context",
+        "get_node_info",
         "search_code_snippets",
         "submit_dev_artifacts",
         "update_node",

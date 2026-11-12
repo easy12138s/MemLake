@@ -176,6 +176,28 @@ class RelatedNodeOutput(BaseModel):
     depth: int = Field(description="与起点的跳数距离（1=直接关联）")
 
 
+class NodeInfoOutput(BaseModel):
+    """get_node_info 工具出参（按 node_id 反查归属，ISSUE-14）。"""
+
+    node_id: uuid.UUID = Field(description="查询的节点 ID")
+    found: bool = Field(description="节点是否存在（软删/不存在均为 False）")
+    node_type: str | None = Field(default=None, description="节点类型（found=false 为 null）")
+    title: str | None = Field(default=None, description="节点标题")
+    status: str | None = Field(default=None, description="节点状态")
+    is_deleted: bool | None = Field(default=None, description="是否软删除（found=false 为 null）")
+    project_id: uuid.UUID | None = Field(
+        default=None, description="归属项目 ID（悬浮需求为 null）"
+    )
+    system_id: uuid.UUID | None = Field(
+        default=None, description="归属 system 域 ID（资产类节点为 null）"
+    )
+    requirement_key: str | None = Field(default=None, description="需求主键（非需求为 null）")
+    hint: str | None = Field(
+        default=None,
+        description="found=false 时的排查指引（不存在或已软删的区分口径）",
+    )
+
+
 class RequirementContextOutput(BaseModel):
     """get_requirement_context 工具出参。"""
 
@@ -428,6 +450,51 @@ def register_query_tools(mcp: FastMCP) -> None:
                     requirement=requirement_dict,
                     related_nodes=related,
                     total=len(related),
+                )
+        except (NodeNotFoundError, ValueError) as e:
+            raise to_tool_error(e) from e
+
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
+    async def get_node_info(
+        node_id: uuid.UUID = Field(description="节点 ID"),
+    ) -> NodeInfoOutput:
+        """按 node_id 反查节点归属与状态（ISSUE-14 诊断工具）。
+
+        PM/Dev/Admin 共享。反馈场景：update_node 报「节点不属于本项目」后，
+        无工具回答「这个节点到底属于哪个 project / system、是不是悬浮」。
+        本工具返回归属四元组（project_id / system_id / node_type / status）。
+        权限口径与 get_requirement_context 一致：有项目按项目校验；悬浮需求
+        按 system 校验；两者皆无（防御性）不额外校验。
+        节点不存在或已软删：found=false + hint（不抛错，避免中断排查）。
+        """
+        try:
+            async with readonly_session() as session:
+                try:
+                    node = await get_node(session, node_id)
+                except NodeNotFoundError:
+                    return NodeInfoOutput(
+                        node_id=node_id,
+                        found=False,
+                        hint=(
+                            "节点不存在或已软删（软删节点不返回内容）；"
+                            "若刚写入请确认审批已通过（status=approved）"
+                        ),
+                    )
+                # 权限：有项目按项目；悬浮需求按 system（与 get_requirement_context 同口径）
+                if node.project_id is not None:
+                    validate_project_access(node.project_id)
+                elif node.system_id is not None:
+                    validate_system_access(node.system_id)
+                return NodeInfoOutput(
+                    node_id=node.id,
+                    found=True,
+                    node_type=node.type,
+                    title=node.title,
+                    status=node.status,
+                    is_deleted=node.is_deleted,
+                    project_id=node.project_id,
+                    system_id=node.system_id,
+                    requirement_key=node.requirement_key,
                 )
         except (NodeNotFoundError, ValueError) as e:
             raise to_tool_error(e) from e
