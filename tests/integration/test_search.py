@@ -13,6 +13,7 @@
 
 import uuid
 
+import pytest
 from conftest import mark_node_archived, match_pattern
 
 from mem_lake.knowledge.repository import create_node
@@ -254,6 +255,113 @@ class TestVectorSearch:
         # 相似度应降序排列
         for i in range(len(results) - 1):
             assert results[i].score >= results[i + 1].score
+
+    async def test_vector_search_negative_top_k_raises(
+        self, db_session, vector_searcher_mock
+    ):
+        """top_k < 0 显式抛 ValueError。
+
+        行扫路径若不做校验，sorted()[:负值] 是「去掉末尾」语义（静默返回错误
+        长度），而聚合兜底路径 limit 负值由 PG 报错——两条路径口径必须一致。
+        用 search_by_vector（不经 embedding）验证，mock 客户端即可。
+        """
+        with pytest.raises(ValueError, match="top_k"):
+            await vector_searcher_mock.search_by_vector(
+                db_session, [0.1] * 1024, top_k=-1
+            )
+
+    async def test_vector_row_scan_uses_hnsw_index(
+        self, db_session, graph_store, vector_searcher, knowledge_helpers
+    ):
+        """行扫语句必须走 HNSW 索引（而非全表 Seq Scan + 排序）。
+
+        回归护栏：向量检索慢路径的成因是 group_by 聚合形态使 pgvector HNSW 索引
+        失效（19748 行全表扫 ~0.8-1.1s，且冷 cache 更差）；索引扫仅 ~1-3ms。
+        若查询形态回退（过滤/聚合前置于行扫），EXPLAIN 失去 Index Scan，本用例失败。
+
+        注意（依赖存量数据的护栏）：① 表 <500 行时 planner 不会选索引
+        （无回归意义）→ skip；② literal_binds 编译与生产 parameterized
+        语句的计划细节有差异（explain 仪表化下行数可能不可靠），本用例
+        只断言计划中的索引名与无 Seq Scan，不断言行数。
+        """
+        from sqlalchemy import func, select, text
+
+        from mem_lake.knowledge.models import NodeEmbedding
+        from mem_lake.search.vector import build_hits_statement
+
+        pid, requirement, _, _ = await _seed_three_nodes(
+            db_session, graph_store, vector_searcher._embedding_client, knowledge_helpers
+        )
+
+        total = await db_session.scalar(
+            select(func.count()).select_from(NodeEmbedding)
+        )
+        if total < 500:
+            pytest.skip(f"node_embedding 仅 {total} 行，planner 不会选索引（无回归意义）")
+
+        vec = await db_session.scalar(
+            select(NodeEmbedding.content_vector).where(NodeEmbedding.node_id == requirement.id)
+        )
+        sql = str(
+            build_hits_statement(list(vec), 100).compile(
+                dialect=db_session.bind.dialect, compile_kwargs={"literal_binds": True}
+            )
+        )
+        rows = await db_session.execute(text("EXPLAIN " + sql))
+        plan = "\n".join(r[0] for r in rows)
+        assert "idx_node_embedding_vector" in plan, f"未走 HNSW 索引:\n{plan}"
+        assert "Seq Scan on node_embedding" not in plan, f"行扫退化为全表扫:\n{plan}"
+
+    async def test_vector_search_top_k_with_selective_filter(
+        self, db_session, graph_store, vector_searcher, knowledge_helpers
+    ):
+        """索引行扫 + 后置过滤下的候选饥饿：必须收敛到 top_k 条且不混入噪声。
+
+        场景：目标项目内 6 个节点 + 项目外 20 个与查询更相似的节点。初始行扫窗口
+        大多落在目标项目外时，简单后置过滤会返回不足 top_k 的结果（丢候选 = 丢冲突
+        检测信号）。实现按分诊处理：加档补扫或切聚合精确兜底（_exact_results）——
+        两条机制都保证收敛到 top_k，本用例对最终结果断言（不断言内部路径）。
+        """
+        target_pid = uuid.uuid4()
+        noise_pid = uuid.uuid4()
+
+        for i in range(20):
+            await create_node(
+                db_session,
+                graph_store=graph_store,
+                embedding_client=vector_searcher._embedding_client,
+                project_id=noise_pid,
+                node_type="Requirement",
+                title=f"门诊收费关单与退费流程细节版本{i}",
+                content="门诊收费完成后自动关单，支持退费与欠费处理",
+                properties=knowledge_helpers["Requirement"](),
+                created_by="ak_pm",
+                system_id=uuid.uuid4(),
+            )
+        for i in range(6):
+            await create_node(
+                db_session,
+                graph_store=graph_store,
+                embedding_client=vector_searcher._embedding_client,
+                project_id=target_pid,
+                node_type="Requirement",
+                title=f"仓储库存盘点记录{i}",
+                content="药库周期性盘点，登记账面库存与实盘差异并生成报损单",
+                properties=knowledge_helpers["Requirement"](),
+                created_by="ak_pm",
+                system_id=uuid.uuid4(),
+            )
+
+        results = await vector_searcher.search(
+            db_session,
+            query="门诊收费关单与退费流程",
+            top_k=5,
+            filters=FilterSpec(project_id=target_pid),
+        )
+        assert len(results) == 5, "候选饥饿未收敛到 top_k（后置过滤 + 分诊/兜底失效）"
+        assert all(r.node_type == "Requirement" for r in results)
+        # 结果必须全部来自目标项目（后置过滤正确性，不得混入项目外噪声）
+        assert all(r.title.startswith("仓储库存盘点") for r in results)
 
 
 # ============ FullTextSearcher 测试 ============
