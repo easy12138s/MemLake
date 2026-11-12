@@ -51,6 +51,14 @@ SEARCH_ENGINE_DURATION = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5),
 )
 
+# 向量检索路径分布：window=HNSW 行扫命中 / exact=聚合精确兜底
+# fast path 占比骤降 = HNSW 索引该 REINDEX 了（碎片化观测面）
+VECTOR_PROBE_PATH = Counter(
+    "memlake_vector_probe_path_total",
+    "向量检索路径分布（window=行扫收敛 / exact=聚合精确兜底）",
+    ["path"],
+)
+
 # embedding / rerank 调用（app→embedding 客户端）
 EMBEDDING_CALLS = Counter(
     "memlake_embedding_calls_total",
