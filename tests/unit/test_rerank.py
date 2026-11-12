@@ -35,7 +35,7 @@ class _FakeSettings:
 
     ENABLE_RERANK = True
     RERANK_MODEL_PATH = "/models/bge-reranker-base"
-    RERANK_TOP_K = 30
+    RERANK_TOP_K = 10
 
 
 class _FakeRerankClient:

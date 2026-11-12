@@ -50,8 +50,11 @@ class Settings(BaseSettings):
     # bge-reranker-base（CrossEncoder）路径。空字符串=不启用精排。
     # 留空时 ENABLE_RERANK 即使为 True 也不生效，检索退回 RRF 原序。
     RERANK_MODEL_PATH: str = ""
-    # 精排候选数（取 RRF 融合后前 N 个精排），越小延迟越低
-    RERANK_TOP_K: int = 30
+    # 精排候选数（取 RRF 融合后前 N 个精排），越小延迟越低。
+    # 2026-11-12 实测（71 条 v2.19 需求自检索，hit@k）：30→10 时
+    # hit@1 71.8%→76.1%、hit@5 95.8%→100%，端到端 4.0s→1.65s——
+    # 长尾候选被 cross-encoder 提拔成噪声，收窄候选池质量反而更优
+    RERANK_TOP_K: int = 10
     # 总开关：配合 RERANK_MODEL_PATH 非空才真正启用
     ENABLE_RERANK: bool = True
 
