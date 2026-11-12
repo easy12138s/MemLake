@@ -22,7 +22,11 @@ from mem_lake.config import get_settings
 from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.embedding.client import EmbeddingClient, EmbeddingError
 from mem_lake.knowledge.graph_store import GraphStore
-from mem_lake.observability.metrics import RERANK_FALLBACK, SEARCH_ENGINE_DURATION
+from mem_lake.observability.metrics import (
+    RERANK_FALLBACK,
+    SEARCH_ENGINE_DURATION,
+    SEARCH_PHASE_DURATION,
+)
 from mem_lake.search.filters import FilterSpec
 
 logger = logging.getLogger("mem_lake.search.fusion")
@@ -122,7 +126,9 @@ async def _apply_rerank(
         # 精排对象用 "标题\n正文"（标题在前，与 build_embed_text 的构造顺序对齐；
         # 空正文退化为标题本身）。
         texts = [f"{r.title}\n{r.content or ''}".strip() for r in rerank_candidate]
+        t_rerank = time.time()
         scores = await embedding_client.rerank(query, texts)
+        SEARCH_PHASE_DURATION.labels(phase="rerank").observe(time.time() - t_rerank)
     except EmbeddingError:
         RERANK_FALLBACK.inc()
         logger.warning("rerank 精排不可用，回退 RRF 原序", exc_info=True)
@@ -200,6 +206,11 @@ async def hybrid_search(
     三引擎在各自连接上真并行，总延迟 ≈ max(三引擎延迟)。检索为只读操作，
     独立 session 不涉及事务一致性问题。
 
+    分阶段耗时（A5）：embed / vector / fulltext / graph / fuse / rerank 各阶段
+    经 SEARCH_PHASE_DURATION 上报 /metrics，用于端到端延迟拆解——
+    查询向量在编排层前置 embed（与 VectorSearcher.search 内部等价，同
+    prompt_name="query"），向量引擎以 search_by_vector 消费。
+
     参数：
         query: 查询文本（向量引擎 embed_one 生成查询向量，全文引擎 websearch_to_tsquery）
         embedding_client: Embedding 客户端
@@ -229,11 +240,21 @@ async def hybrid_search(
     graph_searcher = GraphSearcher(graph_store)
     ft_query = fulltext_query if fulltext_query is not None else query
 
+    # 查询向量前置（A5 分阶段计时）：与 VectorSearcher.search 内部 embed_one 等价
+    # （同 prompt_name="query"），前置后 embed 耗时从 vector 引擎计时中独立出来，
+    # 向量引擎改用 search_by_vector 消费同一向量
+    t_embed = time.time()
+    query_vector = await embedding_client.embed_one(query, prompt_name="query")
+    SEARCH_PHASE_DURATION.labels(phase="embed").observe(time.time() - t_embed)
+
     async def _vector_task() -> list[SearchResult]:
         t = time.time()
         async with AsyncSessionLocal() as s:
-            result = await vector_searcher.search(s, query, top_k, filters)
+            result = await vector_searcher.search_by_vector(
+                s, query_vector, top_k=top_k, filters=filters
+            )
         SEARCH_ENGINE_DURATION.labels(engine="vector").observe(time.time() - t)
+        SEARCH_PHASE_DURATION.labels(phase="vector").observe(time.time() - t)
         return result
 
     async def _fulltext_task() -> list[SearchResult]:
@@ -241,6 +262,7 @@ async def hybrid_search(
         async with AsyncSessionLocal() as s:
             result = await fulltext_searcher.search(s, ft_query, top_k, filters)
         SEARCH_ENGINE_DURATION.labels(engine="fulltext").observe(time.time() - t)
+        SEARCH_PHASE_DURATION.labels(phase="fulltext").observe(time.time() - t)
         return result
 
     async def _fulltext_tsquery_task() -> str:
@@ -256,6 +278,7 @@ async def hybrid_search(
                 s, graph_node_id, depth=graph_depth, filters=filters
             )
         SEARCH_ENGINE_DURATION.labels(engine="graph").observe(time.time() - t)
+        SEARCH_PHASE_DURATION.labels(phase="graph").observe(time.time() - t)
         return result
 
     # 并行执行三引擎检索，asyncio.gather 总延迟 ≈ max(三引擎延迟)
@@ -269,6 +292,7 @@ async def hybrid_search(
     # candidates_total 需为「过滤后未截断」的真实候选数，截断池会让计数随 top_n 变化。
     # rerank 仅重排前 RERANK_TOP_K 名（候选池优化
     # 语义不变：A/B 验证候选池 30 使 hit@5 提升），尾部原序拼接后收口 top_n。
+    t_fuse = time.time()
     fused_pool = rrf_fuse(
         [vector_results, fulltext_results], k=60, top_n=top_k * 2
     )
@@ -279,6 +303,7 @@ async def hybrid_search(
     # 替换展示/阈值用的 score；无向量分（仅全文命中）的节点保留原 RRF 分。
     fused_pool = _apply_vector_scores(fused_pool, vector_results)
     fused = fused_pool
+    SEARCH_PHASE_DURATION.labels(phase="fuse").observe(time.time() - t_fuse)
 
     # 精排（可降级）：服务启用 rerank 时，对融合候选做 cross-encoder 重排。
     # 排序改由精排分数决定，score 字段仍保留向量余弦分（与 "RRF 排序 + 向量 score" 的

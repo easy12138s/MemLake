@@ -727,6 +727,50 @@ class TestHybridSearch:
         finally:
             await _cleanup_project_data(db_session, graph_store, pid)
 
+    async def test_hybrid_search_emits_phase_metrics(
+        self,
+        db_session,
+        graph_store,
+        real_embedding_client,
+        knowledge_helpers,
+    ):
+        """A5 分阶段埋点：hybrid_search 必须上报 embed/vector/fulltext/fuse 阶段计数。
+
+        端到端延迟拆解（embed / 三引擎 / fuse / rerank）依赖这些计数定位「引擎
+        之外」的黑盒时间；计数不上报 = 拆解失效。
+        """
+        from prometheus_client import REGISTRY
+
+        def _count(phase: str) -> float:
+            return (
+                REGISTRY.get_sample_value(
+                    "memlake_search_phase_duration_seconds_count", {"phase": phase}
+                )
+                or 0.0
+            )
+
+        pid, *_ = await _seed_three_nodes(
+            db_session, graph_store, real_embedding_client, knowledge_helpers
+        )
+        await db_session.commit()
+
+        before = {p: _count(p) for p in ("embed", "vector", "fulltext", "fuse")}
+        try:
+            result = await hybrid_search(
+                query="登录鉴权",
+                embedding_client=real_embedding_client,
+                graph_store=graph_store,
+                top_k=50,
+                top_n=5,
+                filters=FilterSpec(project_id=pid),
+            )
+            assert result["fused"] or result["vector"]
+        finally:
+            await _cleanup_project_data(db_session, graph_store, pid)
+
+        for phase, before_n in before.items():
+            assert _count(phase) > before_n, f"阶段 {phase} 计数未上报（埋点失效）"
+
     async def test_hybrid_search_graph_independent(
         self,
         db_session,

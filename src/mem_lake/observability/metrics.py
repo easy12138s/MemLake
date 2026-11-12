@@ -51,6 +51,15 @@ SEARCH_ENGINE_DURATION = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5),
 )
 
+# 混合检索分阶段耗时（embed/vector/fulltext/graph/fuse/rerank）
+# 用途：端到端延迟拆解（A5）——定位「引擎之外」的黑盒时间（HTTP 往返/编排）
+SEARCH_PHASE_DURATION = Histogram(
+    "memlake_search_phase_duration_seconds",
+    "混合检索分阶段耗时（秒）",
+    ["phase"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+)
+
 # 向量检索路径分布：window=HNSW 行扫命中 / exact=聚合精确兜底
 # fast path 占比骤降 = HNSW 索引该 REINDEX 了（碎片化观测面）
 VECTOR_PROBE_PATH = Counter(
