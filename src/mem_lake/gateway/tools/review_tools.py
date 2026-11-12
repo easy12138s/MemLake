@@ -23,7 +23,11 @@ from typing import TYPE_CHECKING, Any
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from mem_lake.approval.models import collect_created_node_ids
+from mem_lake.approval.models import (
+    build_created_nodes_payload,
+    collect_created_node_ids,
+    count_created_edges,
+)
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
@@ -141,6 +145,16 @@ class AutoProcessOutput(BaseModel):
     decision: str = Field(
         description="决策结果：auto_approved（自动通过）/ needs_human_review（升级人工审查）"
     )
+    created: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "已入库节点清单（decision=auto_approved 时返回）："
+            "[{ref, node_id, node_type, title}]——跨批次补建边的确定性依据（ISSUE-16）"
+        ),
+    )
+    edges_created: int | None = Field(
+        default=None, description="已建立的边数量（decision=auto_approved 时返回）"
+    )
     status: str = Field(
         description="批次最终状态：approved（auto_approved）/ pending_review（needs_human_review）"
     )
@@ -247,6 +261,8 @@ def register_review_tools(mcp: FastMCP) -> None:
                 status=batch.status,
                 reviewed_at=batch.reviewed_at,
                 conflict_hint=batch.conflict_hint,
+                created=build_created_nodes_payload(batch),
+                edges_created=count_created_edges(batch),
             )
         except (
             BatchNotFoundError,
@@ -321,6 +337,11 @@ def register_review_tools(mcp: FastMCP) -> None:
             created_node_ids = result.get("created_node_ids") or []
             if created_node_ids:
                 await _safe_enqueue_embed(batch.project_id, created_node_ids)
+            created = (
+                build_created_nodes_payload(batch)
+                if result["decision"] == "auto_approved"
+                else None
+            )
             return AutoProcessOutput(
                 batch_id=batch.id,
                 decision=result["decision"],
@@ -330,6 +351,8 @@ def register_review_tools(mcp: FastMCP) -> None:
                 batch_type=batch.batch_type,
                 submitted_by=batch.submitted_by,
                 item_count=len(batch.items) if batch.items else 0,
+                created=created,
+                edges_created=count_created_edges(batch) if created else None,
             )
         except (
             BatchNotFoundError,

@@ -155,3 +155,27 @@ def collect_created_node_ids(batch: "ApprovalBatch") -> list[uuid.UUID]:
         for it in (batch.items or [])
         if it.item_type == "node" and it.action == "create" and it.target_id is not None
     ]
+
+
+def build_created_nodes_payload(batch: "ApprovalBatch") -> list[dict[str, Any]]:
+    """批次内新建节点的回执清单（ISSUE-16）：[{ref, node_id, node_type, title}]。
+
+    submit 宽松回执（WriteToolOutput.from_batch）与审批回执
+    （AutoProcessOutput / ApprovalResultOutput）共用本口径——同一数据的
+    确定性来源，避免两条回执链各写一份导致漂移。
+    """
+    return [
+        {
+            "ref": (it.payload or {}).get("ref"),
+            "node_id": str(it.target_id),
+            "node_type": it.entity_type,
+            "title": (it.payload or {}).get("title"),
+        }
+        for it in iter_created_node_items(batch)
+        if it.target_id is not None
+    ]
+
+
+def count_created_edges(batch: "ApprovalBatch") -> int:
+    """批次内边项数量（建边失败即整批回滚，无部分失败态，计数即实际边数）。"""
+    return sum(1 for it in (batch.items or []) if it.item_type == "edge")

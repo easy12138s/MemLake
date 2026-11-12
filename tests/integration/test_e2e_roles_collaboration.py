@@ -425,6 +425,12 @@ class TestRolesCollaboration:
         async with Client(_make_role_app(monkeypatch, role="admin", project_id=project_id)) as admin:
             auto = await _call(admin, "review_auto_process", {"batch_id": batch_id_3})
             assert auto["decision"] == "auto_approved"
+            # ISSUE-16：auto_process 回执必须带 created 节点清单（跨批次引用的前提）
+            created = auto.get("created") or []
+            assert len({c["node_id"] for c in created}) >= 2, "auto_process 回执缺 created"
+            assert (auto.get("edges_created") or 0) >= 1, "auto_process 回执缺 edges_created"
+            for c in created:
+                assert c["node_type"] and c["title"], "created 项须含 node_type/title"
 
         # 审批节点为延迟向量化（generate_vector=False，后台 worker 异步补）。
         # 测试需在检索前让向量就绪：显式同步补 facet（FIX-08 后向量在
@@ -765,4 +771,65 @@ async def test_get_node_info_ownership_lookup(
         await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
         await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
         await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
+        await db_session.commit()
+
+
+async def test_review_approve_receipt_carries_created(
+    monkeypatch, db_session, graph_store, mock_embedding_client, knowledge_helpers
+):
+    """ISSUE-16：review_approve 回执同样带 created + edges_created。
+
+    严格模式提交 → admin review_approve 的返回原来只有 batch_id/status/
+    conflict_hint，Agent 拿不到新建节点 UUID，跨批次补边必须反查。
+    """
+    project_id = str(uuid.uuid4())
+    system_id = str(uuid.uuid4())
+
+    # 借 publish_requirement 造一个严格模式批次（pm 角色 + 非宽松 key）
+    pm = _make_role_app(monkeypatch, role="pm", project_id=project_id)
+    async with Client(pm) as client:
+        r = await _call(
+            client,
+            "publish_requirement",
+            {
+                "system_id": system_id,
+                "project_id": project_id,
+                "requirement": {
+                    "title": "审批回执节点ID验证",
+                    "content": "验证 review_approve 回执含 created 清单",
+                    "properties": {"priority": "P3", "module": "receipt"},
+                    "tags": [],
+                },
+                "operation_id": f"op-receipt-{uuid.uuid4().hex[:8]}",
+            },
+        )
+    assert r["status"] == "pending_review", "非宽松 key 必须走严格模式"
+    batch_id = r["batch_id"]
+
+    try:
+        admin = _make_role_app(monkeypatch, role="admin", project_id=project_id)
+        async with Client(admin) as client:
+            out = await _call(client, "review_approve", {"batch_id": batch_id})
+            created = out.get("created") or []
+            assert len(created) == 1, "review_approve 回执缺 created"
+            assert created[0]["node_type"] == "Requirement"
+            assert created[0]["node_id"]
+    finally:
+        from sqlalchemy import delete, select
+
+        from mem_lake.audit.models import AuditLog
+        from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
+
+        rows = (
+            await db_session.execute(
+                select(KnowledgeNode.id).where(KnowledgeNode.project_id == uuid.UUID(project_id))
+            )
+        ).scalars().all()
+        for nid in rows:
+            await graph_store._exec_cypher(
+                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)}
+            )
+        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(rows)))
+        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(rows)))
+        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(rows)))
         await db_session.commit()

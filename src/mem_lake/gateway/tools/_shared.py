@@ -14,7 +14,12 @@ from fastmcp.server.dependencies import get_context
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
-from mem_lake.approval.models import collect_created_node_ids, iter_created_node_items
+from mem_lake.approval.models import (
+    ApprovalBatch,
+    build_created_nodes_payload,
+    collect_created_node_ids,
+    count_created_edges,
+)
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
@@ -131,21 +136,8 @@ class WriteToolOutput(BaseModel):
         created = None
         edges_created = None
         if decision == "auto_approved" and batch.items:
-            created = [
-                {
-                    "ref": (it.payload or {}).get("ref"),
-                    "node_id": str(it.target_id),
-                    "node_type": it.entity_type,
-                    "title": (it.payload or {}).get("title"),
-                }
-                for it in iter_created_node_items(batch)
-                if it.target_id is not None
-            ]
-            edges_created = sum(
-                1
-                for it in batch.items
-                if it.item_type == "edge"
-            )
+            created = build_created_nodes_payload(batch)
+            edges_created = count_created_edges(batch)
         return cls(
             batch_id=batch.id,
             status=batch.status,
@@ -166,6 +158,16 @@ class ApprovalResultOutput(BaseModel):
     conflict_hint: dict[str, Any] | None = Field(
         default=None,
         description="冲突检测结果（仅 approve 时返回，含 has_conflict/nodes_with_conflict/details/suggestion）",
+    )
+    created: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "已入库节点清单（仅 approve 返回，ISSUE-16）：[{ref, node_id, node_type, title}]"
+            "——跨批次补建边的确定性依据；reject 为 None"
+        ),
+    )
+    edges_created: int | None = Field(
+        default=None, description="已建立的边数量（仅 approve 返回）"
     )
 
 
