@@ -270,19 +270,18 @@ class TestVectorSearch:
                 db_session, [0.1] * 1024, top_k=-1
             )
 
-    async def test_vector_row_scan_uses_hnsw_index(
+    async def test_vector_row_scan_plan_has_no_aggregation(
         self, db_session, graph_store, vector_searcher, knowledge_helpers
     ):
-        """行扫语句必须走 HNSW 索引（而非全表 Seq Scan + 排序）。
+        """行扫语句不得回流「聚合前置」形态（HNSW 索引杀手的回归护栏）。
 
-        回归护栏：向量检索慢路径的成因是 group_by 聚合形态使 pgvector HNSW 索引
-        失效（19748 行全表扫 ~0.8-1.1s，且冷 cache 更差）；索引扫仅 ~1-3ms。
-        若查询形态回退（过滤/聚合前置于行扫），EXPLAIN 失去 Index Scan，本用例失败。
-
-        注意（依赖存量数据的护栏）：① 表 <500 行时 planner 不会选索引
-        （无回归意义）→ skip；② literal_binds 编译与生产 parameterized
-        语句的计划细节有差异（explain 仪表化下行数可能不可靠），本用例
-        只断言计划中的索引名与无 Seq Scan，不断言行数。
+        慢路径根因是 group_by 聚合前置：planner 对聚合形态选 HashAggregate +
+        全表扫（2 万行 ~0.8-1.1s，且随数据量线性劣化）。行扫形态下大表 planner
+        选 HNSW 索引扫（~1-3ms）；**小表 planner 选 Seq Scan + top-N 排序同为
+        正确且不慢**（实测 ~4 千行规模排序 ~10-80ms）——索引与否是 planner 的
+        数据规模决策，两者都是行扫形态的合法下游。
+        因此护栏断言「计划中无聚合节点」（HashAggregate）：聚合前置一旦回流
+        即失败；表 <500 行时无回归意义，skip。
         """
         from sqlalchemy import func, select, text
 
@@ -297,7 +296,7 @@ class TestVectorSearch:
             select(func.count()).select_from(NodeEmbedding)
         )
         if total < 500:
-            pytest.skip(f"node_embedding 仅 {total} 行，planner 不会选索引（无回归意义）")
+            pytest.skip(f"node_embedding 仅 {total} 行，无回归意义")
 
         vec = await db_session.scalar(
             select(NodeEmbedding.content_vector).where(NodeEmbedding.node_id == requirement.id)
@@ -309,8 +308,10 @@ class TestVectorSearch:
         )
         rows = await db_session.execute(text("EXPLAIN " + sql))
         plan = "\n".join(r[0] for r in rows)
-        assert "idx_node_embedding_vector" in plan, f"未走 HNSW 索引:\n{plan}"
-        assert "Seq Scan on node_embedding" not in plan, f"行扫退化为全表扫:\n{plan}"
+        assert "HashAggregate" not in plan and "GroupAggregate" not in plan, (
+            f"行扫回流聚合前置（HNSW 杀手）:\n{plan}"
+        )
+        assert "GROUP BY" not in plan.upper(), f"计划出现聚合语义:\n{plan}"
 
     async def test_vector_search_top_k_with_selective_filter(
         self, db_session, graph_store, vector_searcher, knowledge_helpers
