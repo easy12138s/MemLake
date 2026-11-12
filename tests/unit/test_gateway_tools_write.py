@@ -558,3 +558,77 @@ class TestStrictInputModels:
                 properties={"name": "n", "description": "d", "tech_stack": [], "architecture": "a"},
                 unknown_top_level_field="x",
             )
+
+
+class TestOwnershipMismatchHint:
+    """update_node 归属不一致报错三态 hint（ISSUE-13/14：原来只有一句「不属于本项目」）。"""
+
+    def _node(self, *, project_id=None, system_id=None, node_id=None):
+        from mem_lake.knowledge.models import KnowledgeNode
+
+        return KnowledgeNode(
+            id=node_id or uuid.uuid4(),
+            type="Requirement",
+            title="t",
+            content="c",
+            properties={},
+            status="approved",
+            project_id=project_id,
+            system_id=system_id,
+        )
+
+    def test_floating_node_hint_says_suspended(self):
+        """悬浮节点（project_id=null）：明确「悬浮」而非让人猜项目不存在。"""
+        from mem_lake.gateway.tools.write_tools import _ownership_mismatch_hint
+
+        node = self._node(project_id=None)
+        msg = _ownership_mismatch_hint(
+            node, uuid.uuid4(), system_name=None, system_member_ids=None
+        )
+        assert "悬浮" in msg
+        assert str(node.id) in msg
+
+    def test_other_project_hint_returns_actual_project(self):
+        """归属他项目：报错回实际 project_id（原来完全不透露）。"""
+        from mem_lake.gateway.tools.write_tools import _ownership_mismatch_hint
+
+        actual = uuid.uuid4()
+        node = self._node(project_id=actual)
+        msg = _ownership_mismatch_hint(
+            node, uuid.uuid4(), system_name=None, system_member_ids=None
+        )
+        assert str(actual) in msg
+
+    def test_membership_missing_hint_points_to_add_projects(self):
+        """目标项目不在节点 system 归属清单：指向 manage_system add_projects 修复路径。"""
+        from mem_lake.gateway.tools.write_tools import _ownership_mismatch_hint
+
+        node = self._node(project_id=None, system_id=uuid.uuid4())
+        target = uuid.uuid4()
+        msg = _ownership_mismatch_hint(
+            node, target, system_name="测试系统域", system_member_ids={uuid.uuid4()}
+        )
+        assert "add_projects" in msg
+        assert "测试系统域" in msg
+
+    def test_membership_ok_no_add_projects_hint(self):
+        """目标项目在归属清单内（仅项目不匹配）：不出 add_projects 误导读数。"""
+        from mem_lake.gateway.tools.write_tools import _ownership_mismatch_hint
+
+        target = uuid.uuid4()
+        node = self._node(project_id=uuid.uuid4(), system_id=uuid.uuid4())
+        msg = _ownership_mismatch_hint(
+            node, target, system_name="测试系统域", system_member_ids={target}
+        )
+        assert "add_projects" not in msg
+
+    def test_no_system_no_membership_clause(self):
+        """node 无 system（资产类节点）：不做归属缺失诊断（system_name=None）。"""
+        from mem_lake.gateway.tools.write_tools import _ownership_mismatch_hint
+
+        node = self._node(project_id=uuid.uuid4())
+        msg = _ownership_mismatch_hint(
+            node, uuid.uuid4(), system_name=None, system_member_ids=None
+        )
+        assert "add_projects" not in msg
+        assert "悬浮" not in msg  # 非悬浮节点不出现悬浮措辞

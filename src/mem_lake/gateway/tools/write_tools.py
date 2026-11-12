@@ -54,6 +54,8 @@ from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     get_node,
     get_nodes_by_ids,
+    get_system,
+    get_system_project_ids,
     list_project_profiles,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -71,6 +73,36 @@ def _check_content_length(value: str | None, label: str) -> None:
         raise PayloadValidationError(
             f"{label} 长度 {len(value)} 超过上限 {max_len} 字符"
         )
+
+
+def _ownership_mismatch_hint(
+    node: Any,
+    project_id: uuid.UUID,
+    *,
+    system_name: str | None,
+    system_member_ids: set[uuid.UUID] | None,
+) -> str:
+    """节点归属与目标项目不一致的报错文案（ISSUE-13/14 诊断性修复）。
+
+    三态拆解，让报错自己指出修复路径：
+    1. 悬浮节点（node.project_id 为 None）：说明「悬浮需求」，update_node
+       仅支持项目归属节点；
+    2. 归属他项目：回实际 project_id；
+    3. 目标项目不在节点 system 的归属清单：追加 add_projects 修复指引
+       （system_name/member_ids 由调用方在错误路径惰性查询提供）。
+    """
+    msg = f"节点不属于本项目: {node.id}"
+    if node.project_id is None:
+        msg += "（节点为悬浮需求，无项目归属；update_node 仅支持项目归属节点）"
+    else:
+        msg += f"（节点实际归属项目: {node.project_id}）"
+    if system_name is not None and system_member_ids is not None:
+        if project_id not in system_member_ids:
+            msg += (
+                f"；目标项目不在 system「{system_name}」归属清单，"
+                "请先 manage_system action=add_projects 挂载后重试"
+            )
+    return msg
 
 
 # ============================================================================
@@ -449,7 +481,24 @@ def register_write_tools(mcp: FastMCP) -> None:
                 except NodeNotFoundError:
                     raise PayloadValidationError(f"node_id 不存在: {node_id}")
                 if node.project_id != project_id:
-                    raise PayloadValidationError(f"节点不属于本项目: {node_id}")
+                    # 归属诊断（ISSUE-13/14）：错误路径惰性查询 system 归属，
+                    # 让报错自带三态修复指引；成功路径零额外开销
+                    system_name: str | None = None
+                    member_ids: set[uuid.UUID] | None = None
+                    if node.system_id is not None:
+                        sys_row = await get_system(session, node.system_id)
+                        system_name = sys_row.name if sys_row else None
+                        member_ids = await get_system_project_ids(
+                            session, system_id=node.system_id
+                        )
+                    raise PayloadValidationError(
+                        _ownership_mismatch_hint(
+                            node,
+                            project_id,
+                            system_name=system_name,
+                            system_member_ids=member_ids,
+                        )
+                    )
                 if node.status == "archived":
                     raise PayloadValidationError(f"已归档节点不可更新: {node_id}")
 
