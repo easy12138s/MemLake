@@ -244,6 +244,7 @@ PM/Dev/Admin 共享。list 枚举当前 key 可见的项目；get 按 project_id
 | include_scope_meta | bool | 否 | 是否附 scope 自证信息（project 与 system 双维度），默认 False |
 
 **何时用（PM）**：确认自己可访问哪些项目（list）、查看项目基本信息与画像（get）；`has_profile=false` 表示画像占位，返回的 `hint` 会引导补建。
+get 回 `project=null` 时带 `reason=no_profile` 与 hint：项目无画像 ≠ 项目不存在/不在 system 归属，归属对账用 `manage_system action=list` 的 `project_ids`。
 
 **何时不用**：要检索需求/资产内容用对应 search 工具。
 

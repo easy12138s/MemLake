@@ -143,6 +143,13 @@ class GetProjectInfoOutput(BaseModel):
         default=None,
         description="输出级提示（如存在无画像的占位项目时引导补建）",
     )
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "get 回 project=null 的原因码：no_profile=该项目未建画像（节点存在性"
+            "与 system 归属请用 manage_system list 的 project_ids 核对）"
+        ),
+    )
     action: str = Field(description="list / get")
     scope: ScopeMeta | None = Field(
         default=None, description="仅 include_scope_meta=true 时返回"
@@ -621,6 +628,14 @@ async def _get_project_info_core(
                     "name/工作目录等暂不可见）：请 admin 用 manage_project_profile 补建，"
                     "补建后所有 Agent 可自证项目与代码仓库的对应关系"
                 )
+        elif not projects:
+            # ISSUE-13：admin 的 projects 只列已建画像项目，空清单 ≠ key 无项目，
+            # 须显式说明语义并指向归属核对路径（scope_meta 对 admin 恒 all 是设计使然）
+            hint = (
+                "admin 的 projects 仅列出已建画像（manage_project_profile）的项目；"
+                "空清单表示尚未创建任何项目画像，不代表无项目或无归属。项目身份与"
+                "system 归属请用 manage_system action=list 的 project_ids 对账。"
+            )
         scope_meta = (
             _build_scope_meta(
                 is_admin,
@@ -653,6 +668,21 @@ async def _get_project_info_core(
             if include_scope_meta
             else None
         )
-        return GetProjectInfoOutput(action="get", scope=scope_meta, project=project)
+        return GetProjectInfoOutput(
+            action="get",
+            scope=scope_meta,
+            project=project,
+            # ISSUE-13：null 必须可行动——区分「无画像」并指向归属核对路径
+            reason=None if project else "no_profile",
+            hint=(
+                None
+                if project
+                else (
+                    "该项目未建画像（no_profile）。注意：项目无画像 ≠ 项目不存在或"
+                    "不在 system 归属——项目身份与归属请用 manage_system action=list "
+                    "的 project_ids 对账，缺失则 add_projects 挂载。"
+                )
+            ),
+        )
 
     raise ValueError(f"未知 action: {action}")

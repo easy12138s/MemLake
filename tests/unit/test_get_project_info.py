@@ -262,3 +262,40 @@ async def test_core_list_include_scope_meta():
     assert out.scope.scope_type == "all"
     assert out.scope.visible_uuids == []
     assert out.scope.visible_count == 2
+
+
+# ============ ISSUE-13：get null 的 reason code 与 admin 空清单 hint ============
+
+
+async def test_core_get_missing_returns_no_profile_reason():
+    """get 回 null 必须带 reason=no_profile（与「越权」区分为可行动信息）。"""
+    out = await _get_project_info_core(
+        action="get", project_id=uuid.uuid4(), include_profile=False,
+        include_scope_meta=False, role="admin", scope=[],
+        list_fn=fake_list([]), validate_fn=lambda x: None,
+    )
+    assert out.project is None
+    assert out.reason == "no_profile"
+    assert out.hint and "画像" in out.hint
+
+
+async def test_core_get_success_has_no_reason():
+    out = await _get_project_info_core(
+        action="get", project_id=(p := uuid.uuid4()), include_profile=False,
+        include_scope_meta=False, role="admin", scope=[],
+        list_fn=fake_list([FakeNode(p, "A", "d")]), validate_fn=lambda x: None,
+    )
+    assert out.project is not None
+    assert out.reason is None
+
+
+async def test_core_list_admin_empty_explains_semantics():
+    """admin 的 projects 空清单：hint 说明「只列已建画像项目」+ 归属核对路径。"""
+    out = await _get_project_info_core(
+        action="list", project_id=None, include_profile=False, include_scope_meta=False,
+        role="admin", scope=[], list_fn=fake_list([]), validate_fn=lambda x: None,
+    )
+    assert out.projects == []
+    assert out.hint
+    assert "画像" in out.hint
+    assert "manage_system" in out.hint
