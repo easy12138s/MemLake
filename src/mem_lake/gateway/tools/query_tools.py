@@ -176,7 +176,7 @@ class RelatedNodeOutput(BaseModel):
     depth: int = Field(description="与起点的跳数距离（1=直接关联）")
 
 
-class NodeInfoOutput(BaseModel):
+class NodeInfoOutput(BaseModel):  # type: ignore[misc]  # 与文件内其他 Output 模型同源的 follow-imports=skip 噪音
     """get_node_info 工具出参（按 node_id 反查归属，ISSUE-14）。"""
 
     node_id: uuid.UUID = Field(description="查询的节点 ID")
@@ -454,7 +454,7 @@ def register_query_tools(mcp: FastMCP) -> None:
         except (NodeNotFoundError, ValueError) as e:
             raise to_tool_error(e) from e
 
-    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]  # 与文件内其他工具同源噪音
     async def get_node_info(
         node_id: uuid.UUID = Field(description="节点 ID"),
     ) -> NodeInfoOutput:
