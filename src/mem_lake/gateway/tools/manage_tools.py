@@ -72,6 +72,7 @@ from mem_lake.knowledge.repository import (
     create_node,
     create_system,
     get_system,
+    get_system_project_ids,
     list_systems,
     remove_system_projects,
     set_system_projects,
@@ -599,12 +600,14 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     result = []
                     for row in rows:
                         cnt = await count_system_projects(session, system_id=row.id)
+                        pids = await get_system_project_ids(session, system_id=row.id)
                         result.append(
                             {
                                 "system_id": str(row.id),
                                 "name": row.name,
                                 "description": row.description,
                                 "project_count": cnt,
+                                "project_ids": sorted(str(p) for p in pids),
                             }
                         )
                     return ManageSystemOutput(action="list", systems=result)

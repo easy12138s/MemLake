@@ -136,7 +136,7 @@
 
 **action 说明**：
 - `create`：建 System，返回 system_id
-- `list`：枚举所有 System（含其下项目数）
+- `list`：枚举所有 System（含其下项目数 `project_count` 与归属项目清单 `project_ids`）
 - `set_projects`：**全量重置**归属清单（覆盖语义——未传入的既有归属会被清除；传完整列表）
 - `add_projects`：增量追加归属（幂等），返回 added_count——「往系统挂一个项目」用这个
 - `remove_projects`：精确移除传入项（其余保留），返回 removed_count

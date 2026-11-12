@@ -466,3 +466,29 @@ async def test_manage_system_remove_projects_precise(admin_app, db_session):
             assert await _bound_project_ids(db_session, sid) == {p1, p3}
         finally:
             await _cleanup_system(db_session, sid)
+
+
+async def test_manage_system_list_returns_project_ids(admin_app, db_session):
+    """list 出参须含 project_ids 清单（ISSUE-13：原来只有 count 无法对账）。"""
+    async with Client(admin_app) as client:
+        sid = await _create_system(client)
+        try:
+            p1, p2 = str(uuid.uuid4()), str(uuid.uuid4())
+            await client.call_tool("manage_system", {
+                "action": "set_projects", "system_id": sid, "project_ids": [p1, p2],
+            })
+            r = await client.call_tool("manage_system", {"action": "list"})
+            rows = {
+                s["system_id"]: s for s in _parse(r).get("systems", [])
+            }
+            entry = rows[sid]
+            assert set(entry["project_ids"]) == {p1, p2}
+            assert entry["project_count"] == len(entry["project_ids"]) == 2
+            # 历史口径保持：中方诊药云系统仍在列（零数据接触锚点）
+            keep = [
+                s for s in _parse(r)["systems"]
+                if s["name"] == "中方诊药云系统"
+            ]
+            assert keep, "保留 system 必须仍在 list 结果中"
+        finally:
+            await _cleanup_system(db_session, sid)
