@@ -290,8 +290,9 @@ async def hybrid_search(
 
     # 向量与全文 RRF 融合。融合不按 candidate_n 截断而取全量（上界=2×top_k）——
     # candidates_total 需为「过滤后未截断」的真实候选数，截断池会让计数随 top_n 变化。
-    # rerank 仅重排前 RERANK_TOP_K 名（候选池优化
-    # 语义不变：A/B 验证候选池 30 使 hit@5 提升），尾部原序拼接后收口 top_n。
+    # rerank 仅重排前 RERANK_TOP_K 名（候选池优化；2026-11-12 实测 30→10 时
+    # hit@1 71.8%→76.1%、hit@5 95.8%→100%——长尾被 cross-encoder 提拔成噪声），
+    # 尾部原序拼接后收口 top_n。
     t_fuse = time.time()
     fused_pool = rrf_fuse(
         [vector_results, fulltext_results], k=60, top_n=top_k * 2
