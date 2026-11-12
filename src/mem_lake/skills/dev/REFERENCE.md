@@ -251,6 +251,18 @@ analyze_impact_scope(
 get_requirement_context(requirement_id="req-uuid-001", depth=2)
 ```
 
+### get_node_info — 按 node_id 反查归属
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| node_id | UUID | 是 | 任意节点 ID |
+
+**何时用**：写入/更新报「节点不属于本项目」后，反查该节点到底属于哪个 project / system、是不是悬浮需求（`project_id=null`）；也能确认节点是否存在/已软删（`found=false` + hint）。权限口径同 `get_requirement_context`：悬浮需求按 system 校验。
+
+```python
+get_node_info(node_id="node-uuid-001")
+```
+
 ---
 
 ### list_requirements — 清单式枚举需求

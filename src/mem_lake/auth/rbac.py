@@ -18,12 +18,14 @@ PM_TOOLS: frozenset[str] = frozenset({
     "update_node",
     "list_requirements",
     "get_requirement_context",
+    "get_node_info",
     "get_project_info",
 })
 
 DEV_TOOLS: frozenset[str] = frozenset({
     "list_requirements",
     "get_requirement_context",
+    "get_node_info",
     "get_project_info",
     "search_code_snippets",
     "submit_dev_artifacts",

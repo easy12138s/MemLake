@@ -684,3 +684,85 @@ async def test_impact_scope_system_bound_key_floating_requirement(
         await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
         await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
         await db_session.commit()
+
+
+# ============================================================================
+# 场景8：get_node_info 按 node_id 反查归属（ISSUE-14）
+# 反馈：悬浮需求 update_node 报「节点不属于本项目」后无工具可查它到底属于谁
+# ============================================================================
+
+
+async def test_get_node_info_ownership_lookup(
+    monkeypatch, db_session, graph_store, mock_embedding_client, knowledge_helpers
+):
+    """admin 按 node_id 反查归属四元组；悬浮需求与项目资产都能自证。"""
+    from mem_lake.knowledge.repository import create_node
+
+    system_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    floating = await create_node(
+        db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+        project_id=None, node_type="Requirement", title="悬浮-归属诊断",
+        content="验证 get_node_info 反查悬浮需求归属",
+        properties={"priority": "P3", "module": "m"},
+        tags=[], created_by="ak_pm", system_id=system_id,
+    )
+    asset = await create_node(
+        db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+        project_id=project_id, node_type="CodeSnippet", title="归属诊断代码",
+        content="验证项目资产节点归属回显",
+        properties={"name": "n", "type": "function", "responsibility": "r", "file_path": "src/a.py"},
+        tags=[], created_by="ak_dev",
+    )
+    await db_session.commit()
+
+    admin = _make_role_app(monkeypatch, role="admin", project_id=str(uuid.uuid4()))
+    try:
+        async with Client(admin) as client:
+            info = await _call(client, "get_node_info", {"node_id": str(floating.id)})
+            assert info["found"] is True
+            assert info["node_type"] == "Requirement"
+            assert info["project_id"] is None, "悬浮需求必须回显 null 而非报错"
+            assert info["system_id"] == str(system_id)
+            assert info["status"] == "approved"
+            assert info["is_deleted"] is False
+
+            info2 = await _call(client, "get_node_info", {"node_id": str(asset.id)})
+            assert info2["project_id"] == str(project_id)
+
+            # 不存在节点：found=False + hint（而非抛错中断排查）
+            miss = await _call(client, "get_node_info", {"node_id": str(uuid.uuid4())})
+            assert miss["found"] is False
+            assert miss["hint"]
+
+        # RBAC：dev 的 project_scope 不含该项目 → 拒绝（不回内容）
+        dev = _make_role_app(monkeypatch, role="dev", project_id=str(uuid.uuid4()))
+        async with Client(dev) as client:
+            err = await _expect_tool_error(
+                client, "get_node_info", {"node_id": str(asset.id)}
+            )
+            assert "权限" in err or "越权" in err or "scope" in err.lower()
+
+        # RBAC：dev 绑定该 system 可查悬浮需求（与 get_requirement_context 同口径）
+        dev2 = _make_role_app(
+            monkeypatch, role="dev",
+            project_id=str(uuid.uuid4()), system_scope=[str(system_id)],
+        )
+        async with Client(dev2) as client:
+            info3 = await _call(client, "get_node_info", {"node_id": str(floating.id)})
+            assert info3["system_id"] == str(system_id)
+    finally:
+        from sqlalchemy import delete
+
+        from mem_lake.audit.models import AuditLog
+        from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
+
+        for n in (floating, asset):
+            await graph_store._exec_cypher(
+                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(n.id)}
+            )
+        ids = [floating.id, asset.id]
+        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
+        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
+        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
+        await db_session.commit()
