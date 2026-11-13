@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile."
-version: 1.13.0
+version: 1.14.0
 ---
 
 # Admin Skills（管理员）
@@ -109,6 +109,7 @@ version: 1.13.0
 - **list_requirements** — 清单式枚举需求（分页+过滤；requirement_key 直查、fields 裁剪）
 - **get_requirement_context** — 查询需求上下文
 - **get_node_info** — 按 node_id 反查归属（project/system/悬浮状态）
+- **bind_requirement_to_project** — 悬浮需求 ↔ 项目绑定/解绑（PM/Admin；走审批流，不触发冲突检测）
 
 > **Admin 专属工具详细参数表和示例见 `admin/REFERENCE.md`；与 PM/Dev 共享工具的参数表见 `pm/REFERENCE.md` 与 `dev/REFERENCE.md`**
 
@@ -125,6 +126,8 @@ version: 1.13.0
 5. **manage_project_profile 是直接写入**：不走审批流，状态直接 approved。
 
 6. **宽松模式生效需两者同时为真**：Key 标记 lax_mode=true 且全局开关 LAX_MODE_ENABLED=true。
+
+7. **bind_requirement 批次（悬浮需求↔项目绑定）不触发冲突检测**：`review_auto_process` 对该类批次直接 auto_approved——归属变更是治理操作，无内容冲突面；回执无 `created`（无新节点），绑定结果看 PM 侧 `affected` 清单。
 
 ## 冲突检测简述
 

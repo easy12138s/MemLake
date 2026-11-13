@@ -1388,3 +1388,113 @@ class TestTransactionalIntegrity:
         edge_types = {r["label"] for r in rows}
         assert "implements" in edge_types
         assert "references" in edge_types
+
+
+class TestSetNodeProject:
+    """set_node_project 测试（ISSUE-15：悬浮 ↔ 项目绑定的一等仓储操作）。"""
+
+    async def _mk(self, db_session, graph_store, mock_embedding_client, knowledge_helpers, *, project_id=None):
+        return await create_node(
+            db_session,
+            graph_store=graph_store,
+            embedding_client=mock_embedding_client,
+            project_id=project_id,
+            node_type="Requirement",
+            title="绑定测试需求",
+            content="验证 project 归属变更",
+            properties=knowledge_helpers["Requirement"](),
+            created_by="ak_pm",
+            system_id=uuid.uuid4(),
+        )
+
+    async def test_bind_sets_project_and_bumps_version(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """悬浮 → 绑定：project_id 落库 + 版本 +1 + 审计含新旧值。"""
+        from mem_lake.knowledge.repository import set_node_project
+
+        node = await self._mk(db_session, graph_store, mock_embedding_client, knowledge_helpers)
+        target = uuid.uuid4()
+        before_version = node.version
+
+        updated = await set_node_project(
+            db_session, graph_store=graph_store, node_id=node.id,
+            project_id=target, actor="ak_pm",
+        )
+        assert updated.project_id == target
+        assert updated.version == before_version + 1
+        assert updated.system_id == node.system_id, "绑定不得变更 system 归属"
+
+        rows = await match_pattern(
+            graph_store, db_session, "MATCH (n {id: $nid}) RETURN n", {"nid": str(node.id)}
+        )
+        assert rows[0]["properties"]["project_id"] == str(target), "图投影须同步"
+
+    async def test_unbind_removes_project(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """项目 → 解绑：project_id 回 None + 图属性移除。"""
+        from mem_lake.knowledge.repository import set_node_project
+
+        project_id = uuid.uuid4()
+        node = await self._mk(
+            db_session, graph_store, mock_embedding_client, knowledge_helpers,
+            project_id=project_id,
+        )
+        updated = await set_node_project(
+            db_session, graph_store=graph_store, node_id=node.id,
+            project_id=None, actor="ak_pm",
+        )
+        assert updated.project_id is None
+
+        rows = await match_pattern(
+            graph_store, db_session, "MATCH (n {id: $nid}) RETURN n", {"nid": str(node.id)}
+        )
+        assert "project_id" not in rows[0]["properties"]
+
+    async def test_same_target_noop_without_version_bump(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """已是目标归属：幂等直返，不递增版本（断点续跑/重放安全）。"""
+        from mem_lake.knowledge.repository import set_node_project
+
+        project_id = uuid.uuid4()
+        node = await self._mk(
+            db_session, graph_store, mock_embedding_client, knowledge_helpers,
+            project_id=project_id,
+        )
+        before_version = node.version
+        updated = await set_node_project(
+            db_session, graph_store=graph_store, node_id=node.id,
+            project_id=project_id, actor="ak_pm",
+        )
+        assert updated.project_id == project_id
+        assert updated.version == before_version
+
+    async def test_nonexistent_node_raises(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """不存在的节点：抛 NodeNotFoundError（与仓储层其他函数一致）。"""
+        import pytest
+
+        from mem_lake.knowledge.repository import NodeNotFoundError, set_node_project
+
+        with pytest.raises(NodeNotFoundError):
+            await set_node_project(
+                db_session, graph_store=graph_store, node_id=uuid.uuid4(),
+                project_id=uuid.uuid4(), actor="ak_pm",
+            )
+
+    async def test_bind_does_not_regenerate_vectors(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """绑定不触发重 embed（facet 文本不含 project_id）——embed 调用数不变。"""
+        from mem_lake.knowledge.repository import set_node_project
+
+        node = await self._mk(db_session, graph_store, mock_embedding_client, knowledge_helpers)
+        mock_embedding_client.embed.reset_mock()
+        await set_node_project(
+            db_session, graph_store=graph_store, node_id=node.id,
+            project_id=uuid.uuid4(), actor="ak_pm",
+        )
+        mock_embedding_client.embed.assert_not_called()

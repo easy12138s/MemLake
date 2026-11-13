@@ -289,6 +289,26 @@ class AGEGraphStore(GraphStore):
         params = {"node_id": str(node_id), "title": str(title)}
         await self._exec_cypher(session, cypher, params)
 
+    async def sync_node_project_id(
+        self,
+        session: AsyncSession,
+        node_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+    ) -> None:
+        """按 id 幂等更新图节点的 project_id（None=REMOVE 属性，回悬浮态）。
+
+        与 sync_node_title 同款参数化路径；project_id=None 用 REMOVE 而非
+        SET null（AGE 对 null 属性赋值的兼容性未验证，REMOVE 语义明确）。
+        节点不存在时 MATCH 返回 0 行，静默无操作。
+        """
+        if project_id is None:
+            cypher = "MATCH (n {id: $node_id}) REMOVE n.project_id RETURN n"
+            params = {"node_id": str(node_id)}
+        else:
+            cypher = "MATCH (n {id: $node_id}) SET n.project_id = $pid RETURN n"
+            params = {"node_id": str(node_id), "pid": str(project_id)}
+        await self._exec_cypher(session, cypher, params)
+
     async def neighbors(
         self,
         session: AsyncSession,

@@ -123,10 +123,21 @@ class WriteToolOutput(BaseModel):
         default=None,
         description="已建立的边数量（宽松模式 auto_approved 时返回）",
     )
+    affected: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "受变更的既有节点清单（bind_requirement_to_project 场景）："
+            "[{node_id, node_type, title, project_id}]——绑定/解绑的回执依据；"
+            "create 类工具为 None"
+        ),
+    )
 
     @classmethod
     def from_batch(
-        cls, batch: "ApprovalBatch", decision: str | None = None
+        cls,
+        batch: "ApprovalBatch",
+        decision: str | None = None,
+        affected: list[dict[str, Any]] | None = None,
     ) -> "WriteToolOutput":
         """从 ApprovalBatch ORM 对象构造输出。
 
@@ -146,6 +157,7 @@ class WriteToolOutput(BaseModel):
             decision=decision,
             created=created,
             edges_created=edges_created,
+            affected=affected,
         )
 
 
@@ -500,6 +512,7 @@ async def submit_write_batch(
     submitter_role: str,
     items: list[dict[str, Any]],
     operation_id: str | None,
+    affected: list[dict[str, Any]] | None = None,
 ) -> WriteToolOutput:
     """写工具统一提交流程：开事务 → 按模式提交批次 → 宽松模式收尾入队补向量。
 
@@ -533,4 +546,4 @@ async def submit_write_batch(
     created = collect_created_node_ids(batch)
     if lax and decision == "auto_approved" and created and project_id is not None:
         await _safe_enqueue_embed(project_id, created)
-    return WriteToolOutput.from_batch(batch, decision=decision)
+    return WriteToolOutput.from_batch(batch, decision=decision, affected=affected)

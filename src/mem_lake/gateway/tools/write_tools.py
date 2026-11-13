@@ -522,6 +522,109 @@ def register_write_tools(mcp: FastMCP) -> None:
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e) from e
 
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]  # 与文件内其他工具同源噪音（9c68be5 同款）
+    async def bind_requirement_to_project(
+        requirement_ids: list[uuid.UUID] = Field(
+            description="待绑定/解绑的需求节点 ID 列表（保序去重，逐项生成审批项）"
+        ),
+        project_id: uuid.UUID | None = Field(
+            default=None,
+            description=(
+                "目标项目 ID；None=解绑回悬浮。绑定要求目标项目在需求的 system "
+                "归属清单内（否则提示 manage_system add_projects）"
+            ),
+        ),
+        operation_id: str | None = Field(
+            default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
+        ),
+    ) -> WriteToolOutput:
+        """悬浮需求 ↔ 项目归属绑定/解绑（ISSUE-15 一等操作）。
+
+        PM/Admin 工具。归属变更是治理操作：走审批流留痕（宽松模式无冲突自动
+        入库——绑定不触发冲突检测，实际体验等同直写）；system_id 不随绑定
+        变更（跨 system 搬迁是另一操作）；重复绑定幂等跳过；已是目标归属的
+        项不进批次。底层经 node+update 审批项的 project_id 载荷落地
+        （版本 +1 + 审计 + AGE 图属性同步，不重算向量）。
+        回执 affected=[{node_id,node_type,title,project_id}] 为绑定确定性依据。
+        """
+        try:
+            if not requirement_ids:
+                raise PayloadValidationError("requirement_ids 不能为空")
+            # 目标项目访问权（解绑无目标项目；源项目可见性在预校验内逐项判）
+            if project_id is not None:
+                validate_project_access(project_id)
+            uniq = list(dict.fromkeys(requirement_ids))
+
+            affected: list[dict[str, Any]] = []
+            async with readonly_session() as session:
+                for rid in uniq:
+                    try:
+                        node = await get_node(session, rid)
+                    except NodeNotFoundError:
+                        raise PayloadValidationError(f"需求节点不存在: {rid}")
+                    # 可见性（含悬浮需求的 system 口径）+ 类型约束
+                    await _ensure_requirement_visible(
+                        session,
+                        node,
+                        type_err=f"节点 {rid} 类型为 {node.type}，绑定工具仅支持 Requirement",
+                        invisible_err=f"需求节点 {rid} 对当前 Key 不可见",
+                    )
+                    if node.project_id == project_id:
+                        continue  # 幂等：已是目标归属
+                    # 改绑/解绑：源项目须对调用者可见（防越权操作他人项目节点）
+                    if node.project_id is not None:
+                        validate_project_access(node.project_id)
+                    if project_id is not None:
+                        # 归属校验：目标项目必须在需求的 system 清单内
+                        if node.system_id is None:
+                            raise PayloadValidationError(
+                                f"需求 {rid} 无 system 归属，无法判定项目归属清单"
+                            )
+                        member_ids = await get_system_project_ids(
+                            session, system_id=node.system_id
+                        )
+                        if project_id not in member_ids:
+                            sys_row = await get_system(session, node.system_id)
+                            sys_name = sys_row.name if sys_row else str(node.system_id)
+                            raise PayloadValidationError(
+                                f"目标项目不在需求的 system「{sys_name}」归属清单，"
+                                "请先 manage_system action=add_projects 挂载后重试"
+                            )
+                    affected.append(
+                        {
+                            "node_id": str(node.id),
+                            "node_type": node.type,
+                            "title": node.title,
+                            "project_id": str(project_id) if project_id else None,
+                        }
+                    )
+
+            if not affected:
+                raise PayloadValidationError("全部需求已在目标归属中，无需变更")
+
+            items = [
+                {
+                    "item_type": "node",
+                    "action": "update",
+                    "entity_type": "Requirement",
+                    "payload": {
+                        "node_id": a["node_id"],
+                        "project_id": a["project_id"],
+                    },
+                }
+                for a in affected
+            ]
+            return await submit_write_batch(
+                project_id=project_id,
+                batch_type="bind_requirement",
+                submitter_role=get_current_role(),
+                items=items,
+                operation_id=operation_id,
+                affected=affected,
+            )
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e) from e
+
 
 # ============================================================================
 # items 构造辅助

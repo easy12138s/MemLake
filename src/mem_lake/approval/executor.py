@@ -30,7 +30,13 @@ from mem_lake.audit.service import write_audit_log
 from mem_lake.embedding.client import EmbeddingClient
 from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
-from mem_lake.knowledge.repository import add_edge, create_node, get_node, update_node
+from mem_lake.knowledge.repository import (
+    add_edge,
+    create_node,
+    get_node,
+    set_node_project,
+    update_node,
+)
 from mem_lake.observability.metrics import APPROVAL_BATCHES
 from mem_lake.search.vector import VectorSearcher
 
@@ -284,11 +290,24 @@ async def _execute_node_update(
     item: ApprovalItem,
     actor: str,
 ) -> Any:
-    """执行 node + update：调用 update_node 更新字段并版本递增。"""
+    """执行 node + update：调用 update_node 更新字段并版本递增。
+
+    payload 含 "project_id" 键时走 set_node_project（悬浮 ↔ 项目绑定，
+    ISSUE-15）：归属变更是治理操作，不走内容更新路径（不触发冲突检测、
+    不重算向量），版本递增 + 图属性同步 + 审计与仓储层保证。
+    """
     payload = item.payload
     node_id = _to_uuid(payload["node_id"])
     # node+update 的 node_id 为必填项（提交时已校验），解析必成功
     assert node_id is not None
+    if "project_id" in payload:
+        return await set_node_project(
+            session,
+            graph_store=graph_store,
+            node_id=node_id,
+            project_id=_to_uuid(payload["project_id"]),
+            actor=actor,
+        )
     return await update_node(
         session,
         graph_store=graph_store,

@@ -41,12 +41,14 @@ class TestBatchTypes:
     """BATCH_TYPES 白名单常量校验。"""
 
     def test_batch_types_contains_all_types(self):
-        """PDD 3.4 定义的批次类型 + update_node（c0ee66d）+ generate_rule_edges（ENH-01）均在白名单内。"""
+        """PDD 3.4 定义的批次类型 + update_node（c0ee66d）+ generate_rule_edges（ENH-01）
+        + bind_requirement（ISSUE-15 悬浮需求↔项目绑定，node+update 载荷带 project_id）均在白名单内。"""
         expected = {
             "publish_requirement",
             "submit_dev_artifacts",
             "update_requirement_relations",
             "update_node",
+            "bind_requirement",
             "generate_rule_edges",
         }
         assert set(BATCH_TYPES) == expected
@@ -62,6 +64,7 @@ class TestBatchTypes:
             "submit_dev_artifacts",
             "update_requirement_relations",
             "update_node",
+            "bind_requirement",
             "generate_rule_edges",
         ],
     )

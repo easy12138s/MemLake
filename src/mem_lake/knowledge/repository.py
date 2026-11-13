@@ -430,6 +430,59 @@ async def update_node(
     return node
 
 
+async def set_node_project(
+    session: AsyncSession,
+    *,
+    graph_store: GraphStore,
+    node_id: uuid.UUID,
+    project_id: uuid.UUID | None,
+    actor: str,
+) -> KnowledgeNode:
+    """变更节点的 project 归属（悬浮 ↔ 项目绑定，ISSUE-15 一等仓储操作）。
+
+    规则：
+    - project_id=None = 解绑回悬浮；传入目标 = 绑定/改绑
+    - system_id 不随之变更（跨 system 搬迁是另一操作，本函数不做）
+    - 已是目标归属：幂等直返，不递增版本（重放/断点续跑安全）
+    - 版本 +1 + 审计（detail 记 project_id 新旧值）；不重生成向量
+      （facet 文本由 title/content/properties 构造，不含 project_id）
+    - AGE 图节点 project_id 属性同步（SET/REMOVE，同事务不 commit）
+
+    不存在抛 NodeNotFoundError。不 commit。
+    """
+    node = await get_node(session, node_id)
+    if node.project_id == project_id:
+        return node
+
+    old_project_id = node.project_id
+    node.project_id = project_id
+    node.version += 1
+
+    await graph_store.sync_node_project_id(session, node.id, project_id)
+    await session.flush()
+
+    await write_audit_log(
+        session,
+        actor=actor,
+        action="update",
+        target_type="node",
+        target_id=node.id,
+        project_id=project_id,
+        detail={
+            "node_type": node.type,
+            "version": node.version,
+            "changes": {
+                "project_id": {
+                    "from": str(old_project_id) if old_project_id else None,
+                    "to": str(project_id) if project_id else None,
+                }
+            },
+        },
+    )
+
+    return node
+
+
 async def add_edge(
     session: AsyncSession,
     *,

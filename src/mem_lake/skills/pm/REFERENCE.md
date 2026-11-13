@@ -111,6 +111,38 @@ update_node(
 
 ---
 
+### bind_requirement_to_project — 悬浮需求 ↔ 项目归属绑定/解绑
+
+PM/Admin 工具。把悬浮需求（`project_id=null`，先于实现/跨项目建模发布）挂载到项目，或解绑回悬浮态；也支持改绑。归属变更是**治理操作**：走审批流留痕（宽松模式下无冲突自动入库——绑定不触发冲突检测，体验等同直写）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| requirement_ids | list[UUID] | 是 | 待绑定/解绑的需求节点 ID 列表（保序去重，逐项生成审批项）|
+| project_id | UUID \| None | 否 | 目标项目 ID；**None=解绑回悬浮**。绑定要求目标项目在需求的 system 归属清单内（否则报错提示 `manage_system add_projects`）|
+| operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
+
+**语义要点**：
+- `system_id` 不随绑定变更（跨 system 搬迁是另一操作，本工具不做）
+- 已是目标归属的项幂等跳过，不进批次；全部已命中目标归属则报错「无需变更」
+- 改绑/解绑时，节点当前所属项目须对调用者可见（防越权操作他人项目节点）
+- 底层经 node+update 审批项落地：版本 +1 + 审计 + 图属性同步，**不重新生成向量**（绑定后节点即时可检索）
+
+**回执**：`affected=[{node_id, node_type, title, project_id}]` 为绑定确定性依据（`project_id=null` 即解绑）。
+
+**何时用**：需求先以悬浮态发布、后续落到具体项目时挂载；或项目边界调整时改绑/解绑。绑定后 `list_requirements(project_id=…)` 即可见。
+
+**何时不用**：变更需求内容用 `update_node`；建立需求间关系用 `update_requirement_relations`。
+
+```python
+bind_requirement_to_project(
+    requirement_ids=["req-uuid"],
+    project_id="proj-uuid",
+    operation_id="op-bind-001"
+)
+```
+
+---
+
 ### search_similar_requirements — 检索相似需求
 
 PM/Dev 共享。向量+全文融合检索相似需求（Requirement 类型；按 system 或 project 隔离），仅检索 approved 状态。
@@ -385,7 +417,8 @@ PM Agent → 人类: "已建立两个需求的关联关系，批次 ghi-789 待�
     "item_count": 3,                 # 批次条目数
     "decision": "auto_approved",     # 仅宽松模式返回：auto_approved / needs_human_review
     "created": [...],                # 仅宽松 auto_approved 返回：[{ref, node_id, node_type, title}]
-    "edges_created": 2               # 仅宽松 auto_approved 返回：建边数
+    "edges_created": 2,              # 仅宽松 auto_approved 返回：建边数
+    "affected": [...]                # 仅 bind_requirement_to_project 返回：[{node_id, node_type, title, project_id}]
 }
 ```
 

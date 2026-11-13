@@ -65,6 +65,19 @@ class GraphStore(ABC):
         """
 
     @abstractmethod
+    async def sync_node_project_id(
+        self,
+        session: AsyncSession,
+        node_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+    ) -> None:
+        """按 id 幂等更新图节点的 project_id（None=移除属性，回悬浮态）。
+
+        用于需求悬浮 ↔ 项目绑定（ISSUE-15）时保持图投影与 PG 表一致；
+        节点不存在时静默无操作（图投影非真相源，一致性以 PG 为准）。
+        """
+
+    @abstractmethod
     async def neighbors(
         self,
         session: AsyncSession,
