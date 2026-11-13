@@ -2257,3 +2257,83 @@ class TestCrossProjectConflictDetection:
         await db_session.execute(sa_delete(SystemProject).where(SystemProject.system_id == sys_obj.id))
         await db_session.delete(sys_obj)
         await db_session.commit()
+
+
+# ============ ISSUE-15：node+update 载荷带 project_id（悬浮↔项目绑定）============
+
+
+async def test_bind_requirement_update_item_applies_project(
+    db_session, graph_store, mock_embedding_client, knowledge_helpers
+):
+    """审批批次经 node+update 载荷变更 project 归属：approve 后落库 + 图同步。
+
+    这是 bind_requirement_to_project 工具的底层路径：审批项
+    payload={"node_id", "project_id"} → executor 走 set_node_project
+    （不走 update_node 内容路径，不触发冲突检测与重 embed）。
+    """
+    from mem_lake.knowledge.models import KnowledgeNode
+    from mem_lake.knowledge.repository import get_node
+    from mem_lake.search.vector import VectorSearcher
+
+    system_id = uuid.uuid4()
+    node = await create_node(
+        db_session,
+        graph_store=graph_store,
+        embedding_client=mock_embedding_client,
+        project_id=None,
+        node_type="Requirement",
+        title="审批绑定测试",
+        content="验证审批路径绑定 project",
+        properties=knowledge_helpers["Requirement"](),
+        created_by="ak_pm",
+        system_id=system_id,
+    )
+    target = uuid.uuid4()
+    before_version = node.version
+
+    items = [
+        {
+            "item_type": "node",
+            "action": "update",
+            "entity_type": "Requirement",
+            "payload": {"node_id": str(node.id), "project_id": str(target)},
+        }
+    ]
+    batch = await submit_batch(
+        db_session,
+        project_id=target,
+        batch_type="bind_requirement",
+        submitted_by="ak_pm",
+        submitter_role="pm",
+        items=items,
+    )
+
+    approved = await review_approve(
+        db_session,
+        batch_id=batch.id,
+        reviewed_by="ak_admin",
+        graph_store=graph_store,
+        embedding_client=mock_embedding_client,
+        vector_searcher=VectorSearcher(mock_embedding_client),
+    )
+    assert approved.status == STATUS_APPROVED
+
+    bound = await get_node(db_session, node.id)
+    assert bound.project_id == target
+    assert bound.version == before_version + 1
+    rows = await match_pattern(
+        graph_store, db_session, "MATCH (n {id: $nid}) RETURN n", {"nid": str(node.id)}
+    )
+    assert rows[0]["properties"]["project_id"] == str(target)
+
+    # 清理
+    from sqlalchemy import delete as sa_delete
+
+    from mem_lake.knowledge.models import NodeEmbedding
+
+    await graph_store._exec_cypher(
+        db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(node.id)}
+    )
+    await db_session.execute(sa_delete(NodeEmbedding).where(NodeEmbedding.node_id == node.id))
+    await db_session.execute(sa_delete(KnowledgeNode).where(KnowledgeNode.id == node.id))
+    await db_session.commit()

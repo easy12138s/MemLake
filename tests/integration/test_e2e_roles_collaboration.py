@@ -244,7 +244,7 @@ class TestRolesCollaboration:
         self.__class__._project_id = project_id
         self.__class__._system_id = system_id
 
-    async def test_pm_publish_and_admin_autoapprove(self, monkeypatch):
+    async def test_pm_publish_and_admin_autoapprove(self, monkeypatch, db_session):
         """场景2+3：PM 发布需求 → admin review_pending_list → review_auto_process → 校验 approved。"""
         project_id = self.__class__._project_id
         system_id = self.__class__._system_id
@@ -297,6 +297,29 @@ class TestRolesCollaboration:
                     break
             assert node_id
             self.__class__._requirement_node_id = node_id
+
+        # 审批通过后向量由后台 worker 异步生成（create_task 挂在当前用例的事件循环上，
+        # 用例结束循环关闭即随之死亡）——后续场景 4 的 L3 语义冲突检测依赖该向量。
+        # 必须在本用例内轮询等待向量落地（上限 10s），否则冲突检测前提随机不成立。
+        import asyncio
+
+        from sqlalchemy import text as sa_text
+
+        deadline = asyncio.get_running_loop().time() + 10.0
+        while True:
+            row = (
+                await db_session.execute(
+                    sa_text(
+                        "SELECT 1 FROM node_embedding WHERE node_id = :nid LIMIT 1"
+                    ),
+                    {"nid": uuid.UUID(node_id)},
+                )
+            ).first()
+            if row is not None:
+                break
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError("审批后后台向量任务 10s 内未完成，后续 L3 冲突检测前提不成立")
+            await asyncio.sleep(0.1)
 
     async def test_conflict_detection_to_human_review(self, monkeypatch):
         """场景4：PM 发高度相似需求 → review_auto_process needs_human_review → review_approve。"""
@@ -832,4 +855,188 @@ async def test_review_approve_receipt_carries_created(
         await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(rows)))
         await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(rows)))
         await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(rows)))
+        await db_session.commit()
+
+
+# ============================================================================
+# 场景9：bind_requirement_to_project 悬浮需求 ↔ 项目绑定（ISSUE-15）
+# 注意：每个 Client 块单独建 app（app 实例不复用于多个 Client 上下文，
+# 第二次 lifespan 进入会挂起——本文件一贯模式）；pm 操作悬浮需求需
+# system_scope=[sid]（is_requirement_visible 的悬浮口径）。
+# ============================================================================
+
+
+async def test_bind_requirement_to_project_end_to_end(
+    monkeypatch, db_session, graph_store, mock_embedding_client
+):
+    """PM 绑定悬浮需求 → admin 审批 → 落库 + 图同步 + list_requirements 可见 + 解绑。"""
+    from sqlalchemy import delete
+    from sqlalchemy import select as sa_select
+
+    from mem_lake.audit.models import AuditLog
+    from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding, System, SystemProject
+    from mem_lake.knowledge.repository import get_node
+
+    project_id = str(uuid.uuid4())
+
+    # admin 建 system 并把项目挂入归属清单
+    async with Client(
+        _make_role_app(monkeypatch, role="admin", project_id=str(uuid.uuid4()))
+    ) as c:
+        sid = (
+            await _call(
+                c,
+                "manage_system",
+                {"action": "create", "name": f"sys-bind-{uuid.uuid4().hex[:8]}"},
+            )
+        )["system_id"]
+        await _call(
+            c,
+            "manage_system",
+            {"action": "add_projects", "system_id": sid, "project_ids": [project_id]},
+        )
+
+    try:
+        # PM 发布悬浮需求（project_id=None；system_scope 供悬浮可见性）
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_id, system_scope=[sid]
+            )
+        ) as c:
+            r = await _call(
+                c,
+                "publish_requirement",
+                {
+                    "system_id": sid,
+                    "requirement": {
+                        "title": "绑定端到端验证需求",
+                        "content": "验证悬浮需求绑定到项目后项目域查询可见",
+                        "properties": {"priority": "P3", "module": "bind"},
+                        "tags": [],
+                    },
+                    "operation_id": f"op-bind-e2e-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        assert r["status"] == "pending_review"
+        pub_batch = r["batch_id"]
+
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_id)
+        ) as c:
+            await _call(c, "review_auto_process", {"batch_id": pub_batch})
+            detail = await _call(c, "review_batch_detail", {"batch_id": pub_batch})
+            req_id = next(
+                (it["target_id"] for it in detail.get("items", []) if it.get("target_id")),
+                None,
+            )
+        assert req_id, "审批后应拿到需求节点 ID"
+
+        # PM 绑定（严格模式 → pending），回执带 affected
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_id, system_scope=[sid]
+            )
+        ) as c:
+            b = await _call(
+                c,
+                "bind_requirement_to_project",
+                {
+                    "requirement_ids": [req_id],
+                    "project_id": project_id,
+                    "operation_id": f"op-bind-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        assert b["status"] == "pending_review"
+        affected = b.get("affected") or []
+        assert len(affected) == 1 and affected[0]["node_id"] == req_id, "回执须带 affected"
+        bind_batch = b["batch_id"]
+
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_id)
+        ) as c:
+            out = await _call(c, "review_auto_process", {"batch_id": bind_batch})
+        assert out["decision"] == "auto_approved", out
+        assert not out.get("created"), "bind 无新节点，created 应为空"
+
+        # 审批与提交发生在 app 自己的会话（独立事务）；db_session 的 identity map
+        # 里如有同 id 对象不会回刷属性，跨会话读断言前必须失效缓存
+        db_session.expire_all()
+        bound = await get_node(db_session, uuid.UUID(req_id))
+        assert bound.project_id == uuid.UUID(project_id)
+
+        # 项目域查询可见
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_id, system_scope=[sid]
+            )
+        ) as c:
+            lst = await _call(c, "list_requirements", {"project_id": project_id})
+        titles = {x.get("title") for x in lst.get("items", lst.get("requirements", []))}
+        assert "绑定端到端验证需求" in titles, "绑定后 list_requirements(project_id) 须可见"
+
+        # 解绑回悬浮
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_id, system_scope=[sid]
+            )
+        ) as c:
+            u = await _call(
+                c,
+                "bind_requirement_to_project",
+                {
+                    "requirement_ids": [req_id],
+                    "project_id": None,
+                    "operation_id": f"op-unbind-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        un_batch = u["batch_id"]
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_id)
+        ) as c:
+            await _call(c, "review_auto_process", {"batch_id": un_batch})
+        # 同上：解绑提交/审批在 app 会话，先失效 db_session identity map 缓存
+        db_session.expire_all()
+        unbound = await get_node(db_session, uuid.UUID(req_id))
+        assert unbound.project_id is None
+
+        # 归属缺失：目标项目不在 system 清单 → 拒 + add_projects hint
+        # （目标项目须先过调用者 scope 校验才轮到归属清单校验，故 PM scope 含 outsider）
+        outsider = str(uuid.uuid4())
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=outsider, system_scope=[sid]
+            )
+        ) as c:
+            err = await _expect_tool_error(
+                c,
+                "bind_requirement_to_project",
+                {"requirement_ids": [req_id], "project_id": outsider},
+            )
+        assert "add_projects" in err, err
+
+        # RBAC：dev 无此工具
+        async with Client(
+            _make_role_app(monkeypatch, role="dev", project_id=project_id)
+        ) as c:
+            tools = {t.name for t in await c.list_tools()}
+        assert "bind_requirement_to_project" not in tools
+    finally:
+        rows = (
+            await db_session.execute(
+                sa_select(KnowledgeNode.id).where(
+                    KnowledgeNode.system_id == uuid.UUID(sid)
+                )
+            )
+        ).scalars().all()
+        for nid in rows:
+            await graph_store._exec_cypher(
+                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)}
+            )
+        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(rows)))
+        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(rows)))
+        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(rows)))
+        await db_session.execute(
+            delete(SystemProject).where(SystemProject.system_id == uuid.UUID(sid))
+        )
+        await db_session.execute(delete(System).where(System.id == uuid.UUID(sid)))
         await db_session.commit()

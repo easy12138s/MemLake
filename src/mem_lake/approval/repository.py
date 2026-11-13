@@ -30,6 +30,7 @@ BATCH_TYPES: frozenset[str] = frozenset({
     "submit_dev_artifacts",
     "update_requirement_relations",
     "update_node",
+    "bind_requirement",  # 悬浮需求 ↔ 项目归属绑定（ISSUE-15，node+update 载荷带 project_id）
     "generate_rule_edges",  # 规则边生成器提交的边批次
 })
 

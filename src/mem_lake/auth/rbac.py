@@ -19,6 +19,7 @@ PM_TOOLS: frozenset[str] = frozenset({
     "list_requirements",
     "get_requirement_context",
     "get_node_info",
+    "bind_requirement_to_project",
     "get_project_info",
 })
 

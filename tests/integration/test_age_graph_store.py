@@ -510,6 +510,46 @@ class TestSyncNodeTitle:
         # 不抛异常即可
 
 
+# ============ sync_node_project_id（ISSUE-15 绑定同步）============
+
+class TestSyncNodeProjectId:
+    """sync_node_project_id 测试：绑定 SET / 解绑 REMOVE / 幂等。"""
+
+    async def test_sync_node_project_id_sets_property(self, db_session, store):
+        """绑定：图节点 project_id 属性更新为新项目。"""
+        node_id = uuid.uuid4()
+        await store.add_node(
+            db_session, node_id, "Requirement",
+            _props(node_id, uuid.uuid4(), "需求"),
+        )
+        new_pid = uuid.uuid4()
+        await store.sync_node_project_id(db_session, node_id, new_pid)
+
+        rows = await match_pattern(
+            store, db_session, "MATCH (n {id: $nid}) RETURN n", {"nid": str(node_id)}
+        )
+        assert rows[0]["properties"]["project_id"] == str(new_pid)
+
+    async def test_sync_node_project_id_none_removes_property(self, db_session, store):
+        """解绑：project_id=None 移除图节点该属性（回悬浮态）。"""
+        node_id = uuid.uuid4()
+        await store.add_node(
+            db_session, node_id, "Requirement",
+            _props(node_id, uuid.uuid4(), "需求"),
+        )
+        await store.sync_node_project_id(db_session, node_id, None)
+
+        rows = await match_pattern(
+            store, db_session, "MATCH (n {id: $nid}) RETURN n", {"nid": str(node_id)}
+        )
+        assert "project_id" not in rows[0]["properties"]
+
+    async def test_sync_node_project_id_nonexistent_idempotent(self, db_session, store):
+        """不存在的节点同步幂等（静默无操作，不抛异常）。"""
+        await store.sync_node_project_id(db_session, uuid.uuid4(), uuid.uuid4())
+        await store.sync_node_project_id(db_session, uuid.uuid4(), None)
+
+
 # ============ FIX-14/15/16 纵深防御与参数校验 ============
 
 class TestParseAgtypeWarning:
