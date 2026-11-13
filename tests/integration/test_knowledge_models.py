@@ -163,6 +163,51 @@ async def test_tsvector_updated_on_content_change(db_session):
     assert len(tsv_str) > 0
 
 
+async def test_init_knowledge_schema_skips_ddl_when_trigger_exists(db_session):
+    """守卫回归：触发器已存在时不执行 DROP/CREATE（ISSUE 2026-11-13 lifespan 挂起根因）。
+
+    场景：另一连接的事务持有 knowledge_node 的 ACCESS SHARE（长读事务/备份/测试
+    fixture），此时任何新连接跑 init_knowledge_schema 不得发起触发器 DDL——
+    DROP/CREATE TRIGGER 取 ACCESS EXCLUSIVE，会与 ACCESS SHARE 冲突永久阻塞
+    （锁矩阵：ACCESS SHARE 与 ACCESS EXCLUSIVE 互斥）。
+
+    断言方式：db_session 上设 lock_timeout=1s；守卫生效则存在性检查（仅读
+    pg_trigger，不触 knowledge_node 表锁）即刻返回；守卫缺失则 DDL 阻塞
+    被超时取消抛错，测试自然失败。
+    """
+    from mem_lake.db.init import init_knowledge_schema
+    from mem_lake.db.session import AsyncSessionLocal
+
+    probe = AsyncSessionLocal()
+    await probe.begin()
+    try:
+        await probe.execute(text("SELECT 1 FROM knowledge_node LIMIT 1"))
+        await db_session.execute(text("SET LOCAL lock_timeout = '1s'"))
+        await init_knowledge_schema(db_session)
+    finally:
+        await probe.rollback()
+        await probe.close()
+
+
+async def test_init_knowledge_schema_creates_when_trigger_missing(db_session):
+    """守卫不误伤建触发器路径：触发器缺失时 init_knowledge_schema 仍补建。"""
+    from mem_lake.db.init import init_knowledge_schema
+
+    await db_session.execute(
+        text("DROP TRIGGER IF EXISTS trg_knowledge_node_tsv ON knowledge_node")
+    )
+    await init_knowledge_schema(db_session)
+    result = await db_session.execute(
+        text(
+            "SELECT tgname FROM pg_trigger "
+            "WHERE tgrelid = 'knowledge_node'::regclass AND NOT tgisinternal "
+            "AND tgname = 'trg_knowledge_node_tsv'"
+        )
+    )
+    assert result.first() is not None
+    # 测试内 DDL 随 fixture 回滚，无需清理
+
+
 async def test_vector_column_dimension(db_session):
     """node_embedding.content_vector 列维度为 1024（对齐 Qwen3-Embedding-0.6B）。
 
