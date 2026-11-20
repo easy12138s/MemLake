@@ -278,6 +278,8 @@ class TestRolesCollaboration:
             )
             assert r["status"] == "pending_review"
             assert r["item_count"] == 1
+            # C2/ISSUE-17：严格模式回执显式回显 mode=strict（pending_review 属正常态）
+            assert r["mode"] == "strict", r
             batch_id_1 = r["batch_id"]
 
         # admin 查看待审批 + 自动审批

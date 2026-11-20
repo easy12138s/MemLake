@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.15.0
+version: 1.16.0
 ---
 
 # Dev Skills（开发者）
@@ -98,8 +98,10 @@ version: 1.15.0
 3. **提交后不可修改**：批次一旦提交，内容不可修改。如需修改，只能等 admin 拒绝后重新提交。
 
 4. **提交后如何跟进（不要轮询、不要立即检索）**：
-   - **严格模式**：返回 `status="pending_review"`，拿到 batch_id 后只需告知用户「待 admin 审批」
-   - **宽松模式**：返回 `status="approved"` + `decision="auto_approved"` 即已直接入库，回执附 `created`（已建节点清单）与 `edges_created`（建边数）
+   - **严格模式（正常态，默认）**：回执 `mode="strict"` + `status="pending_review"`——这**不是错误、不是失败**：批次已成功提交，只需拿到 `batch_id` 并告知用户「已提交，待 admin 审批」，无需轮询或重试。
+   - **宽松模式**：回执 `mode="lax"` + `status="approved"` + `decision="auto_approved"` 即已直接入库，附 `created`（已建节点清单）与 `edges_created`（建边数）；`decision="needs_human_review"` 表示有冲突、批次仍待人工决策。
+   - **回执 mode 三态**：`strict`=严格；`lax`=宽松生效；`lax_global_off`=Key 标记宽松但全局开关关闭，已按严格处理——三态都表示**提交成功**，只是入库时点不同。
+   - **想用宽松模式（免审批直入库）**：这是管理决策，不自行绕过——请 admin 用 `set_access_key_mode` 为你的 Key 开启（或走审批流程等待 admin 处理）。严格模式是团队默认且正常的协作方式。
 
 5. **content 应包含实际代码或详细说明**：content 会用于向量生成，内容越详细检索越准确。
 

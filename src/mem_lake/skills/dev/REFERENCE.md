@@ -146,7 +146,7 @@ submit_dev_artifacts(project_id=uuid, artifacts={"pitfalls":[{
 
 产物间其他关系（如 `depends_on`）须在 `relations` 中显式声明。
 
-**返回**：`WriteToolOutput`（batch_id / status / submitted_at / item_count；宽松模式 auto_approved 时附 `decision` + `created` 已建节点清单 + `edges_created` 建边数）
+**返回**：`WriteToolOutput`（batch_id / status / submitted_at / item_count / `mode`；宽松模式 auto_approved 时附 `decision` + `created` 已建节点清单 + `edges_created` 建边数）
 
 ---
 
@@ -476,6 +476,7 @@ Dev: "记录 YAML 缩进的坑，不绑定具体需求"
     "status": "pending_review",      # pending_review / approved
     "submitted_at": "2026-09-30T10:00:00Z",  # 提交时间
     "item_count": 2,                 # 批次条目数
+    "mode": "strict",                # 审核模式回显：strict / lax / lax_global_off（C2）
     "decision": "auto_approved",     # 仅宽松模式返回：auto_approved / needs_human_review
     "created": [...],                # 仅宽松 auto_approved 返回：[{ref, node_id, node_type, title}]
     "edges_created": 1,              # 仅宽松 auto_approved 返回：建边数
