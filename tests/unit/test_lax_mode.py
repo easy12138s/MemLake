@@ -192,3 +192,20 @@ def test_write_tool_output_carries_decision():
 
     out2 = WriteToolOutput.from_batch(_FakeBatch(status="pending_review"))
     assert out2.decision is None
+
+
+def test_resolve_write_mode_three_states():
+    """C2/ISSUE-17：回执 mode 三态——strict / lax / 全局熔断（lax_global_off）。"""
+    from mem_lake.gateway.tools._shared import resolve_write_mode
+
+    assert resolve_write_mode(key_lax_mode=False, lax_enabled=True) == "strict"
+    assert resolve_write_mode(key_lax_mode=True, lax_enabled=True) == "lax"
+    assert resolve_write_mode(key_lax_mode=True, lax_enabled=False) == "lax_global_off"
+
+
+def test_write_tool_output_carries_mode():
+    """C2/ISSUE-17：WriteToolOutput.from_batch 透传 mode，缺省 None（兼容旧调用）。"""
+    from mem_lake.gateway.tools._shared import WriteToolOutput
+
+    assert WriteToolOutput.from_batch(_FakeBatch(), mode="strict").mode == "strict"
+    assert WriteToolOutput.from_batch(_FakeBatch()).mode is None

@@ -415,6 +415,7 @@ PM Agent → 人类: "已建立两个需求的关联关系，批次 ghi-789 待�
     "status": "pending_review",     # pending_review / approved
     "submitted_at": "2026-09-30T10:00:00Z",  # 提交时间
     "item_count": 3,                 # 批次条目数
+    "mode": "strict",                # 审核模式回显：strict / lax / lax_global_off（C2）
     "decision": "auto_approved",     # 仅宽松模式返回：auto_approved / needs_human_review
     "created": [...],                # 仅宽松 auto_approved 返回：[{ref, node_id, node_type, title}]
     "edges_created": 2,              # 仅宽松 auto_approved 返回：建边数

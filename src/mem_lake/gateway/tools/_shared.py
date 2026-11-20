@@ -26,6 +26,7 @@ from mem_lake.approval.service import (
     PayloadValidationError,
     submit_batch_with_mode,
 )
+from mem_lake.config import get_settings
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
     get_current_lax_mode,
@@ -89,6 +90,20 @@ WRITE_TOOL_ANNOTATIONS = ToolAnnotations(
 # ============================================================================
 
 
+def resolve_write_mode(*, key_lax_mode: bool, lax_enabled: bool) -> str:
+    """写回执 mode 三态解析（C2/ISSUE-17）：strict / lax / lax_global_off。
+
+    与 approval.policy.submit_batch_with_mode 的生效判定同源
+    （lax = key.lax_mode and LAX_MODE_ENABLED），仅回显式化，不改变审批语义：
+    - strict：Key 为严格模式 → 批次进审批队列（正常态，非异常）
+    - lax：Key 宽松且全局开启 → 无冲突自动入库 / 有冲突转人工
+    - lax_global_off：Key 标记宽松但全局熔断 → 已按严格处理，进审批队列
+    """
+    if not key_lax_mode:
+        return "strict"
+    return "lax" if lax_enabled else "lax_global_off"
+
+
 class WriteToolOutput(BaseModel):
     """写工具统一出参（publish_requirement/update_requirement_relations/submit_dev_artifacts）。
 
@@ -104,6 +119,14 @@ class WriteToolOutput(BaseModel):
     )
     submitted_at: datetime = Field(description="提交时间（ISO 8601）")
     item_count: int = Field(description="审批项数量")
+    mode: str | None = Field(
+        default=None,
+        description=(
+            "本次提交的审核模式回显：strict=严格（批次进入审批队列，正常态）/ "
+            "lax=宽松（无冲突直接入库）/ "
+            "lax_global_off=Key 标记宽松但全局开关关闭（已按严格处理，进审批队列）"
+        ),
+    )
     decision: str | None = Field(
         default=None,
         description=(
@@ -138,6 +161,7 @@ class WriteToolOutput(BaseModel):
         batch: "ApprovalBatch",
         decision: str | None = None,
         affected: list[dict[str, Any]] | None = None,
+        mode: str | None = None,
     ) -> "WriteToolOutput":
         """从 ApprovalBatch ORM 对象构造输出。
 
@@ -154,6 +178,7 @@ class WriteToolOutput(BaseModel):
             status=batch.status,
             submitted_at=batch.submitted_at,
             item_count=len(batch.items) if batch.items else 0,
+            mode=mode,
             decision=decision,
             created=created,
             edges_created=edges_created,
@@ -521,6 +546,9 @@ async def submit_write_batch(
     单次调用内只取一次。
     """
     lax = get_current_lax_mode()
+    mode = resolve_write_mode(
+        key_lax_mode=lax, lax_enabled=get_settings().LAX_MODE_ENABLED
+    )
     async with transactional_session() as session:
         graph_store = embedding_client = vector_searcher = None
         if lax:
@@ -546,4 +574,6 @@ async def submit_write_batch(
     created = collect_created_node_ids(batch)
     if lax and decision == "auto_approved" and created and project_id is not None:
         await _safe_enqueue_embed(project_id, created)
-    return WriteToolOutput.from_batch(batch, decision=decision, affected=affected)
+    return WriteToolOutput.from_batch(
+        batch, decision=decision, affected=affected, mode=mode
+    )
