@@ -525,7 +525,8 @@ def register_write_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]  # 与文件内其他工具同源噪音（9c68be5 同款）
     async def bind_requirement_to_project(
         requirement_ids: list[uuid.UUID] = Field(
-            description="待绑定/解绑的需求节点 ID 列表（保序去重，逐项生成审批项）"
+            max_length=get_settings().MAX_ITEMS_PER_BATCH,
+            description="待绑定/解绑的需求节点 ID 列表（保序去重，逐项生成审批项；上限=批次 item 上限）",
         ),
         project_id: uuid.UUID | None = Field(
             default=None,
