@@ -19,8 +19,10 @@ from conftest import match_pattern
 from sqlalchemy import select
 
 from mem_lake.audit.service import query_audit_logs
+from mem_lake.auth.service import create_access_key as svc_create_access_key
 from mem_lake.gateway.tools.query_tools import (
     _get_project_info_core,
+    _resolve_actor_names,
     _to_audit_log_item_output,
 )
 from mem_lake.knowledge.models import KnowledgeNode
@@ -1156,3 +1158,56 @@ class TestQueryAuditLog:
         assert output.target_type == "node"
         assert output.target_id == node.id
         assert output.created_at is not None
+
+
+# ============================================================================
+# C1/ISSUE-18：审计 actor 回显 name（保留 UUID 兼容）
+# ============================================================================
+
+
+class TestActorNameResolution:
+    """actor → access_key.name 解析与出参回显。"""
+
+    async def test_resolve_actor_names(self, db_session):
+        """仅解析「UUID 形式且已登记 name」的 actor；非 UUID/未登记/不存在返回缺省。"""
+        named_id, _ = await svc_create_access_key(
+            db_session,
+            role="dev",
+            project_scope={"systems": [], "projects": []},
+            created_by="ak_admin",
+            name="示例系统-张三-dev",
+        )
+        unnamed_id, _ = await svc_create_access_key(
+            db_session,
+            role="dev",
+            project_scope={"systems": [], "projects": []},
+            created_by="ak_admin",
+        )
+        names = await _resolve_actor_names(
+            db_session,
+            {str(named_id), str(unnamed_id), "ak_dev", "system"},
+        )
+        assert names == {str(named_id): "示例系统-张三-dev"}
+
+    async def test_resolve_actor_names_empty(self, db_session):
+        """无 UUID 形式 actor 时不查库、返回空映射。"""
+        assert await _resolve_actor_names(db_session, {"ak_dev", "system"}) == {}
+
+    async def test_mapping_carries_actor_name_and_keeps_uuid(self, db_session):
+        """出参：actor 保留 UUID 原值（兼容），actor_name 为可读名；未传时为 None。"""
+        from mem_lake.audit.service import write_audit_log
+
+        key_id = uuid.uuid4()
+        log = await write_audit_log(
+            db_session,
+            actor=str(key_id),
+            action="tool_call",
+            target_type="tool",
+        )
+        with_name = _to_audit_log_item_output(log, actor_name="张三")
+        assert with_name.actor == str(key_id)
+        assert with_name.actor_name == "张三"
+
+        without = _to_audit_log_item_output(log)
+        assert without.actor == str(key_id)
+        assert without.actor_name is None

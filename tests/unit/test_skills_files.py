@@ -48,11 +48,11 @@ class TestSkillsFiles:
             assert "## Skills 文件放置指南" in body
             assert ".agents/skills/" in body
 
-    def test_version_1_14_0(self):
-        """1.14.0：bind_requirement_to_project（ISSUE-15 悬浮需求↔项目绑定）工具摘要/参数表/回执 affected 同步。"""
+    def test_version_1_15_0(self):
+        """1.15.0：C1/ISSUE-18 access_key name/owner 与审计 actor_name 回显同步。"""
         for role in ("admin", "pm", "dev"):
             _, version = _load_skill(role)
-            assert version == "1.14.0"
+            assert version == "1.15.0"
 
     def test_github_distribution_note(self):
         """文件含 GitHub 分发说明（raw URL 指引）。"""

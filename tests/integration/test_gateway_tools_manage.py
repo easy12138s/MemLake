@@ -492,3 +492,146 @@ async def test_manage_system_list_returns_project_ids(admin_app, db_session):
             assert keep, "保留 system 必须仍在 list 结果中"
         finally:
             await _cleanup_system(db_session, sid)
+
+
+# ============================================================================
+# C1/ISSUE-18：Access Key name/owner 与审计 actor 回显
+# ============================================================================
+
+
+def _install_identity(monkeypatch, *, role: str, key_id: uuid.UUID):
+    """以指定 role + key_id 构造内存 app（认证结果与 token claims 同源，actor 可控）。"""
+
+    class _FakeRequest:
+        def __init__(self):
+            self.scope: dict = {}
+
+    req = _FakeRequest()
+
+    async def _fake_auth(_session, _key):
+        return {
+            "key_id": key_id,
+            "role": role,
+            "project_scope": [],
+            "lax_mode": False,
+        }
+
+    def _fake_token(*_args, **_kwargs):
+        return AccessToken(
+            token="dummy",
+            client_id=str(key_id),
+            scopes=[role],
+            claims={
+                "role": role,
+                "key_id": str(key_id),
+                "project_scope": [],
+                "lax_mode": False,
+            },
+        )
+
+    middleware_ns = "mem_lake.gateway.middleware"
+    monkeypatch.setattr(
+        f"{middleware_ns}.extract_access_key_from_headers",
+        lambda _headers: "dummy-key",
+    )
+    monkeypatch.setattr(f"{middleware_ns}.authenticate_access_key", _fake_auth)
+    monkeypatch.setattr(f"{middleware_ns}.get_http_request", lambda: req)
+    monkeypatch.setattr(f"{middleware_ns}.get_access_token", _fake_token)
+    monkeypatch.setattr(
+        "mem_lake.gateway.dependencies.get_access_token", _fake_token
+    )
+    return create_mcp_server()
+
+
+async def _delete_access_keys(*key_ids: uuid.UUID) -> None:
+    """测试自清：删除本次创建的 Key，避免测试 Key 残留累积。"""
+    from sqlalchemy import delete
+
+    from mem_lake.auth.models import AccessKey
+    from mem_lake.db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            delete(AccessKey).where(AccessKey.id.in_(list(key_ids)))
+        )
+        await session.commit()
+
+
+async def test_create_access_key_with_name_owner(admin_app):
+    """C1：create 入参 name/owner 落库，并在 create/list 出参回显。"""
+    created = None
+    try:
+        async with Client(admin_app) as client:
+            created = _parse(
+                await client.call_tool(
+                    "create_access_key",
+                    {
+                        "role": "dev",
+                        "project_scope": [str(uuid.uuid4())],
+                        "name": "示例系统-Dev-Agent",
+                        "owner": "张三",
+                    },
+                )
+            )
+            assert created["name"] == "示例系统-Dev-Agent"
+            assert created["owner"] == "张三"
+
+            listed = _parse(
+                await client.call_tool("list_access_keys", {"role": "dev"})
+            )
+            hit = next(
+                i for i in listed["items"] if i["key_id"] == created["key_id"]
+            )
+            assert hit["name"] == "示例系统-Dev-Agent"
+            assert hit["owner"] == "张三"
+    finally:
+        if created is not None:
+            await _delete_access_keys(uuid.UUID(created["key_id"]))
+
+
+async def test_query_audit_log_actor_name(monkeypatch):
+    """C1：审计 actor 回显 name（actor 仍为 UUID 原值，兼容既有调用）。"""
+    admin_key = uuid.uuid4()
+    created = None
+    try:
+        async with Client(
+            _install_identity(monkeypatch, role="admin", key_id=admin_key)
+        ) as client:
+            created = _parse(
+                await client.call_tool(
+                    "create_access_key",
+                    {
+                        "role": "admin",
+                        "project_scope": [],
+                        "name": "示例系统-张三-admin",
+                        "owner": "张三",
+                    },
+                )
+            )
+        named_key = uuid.UUID(created["key_id"])
+
+        # 以被命名 Key 的身份调用工具 → 产生 actor=该 Key 的 tool_call 审计
+        async with Client(
+            _install_identity(monkeypatch, role="admin", key_id=named_key)
+        ) as client:
+            _parse(await client.call_tool("list_access_keys", {}))
+
+        async with Client(
+            _install_identity(monkeypatch, role="admin", key_id=admin_key)
+        ) as client:
+            res = _parse(
+                await client.call_tool(
+                    "query_audit_log",
+                    {
+                        "actor": str(named_key),
+                        "action": "tool_call",
+                        "limit": 10,
+                    },
+                )
+            )
+        rows = [r for r in res["logs"] if r["actor"] == str(named_key)]
+        assert rows, "应能查到被命名 Key 的 tool_call 审计"
+        assert rows[0]["actor_name"] == "示例系统-张三-admin"
+    finally:
+        if created is not None:
+            await _delete_access_keys(uuid.UUID(created["key_id"]))

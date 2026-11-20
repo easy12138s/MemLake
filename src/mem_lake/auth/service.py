@@ -116,6 +116,8 @@ async def create_access_key(
     project_scope: dict[str, Any],
     created_by: str = "system",
     lax_mode: bool = False,
+    name: str | None = None,
+    owner: str | None = None,
 ) -> tuple[uuid.UUID, str]:
     """创建 Access Key。
 
@@ -130,6 +132,7 @@ async def create_access_key(
 
     project_scope：两级访问范围 {systems:[...], projects:[...]}（system：PM 需求层；project：资产层）。
     lax_mode：宽松模式标记（false=严格需审批，true=免审批直接入库）。
+    name/owner：可读名称/用途标签与使用人（可选，C1/ISSUE-18；NULL=未登记）。
 
     不 commit。
     """
@@ -144,6 +147,8 @@ async def create_access_key(
         id=key_id,
         key_hash=key_hash,
         role=role,
+        name=name,
+        owner=owner,
         project_scope=scope,
         status="active",
         lax_mode=lax_mode,
@@ -159,6 +164,8 @@ async def create_access_key(
         target_id=key_id,
         detail={
             "role": role,
+            "name": name,
+            "owner": owner,
             "system_count": len(scope["systems"]),
             "project_count": len(scope["projects"]),
             "lax_mode": lax_mode,

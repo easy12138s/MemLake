@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile."
-version: 1.14.0
+version: 1.15.0
 ---
 
 # Admin Skills（管理员）
@@ -117,7 +117,7 @@ version: 1.14.0
 
 1. **默认用 review_auto_process**：不要跳过它直接 review_approve，否则会跳过冲突检测。
 
-2. **Access Key 明文仅创建时返回一次**：丢失后只能吊销重建。
+2. **Access Key 明文仅创建时返回一次**：丢失后只能吊销重建。**建 Key 时填写 name/owner**（如「示例系统-张三-dev」/「张三」）——否则审计与列表里只有裸 UUID，`query_audit_log` 的 `actor_name` 无从回显。
 
 3. **review_reject 必须填 review_comment**：拒绝原因会写入审计日志。
 

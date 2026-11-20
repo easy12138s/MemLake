@@ -38,6 +38,16 @@ class AccessKey(Base):
     role: Mapped[str] = mapped_column(
         String(16), comment="业务角色: admin/pm/dev"
     )
+    name: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="可读名称/用途标签（如 示例系统-张三-dev）；NULL=未登记",
+    )
+    owner: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        comment="使用人/归属人（可选，便于辨认；审计仍保留 Key UUID）",
+    )
     project_scope: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         default=dict,
