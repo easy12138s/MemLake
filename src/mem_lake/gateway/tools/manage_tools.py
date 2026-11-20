@@ -93,6 +93,10 @@ class AccessKeyOutput(BaseModel):
 
     key_id: uuid.UUID = Field(description="Access Key ID")
     role: str = Field(description="角色")
+    name: str | None = Field(
+        default=None, description="可读名称/用途标签（NULL=未登记）"
+    )
+    owner: str | None = Field(default=None, description="使用人/归属人")
     project_scope: list[str] = Field(description="项目范围（项目 ID 字符串列表）")
     status: str = Field(description="状态：active/revoked")
     lax_mode: bool = Field(
@@ -124,6 +128,10 @@ class CreateAccessKeyOutput(BaseModel):
         description="Access Key 明文（仅此一次返回，调用方负责安全保存）"
     )
     role: str = Field(description="角色")
+    name: str | None = Field(
+        default=None, description="可读名称/用途标签（NULL=未登记）"
+    )
+    owner: str | None = Field(default=None, description="使用人/归属人")
     project_scope: list[str] = Field(description="项目范围")
     lax_mode: bool = Field(
         default=False,
@@ -341,6 +349,16 @@ def register_manage_tools(mcp: FastMCP) -> None:
             default=False,
             description="初始审核模式：false=严格(需审批) true=宽松(免审批直接入库)",
         ),
+        name: str | None = Field(
+            default=None,
+            max_length=64,
+            description="可读名称/用途标签（可选，如「示例系统-张三-dev」），便于 list/审计辨认",
+        ),
+        owner: str | None = Field(
+            default=None,
+            max_length=128,
+            description="使用人/归属人（可选，如「张三」）",
+        ),
     ) -> CreateAccessKeyOutput:
         """创建 Access Key，返回明文（仅此一次，调用方负责安全保存）。
 
@@ -367,12 +385,16 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     },
                     created_by=key_id_actor,
                     lax_mode=bool(lax_mode),
+                    name=name,
+                    owner=owner,
                 )
                 mcp_url = get_settings().MCP_PUBLIC_URL
                 return CreateAccessKeyOutput(
                     key_id=new_key_id,
                     plaintext=plaintext,
                     role=role,
+                    name=name,
+                    owner=owner,
                     project_scope=[str(pid) for pid in project_scope],
                     lax_mode=bool(lax_mode),
                     mcp_config=_build_mcp_config(mcp_url, plaintext),
@@ -485,6 +507,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     key_id=ak.id,
                     plaintext=plaintext,
                     role=ak.role,
+                    name=ak.name,
+                    owner=ak.owner,
                     project_scope=_project_scope_list(ak),
                     lax_mode=bool(ak.lax_mode),
                     mcp_config=_build_mcp_config(mcp_url, plaintext),
@@ -906,6 +930,8 @@ def _to_access_key_output(access_key: AccessKey) -> AccessKeyOutput:
     return AccessKeyOutput(
         key_id=access_key.id,
         role=access_key.role,
+        name=access_key.name,
+        owner=access_key.owner,
         project_scope=_project_scope_list(access_key),
         status=access_key.status,
         lax_mode=bool(access_key.lax_mode),

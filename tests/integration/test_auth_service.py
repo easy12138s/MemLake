@@ -80,6 +80,30 @@ class TestCreateAccessKey:
                 db_session, role="guest", project_scope=_scope(uuid.uuid4())
             )
 
+    async def test_create_with_name_and_owner(self, db_session):
+        """C1/ISSUE-18：name（用途标签）与 owner（使用人）落库；缺省为 None。"""
+        key_id, _ = await create_access_key(
+            db_session,
+            role="dev",
+            project_scope=_scope(uuid.uuid4()),
+            created_by="ak_admin",
+            name="示例系统-张三-dev",
+            owner="张三",
+        )
+        row = await get_access_key_by_id(db_session, key_id)
+        assert row is not None
+        assert row.name == "示例系统-张三-dev"
+        assert row.owner == "张三"
+
+        # 未命名 Key 保持 NULL（存量兼容，不回填）
+        plain_id, _ = await create_access_key(
+            db_session, role="dev", project_scope=_scope()
+        )
+        plain_row = await get_access_key_by_id(db_session, plain_id)
+        assert plain_row is not None
+        assert plain_row.name is None
+        assert plain_row.owner is None
+
 
 # ============================================================================
 # authenticate_access_key 端到端
@@ -235,6 +259,20 @@ class TestListAccessKeys:
         for k in keys:
             with pytest.raises(MissingGreenlet):
                 _ = k.key_hash
+
+    async def test_list_includes_name_owner(self, db_session):
+        """C1/ISSUE-18：list 出参可见 name/owner（未命名的为 None）。"""
+        named_id, _ = await create_access_key(
+            db_session,
+            role="pm",
+            project_scope=_scope(uuid.uuid4()),
+            name="示例系统-李四-pm",
+            owner="李四",
+        )
+        keys = await list_access_keys(db_session, role="pm")
+        hit = next(k for k in keys if k.id == named_id)
+        assert hit.name == "示例系统-李四-pm"
+        assert hit.owner == "李四"
 
 
 # ============================================================================

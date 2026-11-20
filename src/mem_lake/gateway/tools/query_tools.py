@@ -27,8 +27,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.audit.service import query_audit_logs
+from mem_lake.auth.models import AccessKey
 from mem_lake.gateway.dependencies import (
     get_current_project_scope,
     get_current_role,
@@ -216,6 +219,10 @@ class AuditLogItemOutput(BaseModel):
 
     log_id: uuid.UUID = Field(description="日志 ID")
     actor: str = Field(description="操作者")
+    actor_name: str | None = Field(
+        default=None,
+        description="操作者可读名称（access_key.name；未登记/非 Key actor 为 None）",
+    )
     action: str = Field(
         description="操作类型：write/update/approve/reject/create/revoke/rotate/"
         "update_scope/update_system_scope/update_mode/tool_call"
@@ -554,9 +561,14 @@ def register_query_tools(mcp: FastMCP) -> None:
                     limit=limit,
                     offset=offset,
                 )
-
+                actor_names = await _resolve_actor_names(
+                    session, {log.actor for log in logs if log.actor}
+                )
                 return QueryAuditLogOutput(
-                    logs=[_to_audit_log_item_output(log) for log in logs],
+                    logs=[
+                        _to_audit_log_item_output(log, actor_names.get(log.actor))
+                        for log in logs
+                    ],
                     total=len(logs),
                     limit=limit,
                     offset=offset,
@@ -570,17 +582,49 @@ def register_query_tools(mcp: FastMCP) -> None:
 # ============================================================================
 
 
-def _to_audit_log_item_output(log: "AuditLog") -> AuditLogItemOutput:
-    """从 AuditLog ORM 对象构造 AuditLogItemOutput。"""
+def _to_audit_log_item_output(
+    log: "AuditLog", actor_name: str | None = None
+) -> AuditLogItemOutput:
+    """从 AuditLog ORM 对象构造 AuditLogItemOutput。
+
+    actor 保留原始字符串（通常是 Access Key UUID，兼容既有消费方）；
+    actor_name 为可读名称（由 _resolve_actor_names 另行解析，缺省 None）。
+    """
     return AuditLogItemOutput(
         log_id=log.id,
         actor=log.actor,
+        actor_name=actor_name,
         action=log.action,
         target_type=log.target_type,
         target_id=log.target_id,
         detail=log.detail or {},
         created_at=log.created_at.isoformat() if log.created_at else None,
     )
+
+
+async def _resolve_actor_names(
+    session: AsyncSession, actors: set[str]
+) -> dict[str, str]:
+    """actor 字符串 → access_key.name 映射（C1/ISSUE-18）。
+
+    仅解析「合法 UUID 且已登记 name」的 actor；字面量 actor（ak_dev/system 等）
+    与非 UUID 值跳过，未命名 Key 不进映射（出参缺省 None，不回填存量）。
+    """
+    ids: list[uuid.UUID] = []
+    for actor in actors:
+        try:
+            ids.append(uuid.UUID(actor))
+        except ValueError:
+            continue
+    if not ids:
+        return {}
+    result = await session.execute(
+        select(AccessKey.id, AccessKey.name).where(
+            AccessKey.id.in_(ids),
+            AccessKey.name.is_not(None),
+        )
+    )
+    return {str(key_id): name for key_id, name in result.all()}
 
 
 def _to_project_info(node: KnowledgeNode, include_profile: bool = False) -> ProjectInfo:

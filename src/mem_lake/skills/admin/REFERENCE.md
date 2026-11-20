@@ -155,8 +155,12 @@
 | role | str | 是 | 绑定角色：`admin` / `pm` / `dev` |
 | project_scope | list[UUID] | 是 | 项目范围限制（admin 传空列表 `[]` 表示不受限）|
 | lax_mode | bool | 否 | 初始审核模式：`true`=宽松，`false`=严格；默认 `false` |
+| name | str \| None | 否 | 可读名称/用途标签（≤64 字符，如「示例系统-张三-dev」），便于 list 与审计辨认 |
+| owner | str \| None | 否 | 使用人/归属人（≤128 字符，如「张三」）|
 
-**返回** `CreateAccessKeyOutput`：`key_id` + `plaintext`（明文仅此一次）+ `role` + `project_scope` + `lax_mode` + `mcp_config` + `user_hint`。
+**返回** `CreateAccessKeyOutput`：`key_id` + `plaintext`（明文仅此一次）+ `role` + `name` + `owner` + `project_scope` + `lax_mode` + `mcp_config` + `user_hint`。
+
+> **name/owner 建议填写**：审计 actor 只有 Key UUID，命名后 `list_access_keys` 与 `query_audit_log` 的 `actor_name` 才能回显可读身份（未命名存量 Key 保持 NULL，不回填）。
 
 ---
 
@@ -178,7 +182,7 @@
 | status_filter | str \| None | 否 | 按状态过滤：`active` / `revoked` |
 | lax_mode | bool \| None | 否 | 按审核模式过滤 |
 
-**返回** `AccessKeyListOutput`：`{items: list[AccessKeyOutput], total: int}`
+**返回** `AccessKeyListOutput`：`{items: list[AccessKeyOutput], total: int}`；每项含 `key_id/role/name/owner/project_scope/status/lax_mode/created_at/revoked_at`（`name/owner` 为 NULL 即未登记）。
 
 ---
 
@@ -256,6 +260,10 @@
 | end_time | datetime \| None | 否 | 结束时间 |
 | limit | int | 否 | 返回数量上限，默认 100 |
 | offset | int | 否 | 分页偏移，默认 0 |
+
+**返回** `QueryAuditLogOutput`：`{logs: list[AuditLogItemOutput], total, limit, offset}`；每条含 `log_id/actor/actor_name/action/target_type/target_id/detail/created_at`。
+
+> `actor` 恒为原始操作者字符串（通常是 Access Key UUID，兼容既有消费方）；`actor_name` 为已登记名称（`access_key.name`），非 Key actor（`ak_dev`/`system` 等）或未命名 Key 为 `null`。核对外部人员身份优先看 `actor_name`。
 
 ---
 
