@@ -303,6 +303,10 @@ class VectorSearcher:
         （窗口近似）。planner 对该形态选全表排序（索引被聚合形态抵消），
         因此不受 HNSW 碎片化影响；代价与聚合前置的旧实现同量级。
         """
+        # REINDEX 观测信号：exact 兜底每命中一次计一次（运维按 window/exact
+        # 占比判断 HNSW 碎片化；此前只计 window，该指标恒为 100% 形同虚设）。
+        VECTOR_PROBE_PATH.labels(path="exact").inc()
+
         distance = NodeEmbedding.content_vector.max_inner_product(query_vector)
         sim = -distance  # 余弦相似度（归一化向量），越大越相似
 

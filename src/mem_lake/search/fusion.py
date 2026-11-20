@@ -208,8 +208,8 @@ async def hybrid_search(
 
     分阶段耗时（A5）：embed / vector / fulltext / graph / fuse / rerank 各阶段
     经 SEARCH_PHASE_DURATION 上报 /metrics，用于端到端延迟拆解——
-    查询向量在编排层前置 embed（与 VectorSearcher.search 内部等价，同
-    prompt_name="query"），向量引擎以 search_by_vector 消费。
+    查询向量在编排层作为独立任务与三引擎并行启动（保留 embed 独立计时，
+    不因埋点牺牲原有 max(引擎延迟) 的并行收益），向量引擎以 search_by_vector 消费。
 
     参数：
         query: 查询文本（向量引擎 embed_one 生成查询向量，全文引擎 websearch_to_tsquery）
@@ -240,14 +240,20 @@ async def hybrid_search(
     graph_searcher = GraphSearcher(graph_store)
     ft_query = fulltext_query if fulltext_query is not None else query
 
-    # 查询向量前置（A5 分阶段计时）：与 VectorSearcher.search 内部 embed_one 等价
-    # （同 prompt_name="query"），前置后 embed 耗时从 vector 引擎计时中独立出来，
-    # 向量引擎改用 search_by_vector 消费同一向量
-    t_embed = time.time()
-    query_vector = await embedding_client.embed_one(query, prompt_name="query")
-    SEARCH_PHASE_DURATION.labels(phase="embed").observe(time.time() - t_embed)
+    # 查询向量作为并发任务启动（A5）：embed 独立计时，同时与三引擎并行，
+    # 避免串行 await 把总延迟从 max(embed, 引擎) 变成 embed + max(引擎)。
+    # 向量引擎消费同一 Task；embed 一并进入 gather 以传播异常、避免孤儿任务。
+    async def _embed_task() -> list[float]:
+        t_embed = time.time()
+        try:
+            return await embedding_client.embed_one(query, prompt_name="query")
+        finally:
+            SEARCH_PHASE_DURATION.labels(phase="embed").observe(time.time() - t_embed)
+
+    query_vector_task = asyncio.ensure_future(_embed_task())
 
     async def _vector_task() -> list[SearchResult]:
+        query_vector = await query_vector_task
         t = time.time()
         async with AsyncSessionLocal() as s:
             result = await vector_searcher.search_by_vector(
@@ -281,11 +287,20 @@ async def hybrid_search(
         SEARCH_PHASE_DURATION.labels(phase="graph").observe(time.time() - t)
         return result
 
-    # 并行执行三引擎检索，asyncio.gather 总延迟 ≈ max(三引擎延迟)
-    vector_results, fulltext_results, graph_results, fulltext_tsquery = (
-        await asyncio.gather(
-            _vector_task(), _fulltext_task(), _graph_task(), _fulltext_tsquery_task()
-        )
+    # 并行执行 embed 与三引擎检索，总延迟 ≈ max(embed, 三引擎延迟)；
+    # query_vector_task 同时被 _vector_task 与 gather 等待（同一 Task，不重复执行）
+    (
+        vector_results,
+        _,
+        fulltext_results,
+        graph_results,
+        fulltext_tsquery,
+    ) = await asyncio.gather(
+        _vector_task(),
+        query_vector_task,
+        _fulltext_task(),
+        _graph_task(),
+        _fulltext_tsquery_task(),
     )
 
     # 向量与全文 RRF 融合。融合不按 candidate_n 截断而取全量（上界=2×top_k）——

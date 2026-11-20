@@ -84,7 +84,8 @@ async def init_knowledge_schema(session: AsyncSession) -> None:
       BEFORE INSERT OR UPDATE 时用内置 tsvector_update_trigger 维护 content_tsv
       基于 'chinese' 配置（zhparser 分词）从 title + content 拼接生成
 
-    幂等：DROP TRIGGER IF EXISTS + CREATE TRIGGER。
+    幂等：存在性守卫——触发器已存在则跳过 DDL（定义变更须走 Alembic 迁移），
+    仅缺失时 DROP TRIGGER IF EXISTS + CREATE TRIGGER。
 
     注：项目隔离由应用层 validate_project_access + FilterSpec（project_id 过滤）
     实现，不创建 RLS 策略（部署连接用户是表 owner，RLS 不 FORCE 时天然绕过）。

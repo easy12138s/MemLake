@@ -745,6 +745,19 @@ async def test_get_node_info_ownership_lookup(
         properties={"name": "n", "type": "function", "responsibility": "r", "file_path": "src/a.py"},
         tags=[], created_by="ak_dev",
     )
+    # 双空归属是历史/异常数据：当前 schema 禁止创建，直接按存量形态插入绕过校验
+    from sqlalchemy import text as sa_text
+
+    orphan_id = uuid.uuid4()
+    await db_session.execute(
+        sa_text(
+            "INSERT INTO knowledge_node (id, project_id, system_id, type, title, content, "
+            "properties, tags, source, status, version, created_by) "
+            "VALUES (:id, NULL, NULL, 'Solution', '双空归属-诊断', '验证无归属节点默认拒绝', "
+            "'{}'::jsonb, '[]'::jsonb, '{}'::jsonb, 'approved', 1, 'ak_pm')"
+        ),
+        {"id": orphan_id},
+    )
     await db_session.commit()
 
     admin = _make_role_app(monkeypatch, role="admin", project_id=str(uuid.uuid4()))
@@ -761,6 +774,11 @@ async def test_get_node_info_ownership_lookup(
             info2 = await _call(client, "get_node_info", {"node_id": str(asset.id)})
             assert info2["project_id"] == str(project_id)
 
+            # 双空归属节点：admin 可自证（排查历史/异常数据）
+            info_orphan = await _call(client, "get_node_info", {"node_id": str(orphan_id)})
+            assert info_orphan["found"] is True
+            assert info_orphan["project_id"] is None and info_orphan["system_id"] is None
+
             # 不存在节点：found=False + hint（而非抛错中断排查）
             miss = await _call(client, "get_node_info", {"node_id": str(uuid.uuid4())})
             assert miss["found"] is False
@@ -773,6 +791,12 @@ async def test_get_node_info_ownership_lookup(
                 client, "get_node_info", {"node_id": str(asset.id)}
             )
             assert "权限" in err or "越权" in err or "scope" in err.lower()
+
+            # 双空归属节点：无 scope 可校验 → 非 admin 默认拒绝（不回内容）
+            err_orphan = await _expect_tool_error(
+                client, "get_node_info", {"node_id": str(orphan_id)}
+            )
+            assert "权限" in err_orphan
 
         # RBAC：dev 绑定该 system 可查悬浮需求（与 get_requirement_context 同口径）
         dev2 = _make_role_app(
@@ -788,11 +812,11 @@ async def test_get_node_info_ownership_lookup(
         from mem_lake.audit.models import AuditLog
         from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
 
-        for n in (floating, asset):
+        for nid in (floating.id, asset.id, orphan_id):
             await graph_store._exec_cypher(
-                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(n.id)}
+                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)}
             )
-        ids = [floating.id, asset.id]
+        ids = [floating.id, asset.id, orphan_id]
         await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
         await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
         await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))

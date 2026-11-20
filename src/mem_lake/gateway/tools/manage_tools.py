@@ -68,7 +68,6 @@ from mem_lake.gateway.tools._shared import (
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     add_system_projects,
-    count_system_projects,
     create_node,
     create_system,
     get_system,
@@ -623,14 +622,13 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     rows = await list_systems(session)
                     result = []
                     for row in rows:
-                        cnt = await count_system_projects(session, system_id=row.id)
                         pids = await get_system_project_ids(session, system_id=row.id)
                         result.append(
                             {
                                 "system_id": str(row.id),
                                 "name": row.name,
                                 "description": row.description,
-                                "project_count": cnt,
+                                "project_count": len(pids),
                                 "project_ids": sorted(str(p) for p in pids),
                             }
                         )
