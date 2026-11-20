@@ -22,7 +22,7 @@
     # 多 system + 项目组合保留
     python -m scripts.cleanup_test_leftovers \\
         --keep-system <系统名称或UUID> --keep-system <另一系统> \\
-        --keep-project 6d50c0c9-43ba-4b8f-9bac-16fa1155714b --execute
+        --keep-project <project-uuid> --execute
 
 安全护栏：
 - --keep-system 未指定或解析不到 → 直接报错退出（宁拒勿误删）

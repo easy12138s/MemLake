@@ -492,6 +492,13 @@ def register_query_tools(mcp: FastMCP) -> None:
                     validate_project_access(node.project_id)
                 elif node.system_id is not None:
                     validate_system_access(node.system_id)
+                else:
+                    # 双空归属（历史/异常数据）无任何 scope 可校验：非 admin 默认拒绝，
+                    # 避免返回内容造成越权读取（admin 仍可自证/排查）
+                    if get_current_role() != "admin":
+                        raise ToolError(
+                            "权限拒绝：节点无项目/系统归属，非 admin 不可查看"
+                        )
                 return NodeInfoOutput(
                     node_id=node.id,
                     found=True,

@@ -24,3 +24,23 @@ def test_hits_statement_is_pure_row_scan_shape():
     assert "ORDER BY" in sql, "缺 ORDER BY 距离表达式，索引不会被选用"
     assert "LIMIT" in sql, "缺 LIMIT，索引有序扫截断失效"
     assert "<#>" in sql, "缺内积距离算子（max_inner_product 未正确编译）"
+
+
+async def test_exact_fallback_increments_probe_metric():
+    """exact 兜底必须计入 VECTOR_PROBE_PATH，否则运维的 REINDEX 信号恒为 window=100%。"""
+    from mem_lake.observability.metrics import VECTOR_PROBE_PATH
+    from mem_lake.search.vector import VectorSearcher
+
+    class _StopSession:
+        async def execute(self, *_args, **_kwargs):
+            raise RuntimeError("stop-after-counter")
+
+    counter = VECTOR_PROBE_PATH.labels(path="exact")
+    before = counter._value.get()
+    try:
+        await VectorSearcher(None)._exact_results(_StopSession(), [0.0] * 1024, 5, None)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("fake session should stop after the metric increment")
+    assert counter._value.get() == before + 1

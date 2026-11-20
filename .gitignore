@@ -55,3 +55,6 @@ docs/*
 scripts/*
 !scripts/__init__.py
 !scripts/calibrate_conflict_threshold.py
+
+# opencode 本地计划/会话产物：不入库（防 git add . 误提交）
+.opencode/

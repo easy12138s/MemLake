@@ -352,7 +352,11 @@ def register_review_tools(mcp: FastMCP) -> None:
                 submitted_by=batch.submitted_by,
                 item_count=len(batch.items) if batch.items else 0,
                 created=created,
-                edges_created=count_created_edges(batch) if created else None,
+                edges_created=(
+                    count_created_edges(batch)
+                    if result["decision"] == "auto_approved"
+                    else None
+                ),
             )
         except (
             BatchNotFoundError,
