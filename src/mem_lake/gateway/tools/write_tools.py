@@ -82,14 +82,10 @@ def _ownership_mismatch_hint(
     system_name: str | None,
     system_member_ids: set[uuid.UUID] | None,
 ) -> str:
-    """节点归属与目标项目不一致的报错文案（ISSUE-13/14 诊断性修复）。
+    """节点归属与目标项目不一致的报错文案（ISSUE-13/14）。
 
-    三态拆解，让报错自己指出修复路径：
-    1. 悬浮节点（node.project_id 为 None）：说明「悬浮需求」，update_node
-       仅支持项目归属节点；
-    2. 归属他项目：回实际 project_id；
-    3. 目标项目不在节点 system 的归属清单：追加 add_projects 修复指引
-       （system_name/member_ids 由调用方在错误路径惰性查询提供）。
+    三态：悬浮节点 / 归属他项目（回实际 project_id）/ 目标项目不在节点
+    system 的归属清单（追加 add_projects 修复指引；system 信息仅错误路径查询）。
     """
     msg = f"节点不属于本项目: {node.id}"
     if node.project_id is None:
@@ -481,8 +477,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                 except NodeNotFoundError:
                     raise PayloadValidationError(f"node_id 不存在: {node_id}")
                 if node.project_id != project_id:
-                    # 归属诊断（ISSUE-13/14）：错误路径惰性查询 system 归属，
-                    # 让报错自带三态修复指引；成功路径零额外开销
+                    # 归属诊断：成功路径零额外查询，仅错误路径查 system 归属
                     system_name: str | None = None
                     member_ids: set[uuid.UUID] | None = None
                     if node.system_id is not None:
@@ -525,6 +520,7 @@ def register_write_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]  # 与文件内其他工具同源噪音（9c68be5 同款）
     async def bind_requirement_to_project(
         requirement_ids: list[uuid.UUID] = Field(
+            min_length=1,
             max_length=get_settings().MAX_ITEMS_PER_BATCH,
             description="待绑定/解绑的需求节点 ID 列表（保序去重，逐项生成审批项；上限=批次 item 上限）",
         ),
@@ -539,19 +535,13 @@ def register_write_tools(mcp: FastMCP) -> None:
             default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
         ),
     ) -> WriteToolOutput:
-        """悬浮需求 ↔ 项目归属绑定/解绑（ISSUE-15 一等操作）。
+        """悬浮需求 ↔ 项目归属绑定/解绑（ISSUE-15）。
 
-        PM/Admin 工具。归属变更是治理操作：走审批流留痕（宽松模式无冲突自动
-        入库——绑定不触发冲突检测，实际体验等同直写）；system_id 不随绑定
-        变更（跨 system 搬迁是另一操作）；重复绑定幂等跳过；已是目标归属的
-        项不进批次。底层经 node+update 审批项的 project_id 载荷落地
-        （版本 +1 + 审计 + AGE 图属性同步，不重算向量）。
-        回执 affected=[{node_id,node_type,title,project_id}] 为绑定确定性依据。
+        PM/Admin 治理操作，走审批流但不触发冲突检测；system_id 不变；
+        已是目标归属的项幂等跳过；解绑传 project_id=None。回执 affected 为
+        绑定确定性依据（底层 node+update 载荷 → 版本+1、审计、图属性同步）。
         """
         try:
-            if not requirement_ids:
-                raise PayloadValidationError("requirement_ids 不能为空")
-            # 目标项目访问权（解绑无目标项目；源项目可见性在预校验内逐项判）
             if project_id is not None:
                 validate_project_access(project_id)
             uniq = list(dict.fromkeys(requirement_ids))

@@ -467,11 +467,9 @@ def register_query_tools(mcp: FastMCP) -> None:
     ) -> NodeInfoOutput:
         """按 node_id 反查节点归属与状态（ISSUE-14 诊断工具）。
 
-        PM/Dev/Admin 共享。反馈场景：update_node 报「节点不属于本项目」后，
-        无工具回答「这个节点到底属于哪个 project / system、是不是悬浮」。
-        本工具返回归属四元组（project_id / system_id / node_type / status）。
-        权限口径与 get_requirement_context 一致：有项目按项目校验；悬浮需求
-        按 system 校验；两者皆无（防御性）不额外校验。
+        PM/Dev/Admin 共享。返回归属四元组（project_id / system_id / node_type /
+        status）；update_node 报「节点不属于本项目」后据此定位真实归属。
+        权限：有项目按项目、悬浮按 system，双空归属（防御性）对非 admin 拒绝。
         节点不存在或已软删：found=false + hint（不抛错，避免中断排查）。
         """
         try:
@@ -487,18 +485,12 @@ def register_query_tools(mcp: FastMCP) -> None:
                             "若刚写入请确认审批已通过（status=approved）"
                         ),
                     )
-                # 权限：有项目按项目；悬浮需求按 system（与 get_requirement_context 同口径）
                 if node.project_id is not None:
                     validate_project_access(node.project_id)
                 elif node.system_id is not None:
                     validate_system_access(node.system_id)
-                else:
-                    # 双空归属（历史/异常数据）无任何 scope 可校验：非 admin 默认拒绝，
-                    # 避免返回内容造成越权读取（admin 仍可自证/排查）
-                    if get_current_role() != "admin":
-                        raise ToolError(
-                            "权限拒绝：节点无项目/系统归属，非 admin 不可查看"
-                        )
+                elif get_current_role() != "admin":
+                    raise ToolError("权限拒绝：节点无项目/系统归属，非 admin 不可查看")
                 return NodeInfoOutput(
                     node_id=node.id,
                     found=True,
@@ -510,7 +502,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                     system_id=node.system_id,
                     requirement_key=node.requirement_key,
                 )
-        except (NodeNotFoundError, ValueError) as e:
+        except ValueError as e:
             raise to_tool_error(e) from e
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
@@ -569,7 +561,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                     offset=offset,
                 )
                 actor_names = await _resolve_actor_names(
-                    session, {log.actor for log in logs if log.actor}
+                    session, {log.actor for log in logs}
                 )
                 return QueryAuditLogOutput(
                     logs=[
@@ -592,11 +584,7 @@ def register_query_tools(mcp: FastMCP) -> None:
 def _to_audit_log_item_output(
     log: "AuditLog", actor_name: str | None = None
 ) -> AuditLogItemOutput:
-    """从 AuditLog ORM 对象构造 AuditLogItemOutput。
-
-    actor 保留原始字符串（通常是 Access Key UUID，兼容既有消费方）；
-    actor_name 为可读名称（由 _resolve_actor_names 另行解析，缺省 None）。
-    """
+    """从 AuditLog ORM 对象构造 AuditLogItemOutput（actor_name 由调用方解析）。"""
     return AuditLogItemOutput(
         log_id=log.id,
         actor=log.actor,
@@ -612,11 +600,7 @@ def _to_audit_log_item_output(
 async def _resolve_actor_names(
     session: AsyncSession, actors: set[str]
 ) -> dict[str, str]:
-    """actor 字符串 → access_key.name 映射（C1/ISSUE-18）。
-
-    仅解析「合法 UUID 且已登记 name」的 actor；字面量 actor（ak_dev/system 等）
-    与非 UUID 值跳过，未命名 Key 不进映射（出参缺省 None，不回填存量）。
-    """
+    """actor → access_key.name 映射：仅合法 UUID 且已登记 name 的 actor 入映射。"""
     ids: list[uuid.UUID] = []
     for actor in actors:
         try:
@@ -747,8 +731,7 @@ async def _get_project_info_core(
                     "补建后所有 Agent 可自证项目与代码仓库的对应关系"
                 )
         elif not projects:
-            # ISSUE-13：admin 的 projects 只列已建画像项目，空清单 ≠ key 无项目，
-            # 须显式说明语义并指向归属核对路径（scope_meta 对 admin 恒 all 是设计使然）
+            # admin 空清单 = 尚无画像项目（≠ 无项目），指向归属对账路径
             hint = (
                 "admin 的 projects 仅列出已建画像（manage_project_profile）的项目；"
                 "空清单表示尚未创建任何项目画像，不代表无项目或无归属。项目身份与"
@@ -786,20 +769,19 @@ async def _get_project_info_core(
             if include_scope_meta
             else None
         )
+        if project:
+            return GetProjectInfoOutput(
+                action="get", scope=scope_meta, project=project
+            )
         return GetProjectInfoOutput(
             action="get",
             scope=scope_meta,
-            project=project,
-            # ISSUE-13：null 必须可行动——区分「无画像」并指向归属核对路径
-            reason=None if project else "no_profile",
+            project=None,
+            reason="no_profile",
             hint=(
-                None
-                if project
-                else (
-                    "该项目未建画像（no_profile）。注意：项目无画像 ≠ 项目不存在或"
-                    "不在 system 归属——项目身份与归属请用 manage_system action=list "
-                    "的 project_ids 对账，缺失则 add_projects 挂载。"
-                )
+                "该项目未建画像（no_profile）。无画像 ≠ 项目不存在或不在 system 归属——"
+                "归属请用 manage_system action=list 的 project_ids 对账，缺失则 "
+                "add_projects 挂载。"
             ),
         )
 

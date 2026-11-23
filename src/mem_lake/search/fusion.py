@@ -32,6 +32,12 @@ from mem_lake.search.filters import FilterSpec
 logger = logging.getLogger("mem_lake.search.fusion")
 
 
+def _observe_engine(engine: str, seconds: float) -> None:
+    """引擎耗时同时记入 engine 直方图（监控页消费）与 A5 phase 直方图（拆解用）。"""
+    SEARCH_ENGINE_DURATION.labels(engine=engine).observe(seconds)
+    SEARCH_PHASE_DURATION.labels(phase=engine).observe(seconds)
+
+
 @dataclass
 class SearchResult:
     """三引擎统一检索结果。
@@ -206,10 +212,8 @@ async def hybrid_search(
     三引擎在各自连接上真并行，总延迟 ≈ max(三引擎延迟)。检索为只读操作，
     独立 session 不涉及事务一致性问题。
 
-    分阶段耗时（A5）：embed / vector / fulltext / graph / fuse / rerank 各阶段
-    经 SEARCH_PHASE_DURATION 上报 /metrics，用于端到端延迟拆解——
-    查询向量在编排层作为独立任务与三引擎并行启动（保留 embed 独立计时，
-    不因埋点牺牲原有 max(引擎延迟) 的并行收益），向量引擎以 search_by_vector 消费。
+    分阶段耗时（A5）：embed / vector / fulltext / graph / fuse / rerank 经
+    SEARCH_PHASE_DURATION 上报（查询向量与三引擎并行，不牺牲原有并行收益）。
 
     参数：
         query: 查询文本（向量引擎 embed_one 生成查询向量，全文引擎 websearch_to_tsquery）
@@ -240,9 +244,8 @@ async def hybrid_search(
     graph_searcher = GraphSearcher(graph_store)
     ft_query = fulltext_query if fulltext_query is not None else query
 
-    # 查询向量作为并发任务启动（A5）：embed 独立计时，同时与三引擎并行，
-    # 避免串行 await 把总延迟从 max(embed, 引擎) 变成 embed + max(引擎)。
-    # 向量引擎消费同一 Task；embed 一并进入 gather 以传播异常、避免孤儿任务。
+    # 查询向量作为并发任务：embed 独立计时，同时与三引擎并行（避免串行增加 e2e）；
+    # 同一 Task 被向量引擎与 gather 等待（不重复执行），embed 进 gather 以传播异常。
     async def _embed_task() -> list[float]:
         t_embed = time.time()
         try:
@@ -259,16 +262,14 @@ async def hybrid_search(
             result = await vector_searcher.search_by_vector(
                 s, query_vector, top_k=top_k, filters=filters
             )
-        SEARCH_ENGINE_DURATION.labels(engine="vector").observe(time.time() - t)
-        SEARCH_PHASE_DURATION.labels(phase="vector").observe(time.time() - t)
+        _observe_engine("vector", time.time() - t)
         return result
 
     async def _fulltext_task() -> list[SearchResult]:
         t = time.time()
         async with AsyncSessionLocal() as s:
             result = await fulltext_searcher.search(s, ft_query, top_k, filters)
-        SEARCH_ENGINE_DURATION.labels(engine="fulltext").observe(time.time() - t)
-        SEARCH_PHASE_DURATION.labels(phase="fulltext").observe(time.time() - t)
+        _observe_engine("fulltext", time.time() - t)
         return result
 
     async def _fulltext_tsquery_task() -> str:
@@ -283,12 +284,10 @@ async def hybrid_search(
             result = await graph_searcher.traverse(
                 s, graph_node_id, depth=graph_depth, filters=filters
             )
-        SEARCH_ENGINE_DURATION.labels(engine="graph").observe(time.time() - t)
-        SEARCH_PHASE_DURATION.labels(phase="graph").observe(time.time() - t)
+        _observe_engine("graph", time.time() - t)
         return result
 
-    # 并行执行 embed 与三引擎检索，总延迟 ≈ max(embed, 三引擎延迟)；
-    # query_vector_task 同时被 _vector_task 与 gather 等待（同一 Task，不重复执行）
+    # 并行执行 embed 与三引擎检索，总延迟 ≈ max(embed, 三引擎延迟)
     (
         vector_results,
         _,

@@ -290,11 +290,8 @@ async def _execute_node_update(
     item: ApprovalItem,
     actor: str,
 ) -> Any:
-    """执行 node + update：调用 update_node 更新字段并版本递增。
-
-    payload 含 "project_id" 键时走 set_node_project（悬浮 ↔ 项目绑定，
-    ISSUE-15）：归属变更是治理操作，不走内容更新路径（不触发冲突检测、
-    不重算向量），版本递增 + 图属性同步 + 审计与仓储层保证。
+    """执行 node + update：payload 含 project_id 时走归属变更（set_node_project），
+    否则走内容更新（update_node，版本递增）。
     """
     payload = item.payload
     node_id = _to_uuid(payload["node_id"])

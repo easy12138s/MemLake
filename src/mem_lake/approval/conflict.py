@@ -138,9 +138,8 @@ async def detect_conflicts(
         candidates_examined += 1
 
         # L3：内容语义相似度阈值过滤
-        # 注意：score 可能来自向量检索行扫路径的窗口 max-pooling（真实 maxsim
-        # 的单调下界，见 vector.py _run_query docstring 近似界）；语义等价候选
-        # 在阈值边界附近有界概率被略低分，L0 关键标识硬判定兜底另一类漏检。
+        # 注意：score 可能来自向量行扫窗口 max-pooling（真实 maxsim 的单调下界），
+        # 语义等价候选在阈值边缘有界概率被略低分；L0 硬判定兜底另一类漏检。
         if result.score is None or result.score < CONFLICT_SIMILARITY_THRESHOLD:
             continue
 

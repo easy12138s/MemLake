@@ -91,13 +91,9 @@ WRITE_TOOL_ANNOTATIONS = ToolAnnotations(
 
 
 def resolve_write_mode(*, key_lax_mode: bool, lax_enabled: bool) -> str:
-    """写回执 mode 三态解析（C2/ISSUE-17）：strict / lax / lax_global_off。
+    """写回执 mode 三态（C2/ISSUE-17）：strict / lax / lax_global_off。
 
-    与 approval.policy.submit_batch_with_mode 的生效判定同源
-    （lax = key.lax_mode and LAX_MODE_ENABLED），仅回显式化，不改变审批语义：
-    - strict：Key 为严格模式 → 批次进审批队列（正常态，非异常）
-    - lax：Key 宽松且全局开启 → 无冲突自动入库 / 有冲突转人工
-    - lax_global_off：Key 标记宽松但全局熔断 → 已按严格处理，进审批队列
+    与 approval.policy 生效判定同源（key_lax_mode and lax_enabled），仅回显式化。
     """
     if not key_lax_mode:
         return "strict"
@@ -546,9 +542,7 @@ async def submit_write_batch(
     单次调用内只取一次。
     """
     lax = get_current_lax_mode()
-    mode = resolve_write_mode(
-        key_lax_mode=lax, lax_enabled=get_settings().LAX_MODE_ENABLED
-    )
+    mode = resolve_write_mode(key_lax_mode=lax, lax_enabled=get_settings().LAX_MODE_ENABLED)
     async with transactional_session() as session:
         graph_store = embedding_client = vector_searcher = None
         if lax:

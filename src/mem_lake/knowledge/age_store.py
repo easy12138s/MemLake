@@ -297,9 +297,7 @@ class AGEGraphStore(GraphStore):
     ) -> None:
         """按 id 幂等更新图节点的 project_id（None=REMOVE 属性，回悬浮态）。
 
-        与 sync_node_title 同款参数化路径；project_id=None 用 REMOVE 而非
-        SET null（AGE 对 null 属性赋值的兼容性未验证，REMOVE 语义明确）。
-        节点不存在时 MATCH 返回 0 行，静默无操作。
+        与 sync_node_title 同款参数化路径；节点不存在时静默无操作。
         """
         if project_id is None:
             cypher = "MATCH (n {id: $node_id}) REMOVE n.project_id RETURN n"

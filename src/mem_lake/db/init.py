@@ -90,9 +90,6 @@ async def init_knowledge_schema(session: AsyncSession) -> None:
     注：项目隔离由应用层 validate_project_access + FilterSpec（project_id 过滤）
     实现，不创建 RLS 策略（部署连接用户是表 owner，RLS 不 FORCE 时天然绕过）。
     """
-    # 存在性守卫：触发器已建则跳过 DDL。DROP/CREATE TRIGGER 取 ACCESS EXCLUSIVE，
-    # 会与任何持有 knowledge_node ACCESS SHARE 的长事务（备份/长查询/测试 fixture）
-    # 死锁阻塞启动；先做仅读 pg_trigger 的存在性检查（不触表锁）即可幂等跳过。
     exists = await session.execute(
         text(
             "SELECT 1 FROM pg_trigger WHERE tgname = 'trg_knowledge_node_tsv' "

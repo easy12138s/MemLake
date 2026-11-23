@@ -438,16 +438,12 @@ async def set_node_project(
     project_id: uuid.UUID | None,
     actor: str,
 ) -> KnowledgeNode:
-    """变更节点的 project 归属（悬浮 ↔ 项目绑定，ISSUE-15 一等仓储操作）。
+    """变更节点 project 归属（悬浮 ↔ 项目绑定，ISSUE-15 一等仓储操作）。
 
-    规则：
-    - project_id=None = 解绑回悬浮；传入目标 = 绑定/改绑
-    - system_id 不随之变更（跨 system 搬迁是另一操作，本函数不做）
-    - 已是目标归属：幂等直返，不递增版本（重放/断点续跑安全）
-    - 版本 +1 + 审计（detail 记 project_id 新旧值）；不重生成向量
-      （facet 文本由 title/content/properties 构造，不含 project_id）
-    - AGE 图节点 project_id 属性同步（SET/REMOVE，同事务不 commit）
-
+    - project_id=None 解绑回悬浮；已是目标归属幂等直返（不递增版本）
+    - system_id 不变（跨 system 搬迁是另一操作）
+    - 版本 +1 + 审计（记新旧归属）；不重算向量（facet 文本不含 project_id）；
+      AGE 图属性 SET/REMOVE 同事务同步
     不存在抛 NodeNotFoundError。不 commit。
     """
     node = await get_node(session, node_id)
