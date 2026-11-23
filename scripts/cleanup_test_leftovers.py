@@ -39,7 +39,7 @@ import asyncio
 import uuid
 from collections import Counter
 
-from sqlalchemy import delete, func, or_, select, true
+from sqlalchemy import and_, delete, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.approval.models import ApprovalBatch
@@ -70,6 +70,13 @@ def _not_in(col, ids: set[uuid.UUID]):
     return or_(col.is_(None), col.notin_(ids))
 
 
+def _keep_node_ids_stmt(keep_system_ids: dict[uuid.UUID, str]):
+    """保留 system 下的全部节点 id 子查询（快照与保护集共用同一口径）。"""
+    return select(KnowledgeNode.id).where(
+        KnowledgeNode.system_id.in_(list(keep_system_ids))
+    )
+
+
 def _node_delete_cond(
     keep_system_ids: dict[uuid.UUID, str], keep_project_ids: set[uuid.UUID]
 ):
@@ -78,8 +85,6 @@ def _node_delete_cond(
     保留 = (system ∈ 保留) 或 (project ∈ 保留)；删除即其补集，两个维度
     都是 _not_in 语义（NULL 视为不在保留集）。
     """
-    from sqlalchemy import and_
-
     return and_(
         _not_in(KnowledgeNode.system_id, set(keep_system_ids)),
         _not_in(KnowledgeNode.project_id, keep_project_ids),
@@ -115,9 +120,7 @@ async def _keep_snapshot(
 ) -> dict[str, int]:
     """保留域快照：各 system 的节点/向量/审计数 + 图顶点总数（前后须一致）。"""
     snapshot: dict[str, int] = {}
-    keep_node_ids = select(KnowledgeNode.id).where(
-        KnowledgeNode.system_id.in_(keep_system_ids)
-    )
+    keep_node_ids = _keep_node_ids_stmt(keep_system_ids)
     for sid, name in keep_system_ids.items():
         nodes = await session.scalar(
             select(func.count())
@@ -213,16 +216,11 @@ async def _plan(
         .all()
     )
     # 重索引任务：不引用任何受保护节点/项目的行才删
-    protected_ids = {
-        nid
-        for (nid,) in (
-            await session.execute(
-                select(KnowledgeNode.id).where(
-                    KnowledgeNode.system_id.in_(keep_system_ids)
-                )
-            )
-        ).all()
-    }
+    protected_ids = set(
+        (
+            await session.execute(_keep_node_ids_stmt(keep_system_ids))
+        ).scalars().all()
+    )
     del_tasks: list[ReindexTask] = []
     for task in (await session.execute(select(ReindexTask))).scalars().all():
         if task.project_id is not None and task.project_id in protected_projects:

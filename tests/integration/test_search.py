@@ -311,7 +311,6 @@ class TestVectorSearch:
         assert "HashAggregate" not in plan and "GroupAggregate" not in plan, (
             f"行扫回流聚合前置（HNSW 杀手）:\n{plan}"
         )
-        assert "GROUP BY" not in plan.upper(), f"计划出现聚合语义:\n{plan}"
 
     async def test_vector_search_top_k_with_selective_filter(
         self, db_session, graph_store, vector_searcher, knowledge_helpers

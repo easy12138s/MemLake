@@ -187,7 +187,10 @@ class NodeInfoOutput(BaseModel):  # type: ignore[misc]  # 与文件内其他 Out
     node_type: str | None = Field(default=None, description="节点类型（found=false 为 null）")
     title: str | None = Field(default=None, description="节点标题")
     status: str | None = Field(default=None, description="节点状态")
-    is_deleted: bool | None = Field(default=None, description="是否软删除（found=false 为 null）")
+    is_deleted: bool | None = Field(
+        default=None,
+        description="是否软删除（已软删时 found=false + is_deleted=true；不存在为 null）",
+    )
     project_id: uuid.UUID | None = Field(
         default=None, description="归属项目 ID（悬浮需求为 null）"
     )
@@ -470,20 +473,26 @@ def register_query_tools(mcp: FastMCP) -> None:
         PM/Dev/Admin 共享。返回归属四元组（project_id / system_id / node_type /
         status）；update_node 报「节点不属于本项目」后据此定位真实归属。
         权限：有项目按项目、悬浮按 system，双空归属（防御性）对非 admin 拒绝。
-        节点不存在或已软删：found=false + hint（不抛错，避免中断排查）。
+        节点不存在：found=false；已软删：found=false + is_deleted=true（均不返回内容）。
         """
         try:
             async with readonly_session() as session:
                 try:
-                    node = await get_node(session, node_id)
+                    node = await get_node(session, node_id, include_deleted=True)
                 except NodeNotFoundError:
                     return NodeInfoOutput(
                         node_id=node_id,
                         found=False,
                         hint=(
-                            "节点不存在或已软删（软删节点不返回内容）；"
-                            "若刚写入请确认审批已通过（status=approved）"
+                            "节点不存在；若刚写入请确认审批已通过（status=approved）"
                         ),
+                    )
+                if node.is_deleted:
+                    return NodeInfoOutput(
+                        node_id=node_id,
+                        found=False,
+                        is_deleted=True,
+                        hint="节点已软删（is_deleted=true），不返回内容",
                     )
                 if node.project_id is not None:
                     validate_project_access(node.project_id)
@@ -497,7 +506,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                     node_type=node.type,
                     title=node.title,
                     status=node.status,
-                    is_deleted=node.is_deleted,
+                    is_deleted=False,
                     project_id=node.project_id,
                     system_id=node.system_id,
                     requirement_key=node.requirement_key,

@@ -176,7 +176,7 @@ class VectorSearcher:
         if scan_total == 0:
             return []
 
-        row_limit = min(max(1, top_k) * _ROW_SCAN_FACTOR, _ROW_SCAN_CAP, scan_total)
+        row_limit = min(top_k * _ROW_SCAN_FACTOR, _ROW_SCAN_CAP, scan_total)
         for probe in (0, 1):
             rows, best, nodes = await self._probe(
                 session, query_vector, row_limit, filters, top_k

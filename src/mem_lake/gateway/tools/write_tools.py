@@ -62,6 +62,9 @@ from mem_lake.knowledge.schema import SchemaValidationError
 
 logger = logging.getLogger("mem_lake.gateway.tools.write")
 
+_ADD_PROJECTS_FIX = "请先 manage_system action=add_projects 挂载后重试"
+
+
 def _check_content_length(value: str | None, label: str) -> None:
     """校验 content 长度不超过上限，超限抛 PayloadValidationError。
 
@@ -76,7 +79,7 @@ def _check_content_length(value: str | None, label: str) -> None:
 
 
 def _ownership_mismatch_hint(
-    node: Any,
+    node: KnowledgeNode,
     project_id: uuid.UUID,
     *,
     system_name: str | None,
@@ -94,10 +97,7 @@ def _ownership_mismatch_hint(
         msg += f"（节点实际归属项目: {node.project_id}）"
     if system_name is not None and system_member_ids is not None:
         if project_id not in system_member_ids:
-            msg += (
-                f"；目标项目不在 system「{system_name}」归属清单，"
-                "请先 manage_system action=add_projects 挂载后重试"
-            )
+            msg += f"；目标项目不在 system「{system_name}」归属清单，{_ADD_PROJECTS_FIX}"
     return msg
 
 
@@ -579,7 +579,7 @@ def register_write_tools(mcp: FastMCP) -> None:
                             sys_name = sys_row.name if sys_row else str(node.system_id)
                             raise PayloadValidationError(
                                 f"目标项目不在需求的 system「{sys_name}」归属清单，"
-                                "请先 manage_system action=add_projects 挂载后重试"
+                                f"{_ADD_PROJECTS_FIX}"
                             )
                     affected.append(
                         {

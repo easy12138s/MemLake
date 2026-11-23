@@ -158,6 +158,26 @@ async def _expect_tool_error(client: Client, tool: str, arguments: dict) -> str:
         return str(e)
 
 
+async def _cleanup_nodes(db_session, graph_store, node_ids) -> None:
+    """测试自清：AGE 顶点（DETACH）+ 向量/审计/节点行，最后 commit。"""
+    from sqlalchemy import delete
+
+    from mem_lake.audit.models import AuditLog
+    from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
+
+    ids = list(node_ids)
+    if not ids:
+        return
+    for nid in ids:
+        await graph_store._exec_cypher(
+            db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)}
+        )
+    await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
+    await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
+    await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
+    await db_session.commit()
+
+
 # ============================================================================
 # 用例
 # ============================================================================
@@ -702,19 +722,7 @@ async def test_impact_scope_system_bound_key_floating_requirement(
                                           {"requirement_id": str(req.id)})
             assert "system" in err or "权限" in err
     finally:
-        from sqlalchemy import delete
-
-        from mem_lake.audit.models import AuditLog
-        from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
-
-        for n in (req, sol):
-            await graph_store._exec_cypher(
-                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(n.id)})
-        ids = [req.id, sol.id]
-        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
-        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
-        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
-        await db_session.commit()
+        await _cleanup_nodes(db_session, graph_store, [req.id, sol.id])
 
 
 # ============================================================================
@@ -806,21 +814,20 @@ async def test_get_node_info_ownership_lookup(
         async with Client(dev2) as client:
             info3 = await _call(client, "get_node_info", {"node_id": str(floating.id)})
             assert info3["system_id"] == str(system_id)
-    finally:
-        from sqlalchemy import delete
 
-        from mem_lake.audit.models import AuditLog
-        from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
-
-        for nid in (floating.id, asset.id, orphan_id):
-            await graph_store._exec_cypher(
-                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)}
-            )
-        ids = [floating.id, asset.id, orphan_id]
-        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(ids)))
-        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(ids)))
-        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(ids)))
+        # 已软删：found=False + is_deleted=True（诊断态可区分「不存在」与「已删」）
+        await db_session.execute(
+            sa_text("UPDATE knowledge_node SET is_deleted = true WHERE id = :id"),
+            {"id": orphan_id},
+        )
         await db_session.commit()
+        admin2 = _make_role_app(monkeypatch, role="admin", project_id=str(uuid.uuid4()))
+        async with Client(admin2) as client:
+            gone = await _call(client, "get_node_info", {"node_id": str(orphan_id)})
+        assert gone["found"] is False
+        assert gone["is_deleted"] is True
+    finally:
+        await _cleanup_nodes(db_session, graph_store, [floating.id, asset.id, orphan_id])
 
 
 async def test_review_approve_receipt_carries_created(
@@ -864,24 +871,16 @@ async def test_review_approve_receipt_carries_created(
             assert created[0]["node_type"] == "Requirement"
             assert created[0]["node_id"]
     finally:
-        from sqlalchemy import delete, select
+        from sqlalchemy import select
 
-        from mem_lake.audit.models import AuditLog
-        from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding
+        from mem_lake.knowledge.models import KnowledgeNode
 
         rows = (
             await db_session.execute(
                 select(KnowledgeNode.id).where(KnowledgeNode.project_id == uuid.UUID(project_id))
             )
         ).scalars().all()
-        for nid in rows:
-            await graph_store._exec_cypher(
-                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)}
-            )
-        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(rows)))
-        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(rows)))
-        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(rows)))
-        await db_session.commit()
+        await _cleanup_nodes(db_session, graph_store, rows)
 
 
 # ============================================================================
@@ -899,8 +898,7 @@ async def test_bind_requirement_to_project_end_to_end(
     from sqlalchemy import delete
     from sqlalchemy import select as sa_select
 
-    from mem_lake.audit.models import AuditLog
-    from mem_lake.knowledge.models import KnowledgeNode, NodeEmbedding, System, SystemProject
+    from mem_lake.knowledge.models import KnowledgeNode, System, SystemProject
     from mem_lake.knowledge.repository import get_node
 
     project_id = str(uuid.uuid4())
@@ -1054,13 +1052,7 @@ async def test_bind_requirement_to_project_end_to_end(
                 )
             )
         ).scalars().all()
-        for nid in rows:
-            await graph_store._exec_cypher(
-                db_session, "MATCH (n {id: $nid}) DETACH DELETE n", {"nid": str(nid)}
-            )
-        await db_session.execute(delete(NodeEmbedding).where(NodeEmbedding.node_id.in_(rows)))
-        await db_session.execute(delete(AuditLog).where(AuditLog.target_id.in_(rows)))
-        await db_session.execute(delete(KnowledgeNode).where(KnowledgeNode.id.in_(rows)))
+        await _cleanup_nodes(db_session, graph_store, rows)
         await db_session.execute(
             delete(SystemProject).where(SystemProject.system_id == uuid.UUID(sid))
         )

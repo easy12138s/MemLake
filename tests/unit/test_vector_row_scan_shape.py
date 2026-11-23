@@ -28,19 +28,25 @@ def test_hits_statement_is_pure_row_scan_shape():
 
 async def test_exact_fallback_increments_probe_metric():
     """exact 兜底必须计入 VECTOR_PROBE_PATH，否则运维的 REINDEX 信号恒为 window=100%。"""
-    from mem_lake.observability.metrics import VECTOR_PROBE_PATH
+    from prometheus_client import REGISTRY
+
     from mem_lake.search.vector import VectorSearcher
 
     class _StopSession:
         async def execute(self, *_args, **_kwargs):
             raise RuntimeError("stop-after-counter")
 
-    counter = VECTOR_PROBE_PATH.labels(path="exact")
-    before = counter._value.get()
+    def exact_count() -> float:
+        value = REGISTRY.get_sample_value(
+            "memlake_vector_probe_path_total", {"path": "exact"}
+        )
+        return value or 0.0
+
+    before = exact_count()
     try:
         await VectorSearcher(None)._exact_results(_StopSession(), [0.0] * 1024, 5, None)
     except RuntimeError:
         pass
     else:
         raise AssertionError("fake session should stop after the metric increment")
-    assert counter._value.get() == before + 1
+    assert exact_count() == before + 1

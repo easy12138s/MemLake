@@ -870,18 +870,6 @@ async def get_system_ids_by_project(
     return list(result.scalars().all())
 
 
-async def count_system_projects(
-    session: AsyncSession, *, system_id: uuid.UUID
-) -> int:
-    """统计某 System 下绑定的项目数。"""
-    result = await session.execute(
-        select(func.count())
-        .select_from(SystemProject)
-        .where(SystemProject.system_id == system_id)
-    )
-    return int(result.scalar() or 0)
-
-
 async def count_nodes_by_status(session: AsyncSession) -> dict[str, int]:
     """知识节点按状态计数（排除软删除；可视化总览用，只读）。"""
     result = await session.execute(

@@ -44,7 +44,6 @@ logger = logging.getLogger("mem_lake.gateway.tools.shared")
 if TYPE_CHECKING:
     # 仅用于类型标注：lifespan 共享资源的真实类型在 gateway/server.py 定义，
     # 运行期不 import（避免工具↔server 的模块级循环依赖）。
-    from mem_lake.approval.models import ApprovalBatch
     from mem_lake.gateway.server import LifespanContext
 
 
@@ -154,7 +153,7 @@ class WriteToolOutput(BaseModel):
     @classmethod
     def from_batch(
         cls,
-        batch: "ApprovalBatch",
+        batch: ApprovalBatch,
         decision: str | None = None,
         affected: list[dict[str, Any]] | None = None,
         mode: str | None = None,

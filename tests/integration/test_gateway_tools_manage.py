@@ -16,65 +16,8 @@ from mem_lake.gateway.server import create_mcp_server
 
 @pytest.fixture
 def admin_app(monkeypatch):
-    """构造一个认证为 admin 的 FastMCP 实例（内存客户端可直连）。
-
-    内存传输无真实 HTTP request，middleware 的 on_request 会尝试设置
-    scope['user'] 但 get_http_request() 在内存传输下抛 RuntimeError。这里 patch
-    get_http_request 返回带 scope 的伪请求，让真实令牌链路（认证 → 设置
-    scope['user'] → get_access_token 读取）完整跑通，等价于 admin 持有效 Key。
-    """
-
-    class _FakeRequest:
-        def __init__(self):
-            self.scope: dict = {}
-
-    # 同一请求内 get_http_request 必须返回同一实例，否则 on_request 设置的
-    # scope['user'] 无法被 on_call_tool 的 get_access_token 读取。
-    _req = _FakeRequest()
-
-    async def _fake_auth(_session, _key):
-        return {
-            "key_id": uuid.uuid4(),
-            "role": "admin",
-            "project_scope": [],
-            "lax_mode": False,
-        }
-
-    monkeypatch.setattr(
-        "mem_lake.gateway.middleware.extract_access_key_from_headers",
-        lambda _headers: "dummy-key",
-    )
-    monkeypatch.setattr(
-        "mem_lake.gateway.middleware.authenticate_access_key", _fake_auth
-    )
-    monkeypatch.setattr(
-        "mem_lake.gateway.middleware.get_http_request",
-        lambda: _req,
-    )
-
-    def _fake_token(*_args, **_kwargs):
-        return AccessToken(
-            token="dummy",
-            client_id=str(uuid.uuid4()),
-            scopes=["admin"],
-            claims={
-                "role": "admin",
-                "key_id": str(uuid.uuid4()),
-                "project_scope": [],
-                "lax_mode": False,
-            },
-        )
-
-    # 工具内部依赖（validate_project_access / get_current_key_id 等）与 RBAC
-    # 分别从 dependencies / middleware 两个模块命名空间读取 get_access_token，
-    # 需同时 patch 才能让内存客户端以 admin 身份通过。
-    monkeypatch.setattr(
-        "mem_lake.gateway.dependencies.get_access_token", _fake_token
-    )
-    monkeypatch.setattr(
-        "mem_lake.gateway.middleware.get_access_token", _fake_token
-    )
-    return create_mcp_server()
+    """认证为 admin 的内存 FastMCP 实例（委托 _install_identity，认证链路 patch 单源）。"""
+    return _install_identity(monkeypatch, role="admin", key_id=uuid.uuid4())
 
 
 def _parse(result):
@@ -478,17 +421,12 @@ async def test_manage_system_list_returns_project_ids(admin_app, db_session):
                 "action": "set_projects", "system_id": sid, "project_ids": [p1, p2],
             })
             r = await client.call_tool("manage_system", {"action": "list"})
-            rows = {
-                s["system_id"]: s for s in _parse(r).get("systems", [])
-            }
-            entry = rows[sid]
+            systems = _parse(r)["systems"]
+            entry = next(s for s in systems if s["system_id"] == sid)
             assert set(entry["project_ids"]) == {p1, p2}
             assert entry["project_count"] == len(entry["project_ids"]) == 2
             # 历史口径保持：中方诊药云系统仍在列（零数据接触锚点）
-            keep = [
-                s for s in _parse(r)["systems"]
-                if s["name"] == "中方诊药云系统"
-            ]
+            keep = [s for s in systems if s["name"] == "中方诊药云系统"]
             assert keep, "保留 system 必须仍在 list 结果中"
         finally:
             await _cleanup_system(db_session, sid)

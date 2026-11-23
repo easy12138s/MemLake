@@ -4,12 +4,11 @@
 """
 
 
-def test_single_head_is_0004_access_key_name_owner():
-    """脚本目录单一 head，且为 access_key name/owner 迁移（C1/ISSUE-18）。"""
+def test_migration_script_has_single_head():
+    """脚本目录单一 head（防多 head / 断链；新增迁移无需改本用例）。"""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     cfg = Config()
     cfg.set_main_option("script_location", "alembic")
-    script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0004_access_key_name_owner"]
+    assert len(ScriptDirectory.from_config(cfg).get_heads()) == 1
