@@ -10,7 +10,9 @@ def test_single_server_when_disabled():
 
 
 def test_dual_servers_when_enabled():
-    servers = build_uvicorn_servers(Settings(VISUAL_ENABLED=True, VISUAL_PORT=8090))
+    servers = build_uvicorn_servers(
+        Settings(VISUAL_ENABLED=True, VISUAL_PORT=8090, VISUAL_PASSWORD="test-pass")
+    )
     assert len(servers) == 2
     assert servers[0].config.port == 8000
     assert servers[1].config.port == 8090

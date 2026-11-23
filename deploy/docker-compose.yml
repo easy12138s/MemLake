@@ -78,8 +78,9 @@ services:
       dockerfile: deploy/Dockerfile.app
     ports:
       - "8000:8000"
-      # 可视化控制台（VISUAL_ENABLED=true 时监听；VISUAL_ENABLED=false 时端口映射存在但无进程、连接拒绝）
-      - "8090:8090"
+      # 可视化控制台默认不暴露到宿主机：需要时取消下一行注释，
+      # 并务必先在 .env 设置非空 VISUAL_PASSWORD（否则应用拒绝启动）。
+      # - "8090:8090"
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,7 +97,8 @@ services:
       VISUAL_HOST: ${VISUAL_HOST:-0.0.0.0}
       VISUAL_PORT: ${VISUAL_PORT:-8090}
       VISUAL_USERNAME: ${VISUAL_USERNAME:-memlake_view}
-      VISUAL_PASSWORD: ${VISUAL_PASSWORD:-}
+      # VISUAL_PASSWORD 不在此声明：由 env_file(../.env) 注入，避免 environment
+      # 默认值覆盖 .env 中的真实口令。未设置且 VISUAL_ENABLED=true 时应用拒绝启动。
       VISUAL_SESSION_SECRET: ${VISUAL_SESSION_SECRET:-}
       VISUAL_GRAPH_MAX_NODES: ${VISUAL_GRAPH_MAX_NODES:-1000}
     env_file:

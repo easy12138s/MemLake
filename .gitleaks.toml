@@ -1,0 +1,37 @@
+# Gitleaks 配置：在默认规则之上补充本项目特有的泄露防线。
+# 用法：gitleaks detect --source . --config .gitleaks.toml --redact --verbose
+# 注意：.env 已被 .gitignore 排除，真实凭据不应进入版本库。
+
+[extend]
+useDefault = true
+
+# 历史遗留问题回归防护：可视化控制台口令必须由环境变量注入，禁止任何非空字面量。
+[[rules]]
+id = "hardcoded-visual-password"
+description = "可视化控制台口令不得硬编码（应由 VISUAL_PASSWORD 环境变量注入）"
+regex = '''(?i)VISUAL_PASSWORD(?:[^\n]{0,30}?=[ \t]*=?[ \t]*["']?[^\s"'${#}]{4,}|:[ \t]*\$\{VISUAL_PASSWORD:-[^}\s]{4,}\})'''
+keywords = ["VISUAL_PASSWORD"]
+
+# 个人邮箱/雇主邮箱不得进入源码（提交元数据由 CI 单独校验）。
+[[rules]]
+id = "personal-email"
+description = "个人/雇主邮箱不得硬编码进源码"
+regex = '''(?i)[A-Za-z0-9._%+-]+@(163\.com|qq\.com|macrocura\.com)'''
+keywords = ["@"]
+
+[allowlist]
+description = "第三方压缩资源与测试占位符"
+paths = [
+  '''src/mem_lake/visual/static/vendor/''',
+  '''package-lock\.json$''',
+  '''\.lock$''',
+]
+regexes = [
+  # 测试用假 Key（真实 Key 形态为 ak_<uuid>.<secret>，不在此放行范围）
+  '''ak_(admin|pm|dev|test|invalid|abc|secret|existing|convert|special)[A-Za-z0-9_.-]*''',
+  # 测试用例中的占位口令（非真实凭据）
+  '''VISUAL_PASSWORD.*["'](test-pass|s3cret-pass|custom-pass|vp|it-secret|test-secret)''',
+  # 开发默认数据库连接（非生产凭据）
+  '''postgresql\+psycopg_async://memlake:memlake@''',
+  '''driver://user:pass@''',
+]

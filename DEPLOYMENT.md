@@ -117,8 +117,11 @@ docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 | postgres | 5432 | PostgreSQL 17 + AGE + pgvector + zhparser，数据持久化在 `pg_data` 卷 |
 | embedding | 8001 | Qwen3-Embedding-0.6B 向量化服务，mem-lake 通过 HTTP 调用 |
 | mem-lake | 8000 | MCP 网关，33 个工具 + RBAC + 限流 |
+| mem-lake（可视化控制台） | 8090（默认不映射） | 只读观测台；需 `VISUAL_ENABLED=true` 且非空 `VISUAL_PASSWORD` |
 
 启动顺序：postgres healthy → embedding healthy → mem-lake。默认 compose 会发布 5432/8001 端口，生产环境请通过防火墙限制或移除对应 `ports` 映射，仅对外放行 8000。
+
+可视化控制台默认关闭且不发布 8090。开启前必须在 `.env` 设置强随机 `VISUAL_PASSWORD`（为空会拒绝启动），再按需取消 `deploy/docker-compose.yml` 中 `8090:8090` 的注释并配置访问控制。
 
 ## 数据备份与恢复
 

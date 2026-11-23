@@ -6,6 +6,7 @@
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     VISUAL_HOST: str = "0.0.0.0"
     VISUAL_PORT: int = 8090
     VISUAL_USERNAME: str = "memlake_view"
+    # 无默认口令：VISUAL_ENABLED=true 时必须显式配置，否则拒绝启动
     VISUAL_PASSWORD: str = ""
     VISUAL_SESSION_SECRET: str = ""  # 空=每次进程启动随机生成（重启后需重新登录）
     VISUAL_GRAPH_MAX_NODES: int = 1000
@@ -90,6 +92,19 @@ class Settings(BaseSettings):
     OBS_METRICS_ENABLED: bool = True
     # 结构化日志格式：console（可读文本，默认）/ json（单行 JSON，生产）
     OBS_LOG_FORMAT: str = "console"
+
+    @model_validator(mode="after")  # type: ignore[untyped-decorator]
+    def _require_visual_password(self) -> "Settings":
+        """开启控制台时必须显式配置非空口令。
+
+        历史上曾内置默认口令并随开源仓库公开，已按泄露处理；此处改为
+        缺失即拒绝启动，避免任何部署沿用可预测口令。
+        """
+        if self.VISUAL_ENABLED and not self.VISUAL_PASSWORD.strip():
+            raise ValueError(
+                "VISUAL_ENABLED=true 时必须设置非空 VISUAL_PASSWORD（不再提供默认口令）"
+            )
+        return self
 
 
 @lru_cache
