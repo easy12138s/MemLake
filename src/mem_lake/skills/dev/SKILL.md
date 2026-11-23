@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.16.0
+version: 1.17.0
 ---
 
 # Dev Skills（开发者）
@@ -84,6 +84,7 @@ version: 1.16.0
 
 ### 查询类
 - **get_project_info** — 枚举/查询项目
+- **get_node_info** — 按 node_id 反查归属（悬浮/已软删/越权均可诊断）
 
 > **详细参数表和示例见 `dev/REFERENCE.md`**
 

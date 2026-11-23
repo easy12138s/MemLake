@@ -127,6 +127,34 @@
 
 ---
 
+### get_graph_stats — 图统计
+
+无参数。Admin 工具。
+
+**返回** `GraphStatsOutput`：`nodes_by_type` / `nodes_by_system` / `edges_by_type` / `edges_by_system`（未挂 system 的节点不计入按域分布）。用于容量评估与分布排查。
+
+---
+
+### get_graph_quality_report — 图质量基线
+
+无参数。Admin 工具。
+
+**返回** `GraphQualityReportOutput`：`total_nodes` / `total_edges` / `orphan_nodes`（连边数为 0）/ `duplicate_groups_count` / `duplicate_node_count`（同 type+title 重复）/ `connected_components`（连通分量数，过大提示图谱分裂）。
+
+---
+
+### generate_rule_edges — 规则边生成（走审批）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| rule | str | 否 | 规则名，当前支持 `snippet_module_references`（默认）|
+| project_id | UUID \| None | 否 | 限定项目域（None=全部项目，匹配仍按同项目配对）|
+| operation_id | str \| None | 否 | 幂等键 |
+
+**返回** `RuleEdgeOutput`：`rule` / `batch_type` / `batch_id` / `status` / `edge_count` / `matches`；产出为审批批次，审批通过后落边，已存在的 edges 自动跳过（幂等）。
+
+---
+
 ### manage_system — 建立并签发 system 域（admin 专属）
 
 | 参数 | 类型 | 必填 | 说明 |
@@ -253,7 +281,7 @@
 |------|------|------|------|
 | project_id | UUID \| None | 否 | 项目 ID 过滤 |
 | actor | str \| None | 否 | 操作者 Access Key ID 过滤 |
-| action | str \| None | 否 | 操作类型过滤：write/update/approve/reject/create/revoke/rotate/update_scope/update_system_scope/update_mode/tool_call |
+| action | str \| None | 否 | 操作类型过滤：write/update/approve/reject/submit/create/revoke/rotate/update_scope/update_system_scope/update_mode/set_projects/add_projects/remove_projects/bind_keys/get/list/tool_call |
 | target_type | str \| None | 否 | 目标类型过滤：node/edge/access_key/batch/tool |
 | target_id | UUID \| None | 否 | 目标 ID 过滤 |
 | start_time | datetime \| None | 否 | 起始时间 |
@@ -409,7 +437,9 @@ manage_project_profile(
     "summary": "批次摘要",
     "batch_type": "write",
     "submitted_by": "key-uuid",
-    "item_count": 1
+    "item_count": 1,
+    "created": [...],                # auto_approved 时：[{ref, node_id, node_type, title}]
+    "edges_created": 2               # auto_approved 时：建边数
 }
 ```
 
@@ -420,6 +450,8 @@ manage_project_profile(
     "batch_id": "uuid",
     "status": "approved",            # 或 "rejected"
     "reviewed_at": "2026-09-07T10:00:00Z",
-    "conflict_hint": {...}
+    "conflict_hint": {...},
+    "created": [...],                # approve 时：[{ref, node_id, node_type, title}]
+    "edges_created": 2               # approve 时：建边数
 }
 ```

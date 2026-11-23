@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
-description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, requirement, PRD."
-version: 1.16.0
+description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, 悬浮需求, bind_requirement_to_project, get_node_info, requirement, PRD."
+version: 1.17.0
 ---
 
 # PM Skills（产品经理）
@@ -76,6 +76,7 @@ version: 1.16.0
 
 ### 查询类
 - **get_project_info** — 枚举/查询项目（list/get）
+- **get_node_info** — 按 node_id 反查归属（悬浮/已软删/越权均可诊断）
 
 > **详细参数表和示例见 `pm/REFERENCE.md`**
 
@@ -90,8 +91,9 @@ version: 1.16.0
 4. **properties 字段缺失会被 schema 校验拒绝**：publish_requirement 在工具层即校验 properties 必填字段，缺失会直接返回错误（不会进入审批队列）。
 
 5. **提交后如何跟进（不要轮询、不要立即检索）**：
-   - **严格模式**：返回 `status="pending_review"` 表示批次在队列等待 admin 审批。**拿到 batch_id 后只需告知用户「待 admin 审批」，无需轮询**；审批通过前需求未写入图谱，其他 Agent 检索不到。
-   - **宽松模式**：返回 `status="approved"` + `decision="auto_approved"` 即已直接入库生效、可被检索；若返回 `decision="needs_human_review"` 表示有冲突，批次停在队列等待 admin 人工决策（你这边无需再操作）。
+   - **严格模式（正常态，默认）**：回执 `mode="strict"` + `status="pending_review"`——批次已成功提交，只需拿到 `batch_id` 并告知用户「已提交，待 admin 审批」，无需轮询或重试；审批通过前需求未写入图谱，其他 Agent 检索不到。
+   - **宽松模式**：回执 `mode="lax"` + `status="approved"` + `decision="auto_approved"` 即已直接入库生效、可被检索；若返回 `decision="needs_human_review"` 表示有冲突，批次停在队列等待 admin 人工决策（你这边无需再操作）。
+   - **回执 mode 三态**：`strict` / `lax` / `lax_global_off`（Key 标记宽松但全局开关关闭，已按严格处理）——三态均表示提交成功，只是入库时点不同。
    - **不要提交后立即检索刚提交的内容**：宽松模式向量在后台异步生成，刚提交瞬间可能检索不到；严格模式则要等审批通过后才写入。
 
 6. **content 应足够详细**：content 会用于向量生成（f"{title}\n{content}"），内容越详细，检索准确性越高。避免只写一句话描述。

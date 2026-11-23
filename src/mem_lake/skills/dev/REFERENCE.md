@@ -257,7 +257,7 @@ get_requirement_context(requirement_id="req-uuid-001", depth=2)
 |------|------|------|------|
 | node_id | UUID | 是 | 任意节点 ID |
 
-**何时用**：写入/更新报「节点不属于本项目」后，反查该节点到底属于哪个 project / system、是不是悬浮需求（`project_id=null`）；也能确认节点是否存在/已软删（`found=false` + hint）。权限口径同 `get_requirement_context`：悬浮需求按 system 校验。
+**何时用**：写入/更新报「节点不属于本项目」后，反查该节点到底属于哪个 project / system、是不是悬浮需求（`project_id=null`）；确认存在性：不存在 `found=false`，已软删 `found=false + is_deleted=true`（均不返回内容）。权限口径同 `get_requirement_context`：悬浮需求按 system 校验，双空归属对非 admin 拒绝。
 
 ```python
 get_node_info(node_id="node-uuid-001")

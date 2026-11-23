@@ -227,8 +227,11 @@ class AuditLogItemOutput(BaseModel):
         description="操作者可读名称（access_key.name；未登记/非 Key actor 为 None）",
     )
     action: str = Field(
-        description="操作类型：write/update/approve/reject/create/revoke/rotate/"
-        "update_scope/update_system_scope/update_mode/tool_call"
+        description=(
+            "操作类型：write/update/approve/reject/submit/create/revoke/rotate/"
+            "update_scope/update_system_scope/update_mode/"
+            "set_projects/add_projects/remove_projects/bind_keys/get/list/tool_call"
+        )
     )
     target_type: str = Field(
         description="目标类型：node/edge/access_key/batch/tool"
@@ -525,8 +528,9 @@ def register_query_tools(mcp: FastMCP) -> None:
         action: str | None = Field(
             default=None,
             description=(
-                "操作类型过滤：write/update/approve/reject/create/revoke/rotate/"
-                "update_scope/update_system_scope/update_mode/tool_call"
+                "操作类型过滤：write/update/approve/reject/submit/create/revoke/rotate/"
+                "update_scope/update_system_scope/update_mode/"
+                "set_projects/add_projects/remove_projects/bind_keys/get/list/tool_call"
             ),
         ),
         target_type: str | None = Field(

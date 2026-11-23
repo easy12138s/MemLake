@@ -219,13 +219,13 @@ get_requirement_context(
 
 ### get_node_info — 按 node_id 反查归属
 
-PM/Dev/Admin 共享。输入任意节点 UUID，返回归属四元组（project_id / system_id / node_type / status）。
+PM/Dev/Admin 共享。输入任意节点 UUID，返回归属信息（project_id / system_id / node_type / status / is_deleted）。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | node_id | UUID | 是 | 节点 ID |
 
-**何时用**：`update_node` 报「节点不属于本项目」后反查真实归属（悬浮需求回 `project_id=null`）；确认节点存在性/软删状态。
+**何时用**：`update_node` 报「节点不属于本项目」后反查真实归属（悬浮需求回 `project_id=null`）；确认存在性：不存在 `found=false`，已软删 `found=false + is_deleted=true`（均不返回内容）；双空归属节点对非 admin 拒绝。
 
 **何时不用**：看需求的关联图谱用 `get_requirement_context`；列需求用 `list_requirements`。
 
