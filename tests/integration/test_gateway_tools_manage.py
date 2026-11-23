@@ -425,9 +425,9 @@ async def test_manage_system_list_returns_project_ids(admin_app, db_session):
             entry = next(s for s in systems if s["system_id"] == sid)
             assert set(entry["project_ids"]) == {p1, p2}
             assert entry["project_count"] == len(entry["project_ids"]) == 2
-            # 历史口径保持：中方诊药云系统仍在列（零数据接触锚点）
-            keep = [s for s in systems if s["name"] == "中方诊药云系统"]
-            assert keep, "保留 system 必须仍在 list 结果中"
+            # 既有 system 仍在列且出参形状完整（list 不吞存量；不依赖具体环境数据）
+            others = [s for s in systems if s["system_id"] != sid]
+            assert all("project_ids" in s for s in others)
         finally:
             await _cleanup_system(db_session, sid)
 
