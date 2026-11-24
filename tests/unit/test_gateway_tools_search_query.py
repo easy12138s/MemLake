@@ -20,6 +20,7 @@ from mem_lake.gateway.tools.query_tools import (
     RelatedNodeOutput,
     RequirementContextOutput,
     _to_audit_log_item_output,
+    _to_related_node_output,
 )
 from mem_lake.gateway.tools.search_tools import (
     ConflictCheckOutput,
@@ -628,3 +629,28 @@ class TestCheckRequirementConflictsScope:
         assert calls["filters"].project_id is None
         assert out.threshold == 0.85
         assert out.has_conflict is False
+
+
+def test_related_node_output_carries_requirement_fields():
+    """关联节点出参透出 requirement_key/source_doc/status，便于回执核对。"""
+    result = SearchResult(
+        node_id=uuid.uuid4(),
+        title="关联需求",
+        content="内容",
+        node_type="Requirement",
+        score=None,
+        source="graph",
+        properties={},
+        tags=[],
+        edge_types=["relates_to"],
+        graph_depth=2,
+        requirement_key="SYS-0001",
+        status="approved",
+        source_doc="doc#1",
+    )
+    out = _to_related_node_output(result)
+    assert out.requirement_key == "SYS-0001"
+    assert out.source_doc == "doc#1"
+    assert out.status == "approved"
+    assert out.edge_type == ["relates_to"]
+    assert out.depth == 2

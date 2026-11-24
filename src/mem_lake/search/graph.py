@@ -220,6 +220,9 @@ class GraphSearcher:
                     tags=node.tags or [],
                     edge_types=ctx.get("edge_types") if ctx else None,
                     graph_depth=ctx.get("depth") if ctx else None,
+                    requirement_key=node.requirement_key,
+                    status=node.status,
+                    source_doc=(node.properties or {}).get("source_doc"),
                     # 数据信任字段
                     version=node.version,
                 )

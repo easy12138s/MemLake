@@ -168,6 +168,7 @@ class RelatedNodeOutput(BaseModel):
 
     edge_type 为从需求节点到该关联节点的路径边类型列表（每一跳一个），
     depth 为路径跳数（1=直接关联）。图遍历为无向，direction 无第一语义，故不提供。
+    requirement_key/source_doc/status 供回执与跨节点核对，避免靠标题猜。
     """
     node_id: uuid.UUID = Field(description="节点 ID")
     title: str = Field(description="节点标题")
@@ -177,6 +178,30 @@ class RelatedNodeOutput(BaseModel):
         description="关联路径上的边类型列表（从需求出发每一跳一个；无向图无方向概念）"
     )
     depth: int = Field(description="与起点的跳数距离（1=直接关联）")
+    requirement_key: str | None = Field(
+        default=None, description="需求主键（非 Requirement 节点为 null）"
+    )
+    source_doc: str | None = Field(
+        default=None, description="需求来源文档（properties.source_doc）"
+    )
+    status: str | None = Field(
+        default=None, description="节点状态（approved/archived）"
+    )
+
+
+def _to_related_node_output(r: Any) -> RelatedNodeOutput:
+    """SearchResult（图遍历）→ 关联节点出参，透出需求核对字段。"""
+    return RelatedNodeOutput(
+        node_id=r.node_id,
+        title=r.title,
+        content=r.content,
+        node_type=r.node_type,
+        edge_type=r.edge_types or [],
+        depth=r.graph_depth or 1,
+        requirement_key=getattr(r, "requirement_key", None),
+        source_doc=getattr(r, "source_doc", None),
+        status=getattr(r, "status", None),
+    )
 
 
 class NodeInfoOutput(BaseModel):  # type: ignore[misc]  # 与文件内其他 Output 模型同源的 follow-imports=skip 噪音
@@ -446,17 +471,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                     filters=filters,
                 )
 
-                related = [
-                    RelatedNodeOutput(
-                        node_id=r.node_id,
-                        title=r.title,
-                        content=r.content,
-                        node_type=r.node_type,
-                        edge_type=r.edge_types or [],
-                        depth=r.graph_depth or 1,
-                    )
-                    for r in results
-                ]
+                related = [_to_related_node_output(r) for r in results]
 
                 return RequirementContextOutput(
                     requirement_id=requirement_id,

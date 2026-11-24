@@ -866,6 +866,43 @@ class TestGetRequirementContext:
         # 应至少返回 1 个关联节点（CodeSnippet）
         assert len(related) >= 1
 
+
+    async def test_context_traverse_carries_requirement_metadata(
+        self, db_session, graph_store, mock_embedding_client, knowledge_helpers
+    ):
+        """关联需求节点透出 requirement_key/source_doc/status（回执核对用）。"""
+        from mem_lake.knowledge.repository import add_edge
+        from mem_lake.search.filters import FilterSpec
+        from mem_lake.search.graph import GraphSearcher
+
+        project_id, system_id = uuid.uuid4(), uuid.uuid4()
+        req = await create_node(
+            db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+            project_id=project_id, node_type="Requirement", title="主需求",
+            content="内容", properties=knowledge_helpers["Requirement"](),
+            created_by="ak_pm", system_id=system_id,
+        )
+        rel_props = knowledge_helpers["Requirement"]()
+        rel_props["source_doc"] = "doc#1"
+        related_req = await create_node(
+            db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+            project_id=project_id, node_type="Requirement", title="关联需求",
+            content="关联内容", properties=rel_props, created_by="ak_pm",
+            system_id=system_id,
+        )
+        await add_edge(
+            db_session, graph_store=graph_store, from_id=req.id,
+            to_id=related_req.id, edge_type="relates_to", actor="ak_pm",
+        )
+
+        results = await GraphSearcher(graph_store).context_traverse(
+            db_session, req.id, depth=2, filters=FilterSpec(project_id=project_id)
+        )
+        hit = next(r for r in results if r.node_id == related_req.id)
+        assert hit.requirement_key
+        assert hit.status == "approved"
+        assert hit.source_doc == "doc#1"
+
     async def test_context_floating_req_with_related_code(
         self, db_session, graph_store, mock_embedding_client, knowledge_helpers
     ):

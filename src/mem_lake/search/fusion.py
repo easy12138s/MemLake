@@ -63,6 +63,10 @@ class SearchResult:
     # 图遍历上下文（仅 get_requirement_context 路径填充，其他来源为 None）：
     edge_types: list[str] | None = None  # 路径边类型列表（从起点出发每一跳一个）
     graph_depth: int | None = None  # 路径跳数（1=直接关联）
+    # 需求核对字段（图遍历路径填充，便于回执/跨节点核对不靠标题猜）：
+    requirement_key: str | None = None  # 需求主键（非 Requirement 为 None）
+    status: str | None = None  # 节点状态（approved/archived）
+    source_doc: str | None = None  # 需求来源文档（properties.source_doc）
     # 数据信任字段（v1.1 新增）：
     version: int | None = None  # 节点版本号
     vector_generated_at: str | None = None  # 向量生成时间（ISO 8601）
