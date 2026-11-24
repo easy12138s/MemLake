@@ -74,6 +74,7 @@ version: 1.17.0
 ### 写入类
 - **submit_dev_artifacts** — 批量提交开发产物（代码/方案/意图/坑）
 - **update_node** — 修正已审批节点（PM/Dev 共享）
+- **update_requirements** — 批量追加/移除需求标签、增量改属性（显式 node_ids）
 
 ### 检索类
 - **search_similar_requirements** — 检索相似需求（向量+全文融合）

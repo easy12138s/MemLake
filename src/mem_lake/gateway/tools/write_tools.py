@@ -217,6 +217,7 @@ class ValidateRequirementItemOutput(BaseModel):  # type: ignore[misc]
     client_ref: str
     ok: bool
     errors: list[str] = Field(default=[])
+    warnings: list[str] = Field(default=[])
     conflicts: list[dict[str, Any]] = Field(default=[])
     suggestion: str | None = None
 
@@ -500,6 +501,28 @@ async def _update_requirements_batch(
     )
 
 
+def _requirement_lint_warnings(requirement: RequirementInput) -> list[str]:
+    """需求内容软 lint：只提示，不阻断提交。"""
+    warnings: list[str] = []
+    criteria = (requirement.properties or {}).get("acceptance_criteria")
+    if not isinstance(criteria, str) or not criteria.strip():
+        warnings.append("建议补充 acceptance_criteria（验收标准）")
+    if "待确认" in (requirement.tags or []):
+        warnings.append("含「待确认」标签：产品确认后用 update_requirements 批量清理")
+    markers = [
+        m
+        for m in ("索引", "幂等键", "SQL", "表名", "接口字段", "数据库表")
+        if m in (requirement.content or "")
+    ]
+    if markers:
+        warnings.append(
+            "内容含实现细节（"
+            + "、".join(markers)
+            + "），建议移到 Dev 的 DesignIntent/Solution"
+        )
+    return warnings
+
+
 async def _validate_requirements_core(
     *,
     system_id: uuid.UUID,
@@ -603,6 +626,7 @@ async def _validate_requirements_core(
                 client_ref=it.client_ref,
                 ok=not errors,
                 errors=errors,
+                warnings=_requirement_lint_warnings(it.requirement),
                 conflicts=conflicts,
                 suggestion=suggestion,
             )

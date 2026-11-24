@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, 悬浮需求, bind_requirement_to_project, get_node_info, requirement, PRD."
-version: 1.17.0
+version: 1.18.0
 ---
 
 # PM Skills（产品经理）
@@ -57,14 +57,20 @@ version: 1.17.0
 发布需求前，**先查重、再提交**：
 1. 用 `search_similar_requirements(query=..., system_id=.../project_id=...)` 检索相似/冲突需求；
 2. 若命中已有需求：不要重复发布，改用 `update_requirement_relations(from_id=新需求, to_id=命中需求, relation_type="supersedes"/"relates_to")` 建立关联边（如确为替代/关联场景），或在命中需求上用 `update_node` 增补；
-3. 若未命中：再调用 `publish_requirement(...)` 发布新需求。
+3. 若未命中：单条用 `publish_requirement(...)`；批量录入先用
+   `validate_requirements(...)` 做 dry-run（字段/引用/冲突预览），再一次
+   `publish_requirements(requirements=[...], operation_id=...)` 提交——同一
+   submission_id 下每条需求仍独立审批，逐条返回 batch_id/decision/conflict_hint。
 
 ## 可用工具摘要
 
 ### 写入类
-- **publish_requirement** — 发布需求节点（system_id 必填，requirement 嵌套结构）
-- **update_requirement_relations** — 更新需求间关系（批量添加关系边）
+- **publish_requirement** — 发布单条需求（system_id 必填，requirement 嵌套结构）
+- **publish_requirements** — 批量发布：一个 submission_id 下每条需求一个批次，返回逐条 client_ref/batch_id/decision/conflict_hint
+- **validate_requirements** — 发布前 dry-run：字段/引用/重复预检 + 冲突预览，不写库
+- **update_requirement_relations** — 更新需求间关系（批量；端点支持 UUID 或 requirement_key/external_id）
 - **update_node** — 修正已审批节点（PM/Dev 共享）
+- **update_requirements** — 批量追加/移除标签、增量改属性（显式 node_ids，一个批次）
 - **bind_requirement_to_project** — 悬浮需求 ↔ 项目归属绑定/解绑（走审批流；绑定是归属治理，不触发冲突检测）
 
 ### 检索类
@@ -77,14 +83,29 @@ version: 1.17.0
 ### 查询类
 - **get_project_info** — 枚举/查询项目（list/get）
 - **get_node_info** — 按 node_id 反查归属（悬浮/已软删/越权均可诊断）
+- **get_submission** — 按 submission_id 查看批次状态/审批人/时间线（非 admin 仅见自己）
 
 > **详细参数表和示例见 `pm/REFERENCE.md`**
+
+## 需求内容模板（建议）
+
+```text
+背景：为什么要做（业务问题/触发事件）
+范围：本期做什么、明确不做什么（out of scope）
+业务规则：角色/状态流转/边界条件
+验收标准（properties.acceptance_criteria）：可验证的 1/2/3...
+依赖：关联需求/项目/外部系统（用 relates_to/supersedes 建边）
+待确认：未定项单独标注，后续用 update_requirements 批量清理「待确认」标签
+```
+
+`validate_requirements` 会对缺少验收标准、含「待确认」标签、正文出现表名/索引/
+幂等键等实现细节给出 warnings（只提示，不阻断）。
 
 ## 常见陷阱
 
 1. **需求主键由服务端分配**：不必（也不应）自生成需求编号。提交后节点会带 `requirement_key`（如 `HIS-0001`，按 system 域可读序号）返回。需求间的重复/矛盾判定基于内容语义相似度（L3，≥ 0.85），不再依赖任何业务编号。
 
-2. **supersedes/relates_to 中的 ID 必须已存在且对你可见**：引用的 requirement_id 必须是知识图谱中已审批通过、且对当前调用者可见的节点。引用不存在或不可见的 ID 会导致审批失败。
+2. **supersedes/relates_to 端点必须已存在且对你可见**：可直接传 UUID，也可传 `requirement_key`（如 `SYS-1800`）或 `external_id`；歧义/不存在会明确报错。悬浮需求关系可省略 project_id，按两端自身 system/project 鉴权。
 
 3. **提交后不可修改**：批次一旦提交，内容不可修改。如需修改，只能等 admin 拒绝后重新提交，或在 admin 审批通过后发布新版本（用 supersedes 关系）。
 

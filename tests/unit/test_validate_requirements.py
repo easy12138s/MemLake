@@ -97,6 +97,7 @@ async def test_validate_requirements_reports_errors_and_conflicts(monkeypatch):
     assert good.conflicts[0]["node_id"] == str(existing_id)
     assert good.conflicts[0]["vector_ready"] is True
     assert good.suggestion == "review"
+    assert any("acceptance_criteria" in w for w in good.warnings)
     assert bad.ok is False
     assert bad.errors
     assert bad.conflicts == []
@@ -138,3 +139,18 @@ async def test_validate_requirements_can_skip_conflicts(monkeypatch):
     )
     assert out.items[0].ok is True
     assert called["hybrid"] is False
+
+
+def test_requirement_lint_warnings_detect_impl_details():
+    from mem_lake.gateway.tools.write_tools import _requirement_lint_warnings
+
+    req = RequirementInput(
+        title="需求",
+        content="新增数据库表并创建索引，使用幂等键防重",
+        properties={"priority": "P1", "module": "m"},
+        tags=["待确认"],
+    )
+    warnings = _requirement_lint_warnings(req)
+    assert any("acceptance_criteria" in w for w in warnings)
+    assert any("待确认" in w for w in warnings)
+    assert any("实现细节" in w for w in warnings)
