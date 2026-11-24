@@ -18,7 +18,7 @@ review_approve 是唯一触发知识图谱写入的入口（原子性写入由 s
 import logging
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -79,6 +79,9 @@ class PendingBatchItem(BaseModel):
         default=None, description="归属项目 ID（悬浮 system 需求批次为 None）"
     )
     batch_type: str = Field(description="批次类型")
+    submission_id: uuid.UUID | None = Field(
+        default=None, description="批量提交分组 ID（publish_requirements 同一批共享）"
+    )
     submitted_by: str = Field(description="提交者 Access Key ID")
     submitted_at: datetime = Field(description="提交时间")
     summary: str = Field(description="批次摘要")
@@ -95,6 +98,27 @@ class ReviewPendingListOutput(BaseModel):
 
     batches: list[PendingBatchItem] = Field(description="批次列表")
     total: int = Field(description="返回数量（非总数）")
+
+
+class SubmissionItemResult(BaseModel):  # type: ignore[misc]
+    """review_submission 单批次处理结果。"""
+
+    batch_id: uuid.UUID
+    status: str
+    decision: str | None = None
+    conflict_hint: dict[str, Any] | None = None
+    created: list[dict[str, Any]] | None = None
+    edges_created: int | None = None
+    error: str | None = None
+
+
+class ReviewSubmissionOutput(BaseModel):  # type: ignore[misc]
+    """review_submission 批量处理出参（逐批次结果）。"""
+
+    submission_id: uuid.UUID
+    action: str
+    processed: int
+    items: list[SubmissionItemResult]
 
 
 class ApprovalItemOutput(BaseModel):
@@ -175,6 +199,114 @@ class AutoProcessOutput(BaseModel):
 # ============================================================================
 
 
+async def _review_submission_core(
+    *,
+    submission_id: uuid.UUID,
+    action: str,
+    review_comment: str | None,
+    batch_ids: list[uuid.UUID] | None,
+    reviewed_by: str,
+    graph_store: Any,
+    embedding_client: Any,
+    vector_searcher: Any,
+) -> ReviewSubmissionOutput:
+    """按 submission_id 批量处理待审批批次（逐批次独立事务）。
+
+    action=auto：逐批冲突检测，无冲突自动通过；有冲突保持 pending。
+    action=approve/reject：逐批人工通过/退回。
+    单批失败以 error 记录，不阻断其余批次。
+    """
+    if action not in {"auto", "approve", "reject"}:
+        raise ValueError(f"非法 action: {action}，合法值: auto/approve/reject")
+    if action == "reject" and (not review_comment or not review_comment.strip()):
+        raise ValueError("action=reject 时 review_comment 不能为空")
+
+    async with readonly_session() as session:
+        batches = await list_pending_batches(
+            session, submission_id=submission_id, limit=200
+        )
+    if batch_ids:
+        wanted = set(batch_ids)
+        batches = [b for b in batches if b.id in wanted]
+
+    results: list[SubmissionItemResult] = []
+    for pending in batches:
+        try:
+            if action == "auto":
+                async with transactional_session() as session:
+                    result = await auto_process_batch(
+                        session,
+                        batch_id=pending.id,
+                        reviewed_by=reviewed_by,
+                        graph_store=graph_store,
+                        embedding_client=embedding_client,
+                        vector_searcher=vector_searcher,
+                    )
+                batch = result["batch"]
+                created_ids = result.get("created_node_ids") or []
+                if created_ids:
+                    await _safe_enqueue_embed(batch.project_id, created_ids)
+                approved = result["decision"] == "auto_approved"
+                results.append(
+                    SubmissionItemResult(
+                        batch_id=batch.id,
+                        status=batch.status,
+                        decision=result["decision"],
+                        conflict_hint=result.get("conflict_hint"),
+                        created=build_created_nodes_payload(batch) if approved else None,
+                        edges_created=count_created_edges(batch) if approved else None,
+                    )
+                )
+            elif action == "approve":
+                async with transactional_session() as session:
+                    batch = await approval_review_approve(
+                        session,
+                        batch_id=pending.id,
+                        reviewed_by=reviewed_by,
+                        graph_store=graph_store,
+                        embedding_client=embedding_client,
+                        vector_searcher=vector_searcher,
+                        review_comment=review_comment,
+                    )
+                created_ids = collect_created_node_ids(batch)
+                if created_ids:
+                    await _safe_enqueue_embed(batch.project_id, created_ids)
+                results.append(
+                    SubmissionItemResult(
+                        batch_id=batch.id,
+                        status=batch.status,
+                        conflict_hint=batch.conflict_hint,
+                        created=build_created_nodes_payload(batch),
+                        edges_created=count_created_edges(batch),
+                    )
+                )
+            else:  # reject
+                assert review_comment is not None
+                async with transactional_session() as session:
+                    batch = await approval_review_reject(
+                        session,
+                        batch_id=pending.id,
+                        reviewed_by=reviewed_by,
+                        review_comment=review_comment,
+                    )
+                results.append(
+                    SubmissionItemResult(batch_id=batch.id, status=batch.status)
+                )
+        except Exception as e:  # noqa: BLE001 - 单批失败不阻断其余批次
+            results.append(
+                SubmissionItemResult(
+                    batch_id=pending.id, status="error", error=str(e)
+                )
+            )
+
+    return ReviewSubmissionOutput(
+        submission_id=submission_id,
+        action=action,
+        processed=len(results),
+        items=results,
+    )
+
+
 def register_review_tools(mcp: FastMCP) -> None:
     """注册审批类工具到 FastMCP 实例。"""
 
@@ -182,6 +314,9 @@ def register_review_tools(mcp: FastMCP) -> None:
     async def review_pending_list(
         project_id: uuid.UUID | None = Field(
             default=None, description="项目 ID 过滤，None 表示所有项目"
+        ),
+        submission_id: uuid.UUID | None = Field(
+            default=None, description="批量提交分组 ID 过滤（publish_requirements）"
         ),
         limit: int = Field(default=50, description="返回数量上限"),
         offset: int = Field(default=0, description="分页偏移"),
@@ -197,6 +332,7 @@ def register_review_tools(mcp: FastMCP) -> None:
                 batches = await list_pending_batches(
                     session,
                     project_id=project_id,
+                    submission_id=submission_id,
                     limit=limit,
                     offset=offset,
                 )
@@ -366,6 +502,43 @@ def register_review_tools(mcp: FastMCP) -> None:
         ) as e:
             raise to_tool_error(e) from e
 
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]
+    async def review_submission(
+        submission_id: uuid.UUID = Field(description="批量提交分组 ID"),
+        action: Literal["auto", "approve", "reject"] = Field(
+            default="auto",
+            description="auto=逐批冲突检测自动处理（推荐）；approve/reject=逐批人工通过/退回",
+        ),
+        review_comment: str | None = Field(
+            default=None, description="approve/reject 的审批意见；reject 时必填"
+        ),
+        batch_ids: list[uuid.UUID] | None = Field(
+            default=None, description="可选：只处理指定批次（默认整个 submission）"
+        ),
+    ) -> ReviewSubmissionOutput:
+        """按 submission_id 批量处理待审批批次（逐批次独立事务）。
+
+        Admin 工具。publish_requirements 产生的一个 submission 常含多条需求批次：
+        - action=auto：逐批冲突检测，无冲突自动通过；有冲突的保持 pending
+        - action=approve：逐批人工通过（review_comment 记录意见）
+        - action=reject：逐批退回（review_comment 必填）
+        单批失败以 error 返回，不阻断其余批次。
+        """
+        try:
+            lifespan_ctx = get_lifespan_context()
+            return await _review_submission_core(
+                submission_id=submission_id,
+                action=action,
+                review_comment=review_comment,
+                batch_ids=batch_ids,
+                reviewed_by=get_current_key_id(),
+                graph_store=lifespan_ctx.graph_store,
+                embedding_client=lifespan_ctx.embedding_client,
+                vector_searcher=lifespan_ctx.vector_searcher,
+            )
+        except (BatchNotFoundError, BatchStatusError, ValueError) as e:
+            raise to_tool_error(e) from e
+
 
 # ============================================================================
 # 转换辅助函数
@@ -390,6 +563,7 @@ def _to_pending_batch_item(batch: "ApprovalBatch") -> PendingBatchItem:
         batch_id=batch.id,
         project_id=batch.project_id,
         batch_type=batch.batch_type,
+        submission_id=getattr(batch, "submission_id", None),
         submitted_by=batch.submitted_by,
         submitted_at=submitted_at,
         summary=batch.summary,
