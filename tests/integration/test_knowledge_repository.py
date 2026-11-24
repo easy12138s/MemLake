@@ -25,6 +25,7 @@ from mem_lake.knowledge.repository import (
     add_edge,
     create_node,
     get_node,
+    get_node_ids_with_vectors,
     list_nodes_by_project,
     update_node,
 )
@@ -59,6 +60,45 @@ async def _get_facet_vector(session, node_id: uuid.UUID, facet: str) -> list[flo
 
 
 # ============ create_node ============
+
+
+async def test_get_node_ids_with_vectors(
+    db_session, graph_store, mock_embedding_client, knowledge_helpers
+):
+    """只返回已有 node_embedding 的节点；无向量节点不返回。"""
+    sid = uuid.uuid4()
+    with_vector = await create_node(
+        db_session,
+        graph_store=graph_store,
+        embedding_client=mock_embedding_client,
+        project_id=uuid.uuid4(),
+        node_type="Requirement",
+        title="有向量需求",
+        content="有向量",
+        properties=knowledge_helpers["Requirement"](),
+        created_by="ak_test",
+        system_id=sid,
+    )
+    without_vector = await create_node(
+        db_session,
+        graph_store=graph_store,
+        embedding_client=None,
+        project_id=None,
+        node_type="Requirement",
+        title="无向量需求",
+        content="无向量",
+        properties=knowledge_helpers["Requirement"](),
+        created_by="ak_test",
+        system_id=sid,
+        generate_vector=False,
+    )
+
+    ready = await get_node_ids_with_vectors(
+        db_session, [with_vector.id, without_vector.id]
+    )
+    assert ready == {with_vector.id}
+    assert await get_node_ids_with_vectors(db_session, []) == set()
+
 
 class TestCreateNode:
     """create_node 业务场景测试。"""

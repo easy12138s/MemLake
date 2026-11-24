@@ -311,6 +311,26 @@ async def get_node(
     return node
 
 
+async def get_node_ids_with_vectors(
+    session: AsyncSession,
+    node_ids: list[uuid.UUID],
+) -> set[uuid.UUID]:
+    """返回给定节点中已有 node_embedding 向量的 node_id 集合。
+
+    检索出参用它标记 vector_ready：新建节点在后台补向量完成前会返回 False，
+    避免调用方把「全文命中但无向量」误判为检索质量下降。
+    """
+    if not node_ids:
+        return set()
+    stmt = (
+        select(NodeEmbedding.node_id)
+        .where(NodeEmbedding.node_id.in_(node_ids))
+        .distinct()
+    )
+    result = await session.execute(stmt)
+    return set(result.scalars().all())
+
+
 async def get_nodes_by_ids(
     session: AsyncSession,
     *,

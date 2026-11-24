@@ -46,6 +46,7 @@ from mem_lake.gateway.tools._shared import (
 from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.repository import (
     get_node,
+    get_node_ids_with_vectors,
     get_system_project_ids,
     list_nodes_by_project,
 )
@@ -77,6 +78,11 @@ class SearchItemOutput(BaseModel):
     node_type: str = Field(description="类型")
     score: float | None = Field(description="分数")
     vector_score: float | None = Field(default=None, description="向量余弦分")
+    vector_ready: bool = Field(
+        default=False,
+        description="该节点是否已有向量（node_embedding 存在）；false 表示仍在后台补向量，"
+        "此时 vector_score 为空属正常",
+    )
     source: str = Field(description="来源")
     properties: dict[str, Any] = Field(default={}, description="属性")
     tags: list[str] = Field(default=[], description="标签")
@@ -459,12 +465,22 @@ def register_search_tools(mcp: FastMCP) -> None:
             )
 
             # 过滤：排除自身 + score >= threshold
-            conflicts = [
-                _to_search_item_output(r)
+            raw_conflicts = [
+                r
                 for r in result.get("fused", [])
                 if r.node_id != requirement_id
                 and r.score is not None
                 and r.score >= threshold
+            ]
+            ready_ids: set[uuid.UUID] = set()
+            if raw_conflicts:
+                async with readonly_session() as session:
+                    ready_ids = await get_node_ids_with_vectors(
+                        session, [r.node_id for r in raw_conflicts]
+                    )
+            conflicts = [
+                _to_search_item_output(r, vector_ready=r.node_id in ready_ids)
+                for r in raw_conflicts
             ]
 
             has_conflict = len(conflicts) > 0
@@ -631,9 +647,23 @@ async def _run_hybrid_search(
     if min_score is not None:
         fused_raw = [r for r in fused_raw if _passes(r)]
 
+    vector_ready_ids: set[uuid.UUID] = set()
+    if fused_raw:
+        async with readonly_session() as session:
+            vector_ready_ids = await get_node_ids_with_vectors(
+                session, [r.node_id for r in fused_raw]
+            )
+
     return HybridSearchOutput(
         query=query,
-        fused=[_to_search_item_output(r, vector_score_map.get(r.node_id)) for r in fused_raw],
+        fused=[
+            _to_search_item_output(
+                r,
+                vector_score_map.get(r.node_id),
+                r.node_id in vector_ready_ids,
+            )
+            for r in fused_raw
+        ],
         query_terms=_parse_tsquery_lexemes(result.get("fulltext_tsquery", "")),
         candidates_total=candidates_total,
         truncated=candidates_total > len(fused_raw),
@@ -641,7 +671,9 @@ async def _run_hybrid_search(
 
 
 def _to_search_item_output(
-    result: SearchResult, vector_score: float | None = None
+    result: SearchResult,
+    vector_score: float | None = None,
+    vector_ready: bool = False,
 ) -> SearchItemOutput:
     """从 SearchResult 构造 SearchItemOutput。vector_score 用于 fused 结果附带余弦分。"""
     return SearchItemOutput(
@@ -651,6 +683,7 @@ def _to_search_item_output(
         node_type=result.node_type,
         score=result.score,
         vector_score=vector_score,
+        vector_ready=vector_ready,
         source=result.source,
         properties=result.properties,
         tags=result.tags,

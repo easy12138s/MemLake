@@ -80,6 +80,21 @@ class TestToSearchItemOutput:
         assert output.score is None
         assert output.source == "graph"
 
+    def test_vector_ready_flag(self):
+        """vector_ready 透传：缺省 False，显式 True 时回传。"""
+        result = SearchResult(
+            node_id=uuid.uuid4(),
+            title="新需求",
+            content="内容",
+            node_type="Requirement",
+            score=0.01,
+            source="fused",
+            properties={},
+            tags=[],
+        )
+        assert _to_search_item_output(result).vector_ready is False
+        assert _to_search_item_output(result, vector_ready=True).vector_ready is True
+
     def test_convert_with_empty_properties_and_tags(self):
         """空 properties 和 tags 转换。"""
         result = SearchResult(
@@ -270,6 +285,11 @@ class TestRunHybridSearchContract:
         )
         monkeypatch.setattr(search_tools, "hybrid_search", fake_hybrid)
 
+        async def fake_ready_ids(session, node_ids):
+            return {fused_items[2].node_id}
+
+        monkeypatch.setattr(search_tools, "get_node_ids_with_vectors", fake_ready_ids)
+
         out = await search_tools._run_hybrid_search(
             project_id=uuid.uuid4(), query="q", node_types=("Requirement",),
             top_n=10, tags=None, min_score=0.9,
@@ -279,6 +299,7 @@ class TestRunHybridSearchContract:
         assert out.candidates_total == 1
         assert len(out.fused) == 1  # 仅纯全文命中保留
         assert out.returned == 1
+        assert out.fused[0].vector_ready is True
 
 
 # ============================================================================
