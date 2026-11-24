@@ -53,7 +53,7 @@ async def test_submit_lax_no_conflict_auto_approved(monkeypatch):
         svc, "get_settings", lambda: type("S", (), {"LAX_MODE_ENABLED": True})()
     )
 
-    batch, decision = await svc.submit_batch_with_mode(
+    batch, decision, conflict_hint = await svc.submit_batch_with_mode(
         session=None,
         project_id="p1",
         batch_type="publish_requirement",
@@ -79,7 +79,13 @@ async def test_submit_lax_conflict_needs_human_review(monkeypatch):
         return _FakeBatch(status="pending_review")
 
     async def fake_auto_process(session, **kw):
-        return {"decision": "needs_human_review"}
+        return {
+            "decision": "needs_human_review",
+            "conflict_hint": {
+                "has_conflict": True,
+                "conflicting_nodes": [{"similarity": 0.9}],
+            },
+        }
 
     monkeypatch.setattr(svc, "submit_batch", fake_submit_batch)
     monkeypatch.setattr(svc, "auto_process_batch", fake_auto_process)
@@ -87,12 +93,16 @@ async def test_submit_lax_conflict_needs_human_review(monkeypatch):
         svc, "get_settings", lambda: type("S", (), {"LAX_MODE_ENABLED": True})()
     )
 
-    batch, decision = await svc.submit_batch_with_mode(
+    batch, decision, conflict_hint = await svc.submit_batch_with_mode(
         session=None, project_id="p1", batch_type="publish_requirement",
         submitted_by="ak", submitter_role="pm", items=[], lax_mode=True,
         graph_store=object(), embedding_client=object(), vector_searcher=object(),
     )
     assert decision == "needs_human_review"
+    assert conflict_hint == {
+        "has_conflict": True,
+        "conflicting_nodes": [{"similarity": 0.9}],
+    }
 
 
 @pytest.mark.asyncio
@@ -115,7 +125,7 @@ async def test_submit_strict_returns_none_decision(monkeypatch):
         svc, "get_settings", lambda: type("S", (), {"LAX_MODE_ENABLED": True})()
     )
 
-    batch, decision = await svc.submit_batch_with_mode(
+    batch, decision, conflict_hint = await svc.submit_batch_with_mode(
         session=None, project_id="p1", batch_type="publish_requirement",
         submitted_by="ak", submitter_role="pm", items=[], lax_mode=False,
     )
@@ -143,7 +153,7 @@ async def test_submit_global_off_forces_strict(monkeypatch):
         svc, "get_settings", lambda: type("S", (), {"LAX_MODE_ENABLED": False})()
     )
 
-    batch, decision = await svc.submit_batch_with_mode(
+    batch, decision, conflict_hint = await svc.submit_batch_with_mode(
         session=None, project_id="p1", batch_type="submit_dev_artifacts",
         submitted_by="ak", submitter_role="dev", items=[], lax_mode=True,
     )
@@ -211,6 +221,20 @@ def test_write_tool_output_carries_mode():
     assert WriteToolOutput.from_batch(_FakeBatch()).mode is None
 
 
+def test_write_tool_output_carries_conflict_hint():
+    """宽松 needs_human_review 回执必须带冲突详情，PM 无需再查批次。"""
+    from mem_lake.gateway.tools._shared import WriteToolOutput
+
+    hint = {"has_conflict": True, "conflicting_nodes": [{"similarity": 0.9}]}
+    out = WriteToolOutput.from_batch(
+        _FakeBatch(status="pending_review"),
+        decision="needs_human_review",
+        conflict_hint=hint,
+    )
+    assert out.conflict_hint == hint
+    assert WriteToolOutput.from_batch(_FakeBatch()).conflict_hint is None
+
+
 @pytest.mark.asyncio
 async def test_submit_write_batch_enqueues_vectors_for_floating_lax(monkeypatch):
     """悬浮需求（project_id=None）宽松自动通过后也必须入队向量补全。
@@ -231,7 +255,7 @@ async def test_submit_write_batch_enqueues_vectors_for_floating_lax(monkeypatch)
         yield None
 
     async def fake_submit(session, **kw):
-        return _FakeBatch(), "auto_approved"
+        return _FakeBatch(), "auto_approved", {"has_conflict": False}
 
     async def fake_enqueue(project_id, node_ids):
         seen["project_id"] = project_id

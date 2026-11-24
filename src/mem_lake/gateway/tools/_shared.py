@@ -129,6 +129,13 @@ class WriteToolOutput(BaseModel):
             "（有冲突，批次停在 pending 需 admin 处理）；严格模式为 None"
         ),
     )
+    conflict_hint: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "宽松模式冲突检测结果（needs_human_review 时含 conflicting_nodes / "
+            "similarity / matched_key_attrs / suggestion；严格模式为 None）"
+        ),
+    )
     created: list[dict[str, Any]] | None = Field(
         default=None,
         description=(
@@ -157,6 +164,7 @@ class WriteToolOutput(BaseModel):
         decision: str | None = None,
         affected: list[dict[str, Any]] | None = None,
         mode: str | None = None,
+        conflict_hint: dict[str, Any] | None = None,
     ) -> "WriteToolOutput":
         """从 ApprovalBatch ORM 对象构造输出。
 
@@ -175,6 +183,7 @@ class WriteToolOutput(BaseModel):
             item_count=len(batch.items) if batch.items else 0,
             mode=mode,
             decision=decision,
+            conflict_hint=conflict_hint,
             created=created,
             edges_created=edges_created,
             affected=affected,
@@ -548,7 +557,7 @@ async def submit_write_batch(
             graph_store, embedding_client, vector_searcher = (
                 _lax_lifespan_resources()
             )
-        batch, decision = await submit_batch_with_mode(
+        batch, decision, conflict_hint = await submit_batch_with_mode(
             session,
             project_id=project_id,
             batch_type=batch_type,
@@ -570,5 +579,9 @@ async def submit_write_batch(
         # 支持按 node_ids 定位，不依赖项目过滤。
         await _safe_enqueue_embed(project_id, created)
     return WriteToolOutput.from_batch(
-        batch, decision=decision, affected=affected, mode=mode
+        batch,
+        decision=decision,
+        affected=affected,
+        mode=mode,
+        conflict_hint=conflict_hint,
     )

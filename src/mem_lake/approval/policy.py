@@ -208,15 +208,16 @@ async def submit_batch_with_mode(
     graph_store: GraphStore | None = None,
     embedding_client: EmbeddingClient | None = None,
     vector_searcher: VectorSearcher | None = None,
-) -> tuple[ApprovalBatch, str | None]:
+) -> tuple[ApprovalBatch, str | None, dict[str, Any] | None]:
     """按提交方审核模式创建批次：宽松模式提交即自动处理（同一事务）。
 
     宽松模式（lax_mode=True 且全局 LAX_MODE_ENABLED=True）：
     1. 同一事务内先 submit_batch 建批（幂等 + submit 审计不变）
     2. 立即调用 auto_process_batch：无冲突 → approved 直接入库；有冲突 →
        needs_human_review 批次保持 pending
-    返回 (batch, decision)；decision 为 "auto_approved"/"needs_human_review"
-    或 None（严格模式/全局熔断，走正常审批）。
+    返回 (batch, decision, conflict_hint)；decision 为
+    "auto_approved"/"needs_human_review" 或 None（严格模式/全局熔断），
+    conflict_hint 仅在宽松路径有值。
 
     全局开关在此单一判定：lax_mode 即便传 True，若 LAX_MODE_ENABLED=False 也强制走审批，
     防止绕过（与 config 注释一致）。
@@ -241,7 +242,7 @@ async def submit_batch_with_mode(
     )
 
     if not lax:
-        return batch, None
+        return batch, None, None
 
     if graph_store is None or embedding_client is None or vector_searcher is None:
         raise RuntimeError(
@@ -256,4 +257,4 @@ async def submit_batch_with_mode(
         embedding_client=embedding_client,
         vector_searcher=vector_searcher,
     )
-    return batch, result["decision"]
+    return batch, result["decision"], result.get("conflict_hint")
