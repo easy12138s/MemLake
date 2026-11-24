@@ -23,7 +23,7 @@ import uuid
 from typing import Any
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.approval.service import (
@@ -58,7 +58,7 @@ from mem_lake.knowledge.repository import (
     get_system_project_ids,
     list_project_profiles,
 )
-from mem_lake.knowledge.schema import SchemaValidationError
+from mem_lake.knowledge.schema import SchemaValidationError, validate_node
 
 logger = logging.getLogger("mem_lake.gateway.tools.write")
 
@@ -146,6 +146,44 @@ class RelationInput(StrictInputModel):
         description="关系类型：conflicts_with/duplicates/relates_to/supersedes/version_of"
     )
     properties: dict[str, Any] = Field(default={}, description="边属性")
+
+
+class BatchRequirementInput(StrictInputModel):
+    """批量发布中的单条需求（client_ref 供回执/幂等对账）。"""
+
+    client_ref: str = Field(
+        min_length=1,
+        max_length=64,
+        description="提交内唯一引用名（如 'YB3-001'），回执按它返回 batch_id",
+    )
+    requirement: RequirementInput
+    project_id: uuid.UUID | None = Field(
+        default=None, description="单条需求归属项目；None=悬浮（继承 system）"
+    )
+    related: RelatedInput | None = Field(
+        default=None, description="关联关系（仅支持已有 Requirement UUID）"
+    )
+
+
+class BatchPublishItemOutput(BaseModel):  # type: ignore[misc]
+    """批量发布单条结果（成功或失败均返回，便于 PM 对账）。"""
+
+    client_ref: str
+    batch_id: uuid.UUID | None = None
+    status: str | None = None
+    mode: str | None = None
+    decision: str | None = None
+    conflict_hint: dict[str, Any] | None = None
+    created: list[dict[str, Any]] | None = None
+    edges_created: int | None = None
+    error: str | None = None
+
+
+class PublishRequirementsOutput(BaseModel):  # type: ignore[misc]
+    """批量发布出参：同一 submission_id 下每条需求一个审批批次。"""
+
+    submission_id: uuid.UUID
+    items: list[BatchPublishItemOutput]
 
 
 # ============================================================================
@@ -258,6 +296,92 @@ class ArtifactsInput(StrictInputModel):
 # ============================================================================
 
 
+async def _publish_requirements_batch(
+    *,
+    system_id: uuid.UUID,
+    requirements: list[BatchRequirementInput],
+    submission_id: uuid.UUID | None,
+    operation_id: str | None,
+) -> PublishRequirementsOutput:
+    """批量发布核心：先全量预检，再逐条建批次（同一 submission_id）。
+
+    每条需求仍是一个独立 approval_batch：保留逐条冲突检测/自动通过语义，
+    避免单批次 all-or-nothing 与 50 item 上限。任一条预检失败则整次调用拒绝，
+    不产生任何批次；运行期单条失败以 error 记录并继续其余条目。
+    """
+    if not requirements:
+        raise PayloadValidationError("requirements 不能为空")
+    if len(requirements) > get_settings().MAX_ITEMS_PER_BATCH:
+        raise PayloadValidationError(
+            f"requirements 数量 {len(requirements)} 超过上限 "
+            f"{get_settings().MAX_ITEMS_PER_BATCH}"
+        )
+
+    refs = [it.client_ref for it in requirements]
+    if len(set(refs)) != len(refs):
+        raise PayloadValidationError("client_ref 在同一批提交内必须唯一")
+
+    key_id = get_current_key_id()
+    for it in requirements:
+        if it.project_id is not None:
+            validate_project_access(it.project_id)
+        _check_content_length(
+            it.requirement.content, f"Requirement.content[{it.client_ref}]"
+        )
+        validate_node("Requirement", it.requirement.properties)
+        if it.related:
+            ref_ids = [*(it.related.supersedes or []), *(it.related.relates_to or [])]
+            await _validate_requirement_refs(
+                it.project_id, ref_ids, f"{it.client_ref} related 引用"
+            )
+        if operation_id is not None and len(f"{operation_id}:{it.client_ref}") > 128:
+            raise PayloadValidationError(
+                f"operation_id + client_ref 超过 128 字符: {it.client_ref}"
+            )
+
+    effective_submission_id = submission_id or uuid.uuid4()
+    results: list[BatchPublishItemOutput] = []
+    for it in requirements:
+        item_operation_id = (
+            f"{operation_id}:{it.client_ref}" if operation_id is not None else None
+        )
+        try:
+            items = _build_publish_items(
+                it.project_id, it.requirement, it.related, key_id, system_id
+            )
+            out = await submit_write_batch(
+                project_id=it.project_id,
+                batch_type="publish_requirement",
+                submitter_role="pm",
+                items=items,
+                operation_id=item_operation_id,
+                submission_id=effective_submission_id,
+            )
+            if out.submission_id is not None:
+                effective_submission_id = out.submission_id
+            results.append(
+                BatchPublishItemOutput(
+                    client_ref=it.client_ref,
+                    batch_id=out.batch_id,
+                    status=out.status,
+                    mode=out.mode,
+                    decision=out.decision,
+                    conflict_hint=out.conflict_hint,
+                    created=out.created,
+                    edges_created=out.edges_created,
+                )
+            )
+        except Exception as e:  # noqa: BLE001 - 单条失败不阻断其余条目
+            results.append(
+                BatchPublishItemOutput(client_ref=it.client_ref, error=str(e))
+            )
+
+    return PublishRequirementsOutput(
+        submission_id=effective_submission_id,
+        items=results,
+    )
+
+
 async def _submit_requirement_relations(
     *,
     project_id: uuid.UUID | None,
@@ -352,6 +476,38 @@ def register_write_tools(mcp: FastMCP) -> None:
                 batch_type="publish_requirement",
                 submitter_role="pm",
                 items=items,
+                operation_id=operation_id,
+            )
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e) from e
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]
+    async def publish_requirements(
+        system_id: uuid.UUID = Field(description="归属 system 域（本批需求共用）"),
+        requirements: list[BatchRequirementInput] = Field(
+            description="需求列表（每条一个审批批次；client_ref 批内唯一）"
+        ),
+        submission_id: uuid.UUID | None = Field(
+            default=None,
+            description="批量提交分组 ID；重试时传回首次返回值可保持同一分组",
+        ),
+        operation_id: str | None = Field(
+            default=None,
+            description="幂等前缀；每条实际键为 <operation_id>:<client_ref>",
+        ),
+    ) -> PublishRequirementsOutput:
+        """批量发布需求：一个 submission_id 下每条需求一个审批批次。
+
+        PM 工具。先对全部条目做 schema/内容/引用预检，任一失败整次拒绝（不产生
+        批次）；预检通过后逐条提交，保留逐条冲突检测与宽松模式自动通过语义。
+        返回每条 client_ref 对应的 batch_id/status/mode/decision/conflict_hint，
+        便于一次提交后按 client_ref 对账。
+        """
+        try:
+            return await _publish_requirements_batch(
+                system_id=system_id,
+                requirements=requirements,
+                submission_id=submission_id,
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:

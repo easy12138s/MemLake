@@ -11,6 +11,7 @@ ProjectProfile 节点不走审批流），PDD 6.1 admin 工具表未列出但 PD
 
 PM_TOOLS: frozenset[str] = frozenset({
     "publish_requirement",
+    "publish_requirements",
     "search_similar_requirements",
     "analyze_impact_scope",
     "check_requirement_conflicts",
