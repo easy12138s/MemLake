@@ -27,6 +27,7 @@ from mem_lake.gateway.tools.search_tools import (
     ImpactScopeOutput,
     ListKnowledgeOutput,
     SearchItemOutput,
+    _check_requirement_conflicts_core,
     _to_knowledge_node_output,
     _to_search_item_output,
 )
@@ -555,3 +556,75 @@ class TestOutputModels:
         )
         assert output.logs == []
         assert output.limit == 100
+
+
+class TestCheckRequirementConflictsScope:
+    """冲突预检 scope 解析：悬浮需求自动走 system，不强制 project。"""
+
+    async def test_floating_requirement_derives_system_scope(self, monkeypatch):
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from mem_lake.gateway.tools import search_tools
+
+        sid = uuid.uuid4()
+        calls: dict = {}
+
+        @asynccontextmanager
+        async def fake_session():
+            yield None
+
+        async def fake_get_node(session, node_id):
+            return SimpleNamespace(
+                project_id=None,
+                system_id=sid,
+                type="Requirement",
+                title="悬浮需求",
+                content="内容",
+                properties={"priority": "P1", "module": "m"},
+            )
+
+        def fake_validate_system(system_id):
+            calls["system"] = system_id
+
+        def fake_validate_project(project_id):
+            calls["project"] = project_id
+
+        async def fake_hybrid(**kw):
+            calls["filters"] = kw["filters"]
+            return {"fused": []}
+
+        async def fake_ready(session, node_ids):
+            return set()
+
+        monkeypatch.setattr(search_tools, "readonly_session", fake_session)
+        monkeypatch.setattr(search_tools, "get_node", fake_get_node)
+        monkeypatch.setattr(search_tools, "validate_system_access", fake_validate_system)
+        monkeypatch.setattr(search_tools, "validate_project_access", fake_validate_project)
+        monkeypatch.setattr(search_tools, "hybrid_search", fake_hybrid)
+        monkeypatch.setattr(search_tools, "get_node_ids_with_vectors", fake_ready)
+        monkeypatch.setattr(
+            search_tools,
+            "get_settings",
+            lambda: SimpleNamespace(
+                CONFLICT_SIMILARITY_THRESHOLD=0.85,
+                CONFLICT_SUGGEST_PENDING=0.95,
+            ),
+        )
+
+        out = await _check_requirement_conflicts_core(
+            project_id=None,
+            system_id=None,
+            requirement_id=uuid.uuid4(),
+            threshold=None,
+            top_n=5,
+            embedding_client=None,
+            graph_store=None,
+        )
+
+        assert calls["system"] == sid
+        assert "project" not in calls
+        assert calls["filters"].system_id == sid
+        assert calls["filters"].project_id is None
+        assert out.threshold == 0.85
+        assert out.has_conflict is False

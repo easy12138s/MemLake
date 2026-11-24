@@ -411,9 +411,17 @@ def register_search_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)
     async def check_requirement_conflicts(
-        project_id: uuid.UUID = Field(description="归属项目 ID"),
         requirement_id: uuid.UUID = Field(
             description="被检测的需求节点 ID（自动排除自身）"
+        ),
+        project_id: uuid.UUID | None = Field(
+            default=None,
+            description="归属项目 ID；与 system_id 均省略时按需求自身归属"
+            "（悬浮需求自动走 system 域）",
+        ),
+        system_id: uuid.UUID | None = Field(
+            default=None,
+            description="归属 system 域（悬浮需求冲突预检用；与 project_id 可二选一）",
         ),
         threshold: float | None = Field(
             default=None,
@@ -424,10 +432,12 @@ def register_search_tools(mcp: FastMCP) -> None:
             default=20, description="检索召回数量上限（融合后）"
         ),
     ) -> ConflictCheckOutput:
-        """检测需求冲突（同项目同类型高相似度节点）。
+        """检测需求冲突（同项目或同 system 域内同类型高相似度节点）。
 
         PM 工具。融合检索召回后按向量余弦阈值过滤，检测与指定需求冲突的
         潜在重复/矛盾需求。自动排除自身节点，仅返回 score >= threshold 的结果。
+        project_id/system_id 均可省略：按被检测需求自身归属解析——悬浮需求
+        自动用其 system 域，不再强制 PM 提供无关项目作为权限锚点。
         threshold 缺省读配置 CONFLICT_SIMILARITY_THRESHOLD（与审批流冲突检测同一
         阈值来源，避免双源脱钩）。本工具为相似度过滤，不含审批层
         detect_conflicts 的 L2 关键属性比对——二者定位不同（前者给 PM 主动
@@ -435,70 +445,15 @@ def register_search_tools(mcp: FastMCP) -> None:
         has_conflict=true 时 suggestion 推荐 review（人工核查）或 manual_merge（高相似度合并）。
         """
         try:
-            validate_project_access(project_id)
-            if threshold is None:
-                threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
             lifespan_ctx = get_lifespan_context()
-
-            # 获取被检测需求的标题用作查询文本（build_embed_text 含属性段，
-            # 与落库向量构造一致）
-            async with readonly_session() as session:
-                target_node = await get_node(session, requirement_id)
-            query_text = build_embed_text(
-                target_node.type,
-                target_node.title,
-                target_node.content,
-                target_node.properties,
-            )
-
-            # 复用 hybrid_search 检索同项目 Requirement 节点（内部自建独立 session）
-            filters = FilterSpec(
+            return await _check_requirement_conflicts_core(
                 project_id=project_id,
-                node_types=("Requirement",),
-            )
-            result = await hybrid_search(
-                query=query_text,
+                system_id=system_id,
+                requirement_id=requirement_id,
+                threshold=threshold,
+                top_n=top_n,
                 embedding_client=lifespan_ctx.embedding_client,
                 graph_store=lifespan_ctx.graph_store,
-                top_n=top_n,
-                filters=filters,
-            )
-
-            # 过滤：排除自身 + score >= threshold
-            raw_conflicts = [
-                r
-                for r in result.get("fused", [])
-                if r.node_id != requirement_id
-                and r.score is not None
-                and r.score >= threshold
-            ]
-            ready_ids: set[uuid.UUID] = set()
-            if raw_conflicts:
-                async with readonly_session() as session:
-                    ready_ids = await get_node_ids_with_vectors(
-                        session, [r.node_id for r in raw_conflicts]
-                    )
-            conflicts = [
-                _to_search_item_output(r, vector_ready=r.node_id in ready_ids)
-                for r in raw_conflicts
-            ]
-
-            has_conflict = len(conflicts) > 0
-            suggestion = None
-            if has_conflict:
-                # 最高相似度 >= CONFLICT_SUGGEST_PENDING(0.95) 推荐 manual_merge，否则 review
-                # （阈值 CONFLICT_SUGGEST_PENDING 可配置；再显式过滤 score
-                #   is not None 以收敛类型供 max 比较）
-                max_score = max(c.score for c in conflicts if c.score is not None)
-                suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
-                suggestion = "manual_merge" if max_score >= suggest_threshold else "review"
-
-            return ConflictCheckOutput(
-                requirement_id=requirement_id,
-                has_conflict=has_conflict,
-                conflicts=conflicts,
-                threshold=threshold,
-                suggestion=suggestion,
             )
         except Exception as e:
             raise to_tool_error(e) from e
@@ -547,6 +502,97 @@ def register_search_tools(mcp: FastMCP) -> None:
 # ============================================================================
 # 辅助函数
 # ============================================================================
+
+
+async def _check_requirement_conflicts_core(
+    *,
+    project_id: uuid.UUID | None,
+    system_id: uuid.UUID | None,
+    requirement_id: uuid.UUID,
+    threshold: float | None,
+    top_n: int,
+    embedding_client: Any,
+    graph_store: Any,
+) -> "ConflictCheckOutput":
+    """冲突预检核心：scope 解析 + 融合检索 + 阈值过滤。
+
+    scope 规则：
+    - project_id / system_id 显式传入时按传入值鉴权与过滤；
+    - 均省略时按被检测需求自身归属解析（悬浮需求 → system 域）；
+    - 二者都无归属则拒绝（无法确定候选域）。
+    """
+    if project_id is not None:
+        validate_project_access(project_id)
+    if system_id is not None:
+        validate_system_access(system_id)
+
+    async with readonly_session() as session:
+        target_node = await get_node(session, requirement_id)
+
+    if project_id is None and system_id is None:
+        if target_node.project_id is not None:
+            validate_project_access(target_node.project_id)
+            project_id = target_node.project_id
+        elif target_node.system_id is not None:
+            validate_system_access(target_node.system_id)
+            system_id = target_node.system_id
+        else:
+            raise ValueError("需求既无项目也无 system 归属，无法确定冲突候选域")
+
+    if threshold is None:
+        threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
+
+    query_text = build_embed_text(
+        target_node.type,
+        target_node.title,
+        target_node.content,
+        target_node.properties,
+    )
+    filters = FilterSpec(
+        project_id=project_id,
+        system_id=system_id,
+        node_types=("Requirement",),
+    )
+    result = await hybrid_search(
+        query=query_text,
+        embedding_client=embedding_client,
+        graph_store=graph_store,
+        top_n=top_n,
+        filters=filters,
+    )
+
+    raw_conflicts = [
+        r
+        for r in result.get("fused", [])
+        if r.node_id != requirement_id
+        and r.score is not None
+        and r.score >= threshold
+    ]
+    ready_ids: set[uuid.UUID] = set()
+    if raw_conflicts:
+        async with readonly_session() as session:
+            ready_ids = await get_node_ids_with_vectors(
+                session, [r.node_id for r in raw_conflicts]
+            )
+    conflicts = [
+        _to_search_item_output(r, vector_ready=r.node_id in ready_ids)
+        for r in raw_conflicts
+    ]
+
+    has_conflict = len(conflicts) > 0
+    suggestion = None
+    if has_conflict:
+        max_score = max(c.score for c in conflicts if c.score is not None)
+        suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
+        suggestion = "manual_merge" if max_score >= suggest_threshold else "review"
+
+    return ConflictCheckOutput(
+        requirement_id=requirement_id,
+        has_conflict=has_conflict,
+        conflicts=conflicts,
+        threshold=threshold,
+        suggestion=suggestion,
+    )
 
 
 async def _run_hybrid_search(
