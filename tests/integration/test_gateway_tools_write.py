@@ -895,3 +895,35 @@ class TestFreeStandingArtifacts:
             {"aid": str(artifact_id)},
         )
         assert len(edges) == 0
+
+
+async def test_submit_batch_persists_submission_id(db_session, knowledge_helpers):
+    """submission_id 落库并可按组查询；写回执透传该分组 ID。"""
+    from mem_lake.gateway.tools._shared import WriteToolOutput
+
+    submission_id = uuid.uuid4()
+    items = _build_publish_items(
+        uuid.uuid4(),
+        RequirementInput(
+            title="批量分组测试需求",
+            content="内容",
+            properties=knowledge_helpers["Requirement"](),
+        ),
+        None,
+        "ak_pm",
+        uuid.uuid4(),
+    )
+    batch = await submit_batch(
+        db_session,
+        project_id=None,
+        batch_type="publish_requirement",
+        submitted_by="ak_pm",
+        submitter_role="pm",
+        items=items,
+        submission_id=submission_id,
+    )
+    assert batch.submission_id == submission_id
+
+    listed = await list_pending_batches(db_session, submission_id=submission_id)
+    assert [b.id for b in listed] == [batch.id]
+    assert WriteToolOutput.from_batch(batch).submission_id == submission_id

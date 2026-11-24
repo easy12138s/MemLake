@@ -60,6 +60,7 @@ async def submit_batch(
     submitter_role: str,
     items: list[dict[str, Any]],
     operation_id: str | None = None,
+    submission_id: uuid.UUID | None = None,
 ) -> ApprovalBatch:
     """提交审批批次。
 
@@ -73,6 +74,7 @@ async def submit_batch(
             {"item_type": "node"/"edge", "action": "create"/"update"/"delete",
              "entity_type": "Requirement"/"implements"/..., "payload": {...}}
         operation_id: 幂等操作标识，None 时不参与幂等校验
+        submission_id: 批量提交分组 ID（publish_requirements 同一批共享），单条工具为 None
 
     返回：创建的 ApprovalBatch（含 items）。
 
@@ -116,6 +118,7 @@ async def submit_batch(
                 submitter_role=submitter_role,
                 items=items,
                 operation_id=operation_id,
+                submission_id=submission_id,
             )
     except IntegrityError:
         # 并发同 operation_id 提交：两个请求都通过幂等检查后各自插入，
@@ -140,6 +143,7 @@ async def _create_batch(
     submitter_role: str,
     items: list[dict[str, Any]],
     operation_id: str | None,
+    submission_id: uuid.UUID | None = None,
 ) -> ApprovalBatch:
     """创建审批批次的核心逻辑（submit_batch 内部）。"""
     # 3. 校验 items 非空与 payload 合规性
@@ -170,6 +174,7 @@ async def _create_batch(
         summary=summary,
         status=STATUS_PENDING_REVIEW,
         operation_id=operation_id,
+        submission_id=submission_id,
     )
     session.add(batch)
     await session.flush()  # 生成 batch.id
@@ -214,13 +219,14 @@ async def list_pending_batches(
     session: AsyncSession,
     *,
     project_id: uuid.UUID | None = None,
+    submission_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[ApprovalBatch]:
     """查询待审批批次列表。
 
-    可选 project_id 过滤。返回 status=pending_review 的批次，按 submitted_at 降序。
-    不预加载 items（列表场景只需批次元数据）。
+    可选 project_id / submission_id 过滤。返回 status=pending_review 的批次，
+    按 submitted_at 降序。不预加载 items（列表场景只需批次元数据）。
     """
     stmt = (
         select(ApprovalBatch)
@@ -231,6 +237,8 @@ async def list_pending_batches(
     )
     if project_id is not None:
         stmt = stmt.where(ApprovalBatch.project_id == project_id)
+    if submission_id is not None:
+        stmt = stmt.where(ApprovalBatch.submission_id == submission_id)
 
     result = await session.execute(stmt)
     return list(result.scalars().all())

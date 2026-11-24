@@ -204,6 +204,7 @@ async def submit_batch_with_mode(
     submitter_role: str,
     items: list[dict[str, Any]],
     operation_id: str | None = None,
+    submission_id: uuid.UUID | None = None,
     lax_mode: bool,
     graph_store: GraphStore | None = None,
     embedding_client: EmbeddingClient | None = None,
@@ -239,6 +240,7 @@ async def submit_batch_with_mode(
         submitter_role=submitter_role,
         items=items,
         operation_id=operation_id,
+        submission_id=submission_id,
     )
 
     if not lax:

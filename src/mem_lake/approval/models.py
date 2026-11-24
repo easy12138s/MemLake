@@ -37,6 +37,12 @@ class ApprovalBatch(Base):
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True, comment="归属项目（悬浮 system 需求批次可为空）"
     )
+    submission_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+        comment="批量提交分组 ID（publish_requirements 同一批共享；单条工具为 NULL）",
+    )
     batch_type: Mapped[str] = mapped_column(
         String(64),
         nullable=False,

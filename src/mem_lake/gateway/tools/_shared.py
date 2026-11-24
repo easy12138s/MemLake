@@ -114,6 +114,10 @@ class WriteToolOutput(BaseModel):
     )
     submitted_at: datetime = Field(description="提交时间（ISO 8601）")
     item_count: int = Field(description="审批项数量")
+    submission_id: uuid.UUID | None = Field(
+        default=None,
+        description="批量提交分组 ID（publish_requirements 同一批共享；单条工具为 null）",
+    )
     mode: str | None = Field(
         default=None,
         description=(
@@ -176,11 +180,16 @@ class WriteToolOutput(BaseModel):
         if decision == "auto_approved" and batch.items:
             created = build_created_nodes_payload(batch)
             edges_created = count_created_edges(batch)
+        raw_submission_id = getattr(batch, "submission_id", None)
+        submission_id = (
+            raw_submission_id if isinstance(raw_submission_id, uuid.UUID) else None
+        )
         return cls(
             batch_id=batch.id,
             status=batch.status,
             submitted_at=batch.submitted_at,
             item_count=len(batch.items) if batch.items else 0,
+            submission_id=submission_id,
             mode=mode,
             decision=decision,
             conflict_hint=conflict_hint,
@@ -542,6 +551,7 @@ async def submit_write_batch(
     items: list[dict[str, Any]],
     operation_id: str | None,
     affected: list[dict[str, Any]] | None = None,
+    submission_id: uuid.UUID | None = None,
 ) -> WriteToolOutput:
     """写工具统一提交流程：开事务 → 按模式提交批次 → 宽松模式收尾入队补向量。
 
@@ -565,6 +575,7 @@ async def submit_write_batch(
             submitter_role=submitter_role,
             items=items,
             operation_id=operation_id,
+            submission_id=submission_id,
             lax_mode=lax,
             graph_store=graph_store,
             embedding_client=embedding_client,
