@@ -209,3 +209,53 @@ def test_write_tool_output_carries_mode():
 
     assert WriteToolOutput.from_batch(_FakeBatch(), mode="strict").mode == "strict"
     assert WriteToolOutput.from_batch(_FakeBatch()).mode is None
+
+
+@pytest.mark.asyncio
+async def test_submit_write_batch_enqueues_vectors_for_floating_lax(monkeypatch):
+    """悬浮需求（project_id=None）宽松自动通过后也必须入队向量补全。
+
+    回归：此前 project_id is not None 守卫会跳过悬浮需求的补向量，
+    导致宽松自动入库的 system 需求永远没有 node_embedding。
+    """
+    import uuid as _uuid
+    from contextlib import asynccontextmanager
+
+    import mem_lake.gateway.tools._shared as shared
+
+    node_id = _uuid.uuid4()
+    seen: dict = {}
+
+    @asynccontextmanager
+    async def fake_session():
+        yield None
+
+    async def fake_submit(session, **kw):
+        return _FakeBatch(), "auto_approved"
+
+    async def fake_enqueue(project_id, node_ids):
+        seen["project_id"] = project_id
+        seen["node_ids"] = node_ids
+
+    monkeypatch.setattr(shared, "transactional_session", fake_session)
+    monkeypatch.setattr(shared, "submit_batch_with_mode", fake_submit)
+    monkeypatch.setattr(shared, "get_current_lax_mode", lambda: True)
+    monkeypatch.setattr(shared, "get_current_key_id", lambda: "ak_test")
+    monkeypatch.setattr(
+        shared, "get_settings", lambda: type("S", (), {"LAX_MODE_ENABLED": True})()
+    )
+    monkeypatch.setattr(
+        shared, "_lax_lifespan_resources", lambda: (object(), object(), object())
+    )
+    monkeypatch.setattr(shared, "collect_created_node_ids", lambda batch: [node_id])
+    monkeypatch.setattr(shared, "_safe_enqueue_embed", fake_enqueue)
+
+    out = await shared.submit_write_batch(
+        project_id=None,
+        batch_type="publish_requirement",
+        submitter_role="pm",
+        items=[],
+        operation_id=None,
+    )
+    assert out.status == "approved"
+    assert seen == {"project_id": None, "node_ids": [node_id]}
