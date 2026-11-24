@@ -17,6 +17,7 @@ PM_TOOLS: frozenset[str] = frozenset({
     "check_requirement_conflicts",
     "update_requirement_relations",
     "update_node",
+    "update_requirements",
     "list_requirements",
     "get_requirement_context",
     "get_node_info",
@@ -32,6 +33,7 @@ DEV_TOOLS: frozenset[str] = frozenset({
     "search_code_snippets",
     "submit_dev_artifacts",
     "update_node",
+    "update_requirements",
     "search_similar_requirements",
     "analyze_impact_scope",
 })

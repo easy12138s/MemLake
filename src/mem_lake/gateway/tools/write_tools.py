@@ -401,6 +401,83 @@ async def _publish_requirements_batch(
     )
 
 
+async def _update_requirements_batch(
+    *,
+    node_ids: list[uuid.UUID],
+    tags_add: list[str] | None,
+    tags_remove: list[str] | None,
+    properties_patch: dict[str, Any] | None,
+    operation_id: str | None,
+) -> WriteToolOutput:
+    """批量更新需求标签/属性：显式 node_ids，合并后逐节点生成 update item。"""
+    if not node_ids:
+        raise PayloadValidationError("node_ids 不能为空")
+    if len(node_ids) > get_settings().MAX_ITEMS_PER_BATCH:
+        raise PayloadValidationError(
+            f"node_ids 数量 {len(node_ids)} 超过上限 {get_settings().MAX_ITEMS_PER_BATCH}"
+        )
+    if len(set(node_ids)) != len(node_ids):
+        raise PayloadValidationError("node_ids 不能重复")
+    if not tags_add and not tags_remove and properties_patch is None:
+        raise PayloadValidationError(
+            "至少提供 tags_add/tags_remove/properties_patch 之一"
+        )
+    if properties_patch is not None and not isinstance(properties_patch, dict):
+        raise PayloadValidationError("properties_patch 必须为 JSON 对象")
+
+    await _validate_requirement_refs(
+        None, [str(nid) for nid in node_ids], "批量更新引用"
+    )
+    async with readonly_session() as session:
+        nodes = await get_nodes_by_ids(
+            session, node_ids=list(node_ids), status="approved"
+        )
+    if len(nodes) != len(node_ids):
+        found = {n.id for n in nodes}
+        missing = [str(nid) for nid in node_ids if nid not in found]
+        raise PayloadValidationError(f"批量更新目标不存在或未审批: {missing}")
+
+    remove_set = set(tags_remove or [])
+    items: list[dict[str, Any]] = []
+    for node in nodes:
+        original_tags = list(node.tags or [])
+        new_tags = list(original_tags)
+        for tag in tags_add or []:
+            if tag not in new_tags:
+                new_tags.append(tag)
+        if remove_set:
+            new_tags = [t for t in new_tags if t not in remove_set]
+
+        new_props = None
+        if properties_patch is not None:
+            new_props = dict(node.properties or {})
+            new_props.update(properties_patch)
+            validate_node("Requirement", new_props)
+
+        tags_arg = new_tags if new_tags != original_tags else None
+        if tags_arg is None and new_props is None:
+            continue
+        items.append(
+            build_update_node_item(
+                node_id=node.id,
+                node_type=node.type,
+                properties=new_props,
+                tags=tags_arg,
+            )
+        )
+
+    if not items:
+        raise PayloadValidationError("没有实际发生变更的节点")
+
+    return await submit_write_batch(
+        project_id=None,
+        batch_type="update_node",
+        submitter_role=get_current_role(),
+        items=items,
+        operation_id=operation_id,
+    )
+
+
 async def _resolve_requirement_ref(ref: str) -> uuid.UUID:
     """把 requirement_key / external_id / UUID 字符串解析为节点 UUID。"""
     try:
@@ -741,6 +818,44 @@ def register_write_tools(mcp: FastMCP) -> None:
                 batch_type="update_node",
                 submitter_role=get_current_role(),
                 items=items,
+                operation_id=operation_id,
+            )
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e) from e
+
+    @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]
+    async def update_requirements(
+        node_ids: list[uuid.UUID] = Field(
+            min_length=1,
+            max_length=get_settings().MAX_ITEMS_PER_BATCH,
+            description="待更新的需求节点 ID 列表（显式指定，禁止隐式全量）",
+        ),
+        tags_add: list[str] | None = Field(
+            default=None, description="追加标签（已存在则跳过）"
+        ),
+        tags_remove: list[str] | None = Field(
+            default=None, description="移除标签（不存在则忽略）"
+        ),
+        properties_patch: dict[str, Any] | None = Field(
+            default=None,
+            description="属性增量补丁（仅覆盖传入键，合并后按 Requirement schema 重校验）",
+        ),
+        operation_id: str | None = Field(
+            default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
+        ),
+    ) -> WriteToolOutput:
+        """批量更新需求标签/属性（一个审批批次，逐节点 update item）。
+
+        PM/Dev 共享。用于「11 条待确认需求统一加标签」「产品确认后批量改 module/
+        优先级」等治理场景，避免逐条 update_node 产生 N 个批次。
+        必须显式传 node_ids；合并后无实际变更的节点会跳过。
+        """
+        try:
+            return await _update_requirements_batch(
+                node_ids=node_ids,
+                tags_add=tags_add,
+                tags_remove=tags_remove,
+                properties_patch=properties_patch,
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
