@@ -48,6 +48,7 @@ def test_pm_tools_exact():
     expected = {
         "publish_requirement",
         "publish_requirements",
+        "validate_requirements",
         "search_similar_requirements",
         "analyze_impact_scope",
         "check_requirement_conflicts",

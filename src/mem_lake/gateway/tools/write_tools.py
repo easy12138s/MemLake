@@ -40,26 +40,32 @@ from mem_lake.gateway.dependencies import (
     validate_project_access,
 )
 from mem_lake.gateway.tools._shared import (
+    READ_TOOL_ANNOTATIONS,
     WRITE_TOOL_ANNOTATIONS,
     StrictInputModel,
     WriteToolOutput,
     build_edge_item,
     build_node_item,
     build_update_node_item,
+    get_lifespan_context,
     submit_write_batch,
     to_tool_error,
 )
+from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     find_requirements_by_ref,
     get_node,
+    get_node_ids_with_vectors,
     get_nodes_by_ids,
     get_system,
     get_system_project_ids,
     list_project_profiles,
 )
 from mem_lake.knowledge.schema import SchemaValidationError, validate_node
+from mem_lake.search.filters import FilterSpec
+from mem_lake.search.fusion import hybrid_search
 
 logger = logging.getLogger("mem_lake.gateway.tools.write")
 
@@ -203,6 +209,22 @@ class PublishRequirementsOutput(BaseModel):  # type: ignore[misc]
 
     submission_id: uuid.UUID
     items: list[BatchPublishItemOutput]
+
+
+class ValidateRequirementItemOutput(BaseModel):  # type: ignore[misc]
+    """dry-run 单条预检结果。"""
+
+    client_ref: str
+    ok: bool
+    errors: list[str] = Field(default=[])
+    conflicts: list[dict[str, Any]] = Field(default=[])
+    suggestion: str | None = None
+
+
+class ValidateRequirementsOutput(BaseModel):  # type: ignore[misc]
+    """validate_requirements 出参（不产生任何批次）。"""
+
+    items: list[ValidateRequirementItemOutput]
 
 
 # ============================================================================
@@ -478,6 +500,117 @@ async def _update_requirements_batch(
     )
 
 
+async def _validate_requirements_core(
+    *,
+    system_id: uuid.UUID,
+    requirements: list[BatchRequirementInput],
+    threshold: float | None,
+    include_conflicts: bool,
+    embedding_client: Any,
+    graph_store: Any,
+) -> ValidateRequirementsOutput:
+    """发布前 dry-run：字段/引用预检 + 冲突预览，不写库、不建批次。"""
+    if not requirements:
+        raise PayloadValidationError("requirements 不能为空")
+    if len(requirements) > get_settings().MAX_ITEMS_PER_BATCH:
+        raise PayloadValidationError(
+            f"requirements 数量 {len(requirements)} 超过上限 "
+            f"{get_settings().MAX_ITEMS_PER_BATCH}"
+        )
+    refs = [it.client_ref for it in requirements]
+    if len(set(refs)) != len(refs):
+        raise PayloadValidationError("client_ref 在同一批预检内必须唯一")
+
+    if threshold is None:
+        threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
+    suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
+
+    results: list[ValidateRequirementItemOutput] = []
+    for it in requirements:
+        errors: list[str] = []
+        if it.project_id is not None:
+            try:
+                validate_project_access(it.project_id)
+            except Exception as e:  # noqa: BLE001 - 预检收集全部错误
+                errors.append(str(e))
+        try:
+            _check_content_length(
+                it.requirement.content, f"Requirement.content[{it.client_ref}]"
+            )
+            validate_node("Requirement", it.requirement.properties)
+        except Exception as e:  # noqa: BLE001
+            errors.append(str(e))
+        if it.related:
+            try:
+                ref_ids = [
+                    *(it.related.supersedes or []),
+                    *(it.related.relates_to or []),
+                ]
+                await _validate_requirement_refs(
+                    it.project_id, ref_ids, f"{it.client_ref} related 引用"
+                )
+            except Exception as e:  # noqa: BLE001
+                errors.append(str(e))
+
+        conflicts: list[dict[str, Any]] = []
+        suggestion = None
+        if include_conflicts and not errors:
+            query_text = build_embed_text(
+                "Requirement",
+                it.requirement.title,
+                it.requirement.content,
+                it.requirement.properties,
+            )
+            result = await hybrid_search(
+                query=query_text,
+                embedding_client=embedding_client,
+                graph_store=graph_store,
+                top_n=10,
+                filters=FilterSpec(
+                    project_id=it.project_id,
+                    system_id=system_id,
+                    node_types=("Requirement",),
+                ),
+            )
+            raw = [
+                r
+                for r in result.get("fused", [])
+                if r.score is not None and r.score >= threshold
+            ]
+            ready_ids: set[uuid.UUID] = set()
+            if raw:
+                async with readonly_session() as session:
+                    ready_ids = await get_node_ids_with_vectors(
+                        session, [r.node_id for r in raw]
+                    )
+            conflicts = [
+                {
+                    "node_id": str(r.node_id),
+                    "title": r.title,
+                    "score": r.score,
+                    "vector_ready": r.node_id in ready_ids,
+                }
+                for r in raw
+            ]
+            if conflicts:
+                max_score = max(float(c["score"]) for c in conflicts)
+                suggestion = (
+                    "manual_merge" if max_score >= suggest_threshold else "review"
+                )
+
+        results.append(
+            ValidateRequirementItemOutput(
+                client_ref=it.client_ref,
+                ok=not errors,
+                errors=errors,
+                conflicts=conflicts,
+                suggestion=suggestion,
+            )
+        )
+
+    return ValidateRequirementsOutput(items=results)
+
+
 async def _resolve_requirement_ref(ref: str) -> uuid.UUID:
     """把 requirement_key / external_id / UUID 字符串解析为节点 UUID。"""
     try:
@@ -637,6 +770,37 @@ def register_write_tools(mcp: FastMCP) -> None:
                 requirements=requirements,
                 submission_id=submission_id,
                 operation_id=operation_id,
+            )
+        except (PayloadValidationError, SchemaValidationError, ValueError) as e:
+            raise to_tool_error(e) from e
+
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]
+    async def validate_requirements(
+        system_id: uuid.UUID = Field(description="归属 system 域"),
+        requirements: list[BatchRequirementInput] = Field(
+            description="待预检需求列表（与 publish_requirements 同构）"
+        ),
+        threshold: float | None = Field(
+            default=None, description="冲突相似度阈值；None 用 CONFLICT_SIMILARITY_THRESHOLD"
+        ),
+        include_conflicts: bool = Field(
+            default=True, description="是否执行语义冲突预检（false 只做字段/引用校验）"
+        ),
+    ) -> ValidateRequirementsOutput:
+        """发布前 dry-run：字段/引用/重复预检 + 冲突预览，不写库、不建批次。
+
+        PM 工具。逐条返回 ok/errors/conflicts/suggestion；有 errors 的条目
+        不会执行冲突检索。用于批量录入前先修正问题，减少无效审批批次。
+        """
+        try:
+            lifespan_ctx = get_lifespan_context()
+            return await _validate_requirements_core(
+                system_id=system_id,
+                requirements=requirements,
+                threshold=threshold,
+                include_conflicts=include_conflicts,
+                embedding_client=lifespan_ctx.embedding_client,
+                graph_store=lifespan_ctx.graph_store,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
             raise to_tool_error(e) from e
