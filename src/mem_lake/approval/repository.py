@@ -244,6 +244,24 @@ async def list_pending_batches(
     return list(result.scalars().all())
 
 
+async def list_batches_by_submission(
+    session: AsyncSession,
+    *,
+    submission_id: uuid.UUID,
+    limit: int = 200,
+) -> list[ApprovalBatch]:
+    """按 submission_id 查询全部批次（含已审批），按提交时间升序。"""
+    stmt = (
+        select(ApprovalBatch)
+        .where(ApprovalBatch.submission_id == submission_id)
+        .order_by(ApprovalBatch.submitted_at.asc(), ApprovalBatch.id.asc())
+        .options(selectinload(ApprovalBatch.items))
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def get_batch_detail(
     session: AsyncSession,
     batch_id: uuid.UUID,

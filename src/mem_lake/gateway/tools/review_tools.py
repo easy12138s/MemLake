@@ -33,6 +33,7 @@ from mem_lake.approval.service import (
     BatchStatusError,
     auto_process_batch,
     get_batch_detail,
+    list_batches_by_submission,
     list_pending_batches,
 )
 from mem_lake.approval.service import (
@@ -44,6 +45,7 @@ from mem_lake.approval.service import (
 from mem_lake.config import get_settings
 from mem_lake.gateway.dependencies import (
     get_current_key_id,
+    get_current_role,
     readonly_session,
     transactional_session,
 )
@@ -119,6 +121,29 @@ class ReviewSubmissionOutput(BaseModel):  # type: ignore[misc]
     action: str
     processed: int
     items: list[SubmissionItemResult]
+
+
+class SubmissionBatchItem(BaseModel):  # type: ignore[misc]
+    """get_submission 时间线条目。"""
+
+    batch_id: uuid.UUID
+    batch_type: str
+    status: str
+    summary: str
+    submitted_at: datetime
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    review_comment: str | None = None
+    conflict_hint: dict[str, Any] | None = None
+    item_count: int
+
+
+class SubmissionDetailOutput(BaseModel):  # type: ignore[misc]
+    """get_submission 出参：一个 submission 下全部批次时间线。"""
+
+    submission_id: uuid.UUID
+    total: int
+    batches: list[SubmissionBatchItem]
 
 
 class ApprovalItemOutput(BaseModel):
@@ -535,6 +560,45 @@ def register_review_tools(mcp: FastMCP) -> None:
                 graph_store=lifespan_ctx.graph_store,
                 embedding_client=lifespan_ctx.embedding_client,
                 vector_searcher=lifespan_ctx.vector_searcher,
+            )
+        except (BatchNotFoundError, BatchStatusError, ValueError) as e:
+            raise to_tool_error(e) from e
+
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]
+    async def get_submission(
+        submission_id: uuid.UUID = Field(description="批量提交分组 ID"),
+    ) -> SubmissionDetailOutput:
+        """查询一个 submission 下全部批次的时间线（状态/审批人/时间/冲突提示）。
+
+        PM/Admin 共享。非 admin 只能看到自己提交的批次；用于批量录入后的
+        对账与审批审计，不需要逐批 review_batch_detail。
+        """
+        try:
+            role = get_current_role()
+            key_id = get_current_key_id()
+            async with readonly_session() as session:
+                batches = await list_batches_by_submission(
+                    session, submission_id=submission_id
+                )
+            if role != "admin":
+                batches = [b for b in batches if b.submitted_by == key_id]
+            items = [
+                SubmissionBatchItem(
+                    batch_id=b.id,
+                    batch_type=b.batch_type,
+                    status=b.status,
+                    summary=b.summary,
+                    submitted_at=b.submitted_at,
+                    reviewed_by=b.reviewed_by,
+                    reviewed_at=b.reviewed_at,
+                    review_comment=b.review_comment,
+                    conflict_hint=b.conflict_hint,
+                    item_count=len(b.items) if b.items else 0,
+                )
+                for b in batches
+            ]
+            return SubmissionDetailOutput(
+                submission_id=submission_id, total=len(items), batches=items
             )
         except (BatchNotFoundError, BatchStatusError, ValueError) as e:
             raise to_tool_error(e) from e

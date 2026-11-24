@@ -60,6 +60,7 @@ def test_pm_tools_exact():
         "get_node_info",
         "bind_requirement_to_project",
         "get_project_info",
+        "get_submission",
     }
     assert PM_TOOLS == expected
 

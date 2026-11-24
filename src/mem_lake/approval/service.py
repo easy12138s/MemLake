@@ -29,6 +29,7 @@ from mem_lake.approval.repository import (
     _find_by_idempotency_key,
     get_batch_detail,
     get_pending_batch,
+    list_batches_by_submission,
     list_pending_batches,
     submit_batch,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "get_batch_detail",
     "get_pending_batch",
     "get_settings",
+    "list_batches_by_submission",
     "list_pending_batches",
     "review_approve",
     "review_reject",

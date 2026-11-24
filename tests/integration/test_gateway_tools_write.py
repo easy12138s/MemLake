@@ -21,6 +21,7 @@ from mem_lake.approval.service import (
     BatchNotFoundError,
     PayloadValidationError,
     get_batch_detail,
+    list_batches_by_submission,
     list_pending_batches,
     review_approve,
     review_reject,
@@ -926,4 +927,6 @@ async def test_submit_batch_persists_submission_id(db_session, knowledge_helpers
 
     listed = await list_pending_batches(db_session, submission_id=submission_id)
     assert [b.id for b in listed] == [batch.id]
+    timeline = await list_batches_by_submission(db_session, submission_id=submission_id)
+    assert [b.id for b in timeline] == [batch.id]
     assert WriteToolOutput.from_batch(batch).submission_id == submission_id
