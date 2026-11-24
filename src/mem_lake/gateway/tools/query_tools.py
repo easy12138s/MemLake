@@ -125,6 +125,33 @@ class ListRequirementsOutput(BaseModel):
     items: list[RequirementListItem] = Field(description="需求条目列表")
 
 
+class RequirementGraphNode(BaseModel):  # type: ignore[misc]
+    """需求关系图节点。"""
+
+    node_id: uuid.UUID
+    title: str
+    requirement_key: str | None = None
+    source_doc: str | None = None
+    module: str | None = None
+    status: str | None = None
+
+
+class RequirementGraphEdge(BaseModel):  # type: ignore[misc]
+    """需求关系图有向边。"""
+
+    source: uuid.UUID
+    target: uuid.UUID
+    edge_type: str
+
+
+class RequirementGraphOutput(BaseModel):  # type: ignore[misc]
+    """需求关系图出参（仅需求-需求边，供批量录入后校验）。"""
+
+    total: int
+    nodes: list[RequirementGraphNode]
+    edges: list[RequirementGraphEdge]
+
+
 class ScopeMeta(BaseModel):
     """key 可见范围自证信息（include_scope_meta=true 时返回）。"""
 
@@ -283,6 +310,56 @@ class QueryAuditLogOutput(BaseModel):
 # ============================================================================
 
 
+async def _get_requirement_graph_core(
+    *,
+    project_id: uuid.UUID | None,
+    system_id: uuid.UUID | None,
+    source_doc_prefix: str | None,
+    limit: int,
+    graph_store: Any,
+) -> RequirementGraphOutput:
+    """需求集合 + 集合内有向边（subgraph_edges），供批量录入后校验。"""
+    async with readonly_session() as session:
+        rows, total = await list_requirements_repo(
+            session,
+            project_id=project_id,
+            system_id=system_id,
+            source_doc_prefix=source_doc_prefix,
+            limit=limit,
+        )
+        edges = (
+            await graph_store.subgraph_edges(session, [r.id for r in rows])
+            if rows
+            else []
+        )
+    node_ids = {str(r.id) for r in rows}
+    nodes = [
+        RequirementGraphNode(
+            node_id=r.id,
+            title=r.title,
+            requirement_key=r.requirement_key,
+            source_doc=(r.properties or {}).get("source_doc"),
+            module=(r.properties or {}).get("module"),
+            status=r.status,
+        )
+        for r in rows
+    ]
+    edge_items: list[RequirementGraphEdge] = []
+    for e in edges:
+        try:
+            source = uuid.UUID(str(e["source"]))
+            target = uuid.UUID(str(e["target"]))
+        except (ValueError, TypeError, KeyError):
+            continue
+        if str(source) in node_ids and str(target) in node_ids:
+            edge_items.append(
+                RequirementGraphEdge(
+                    source=source, target=target, edge_type=str(e["edge_type"])
+                )
+            )
+    return RequirementGraphOutput(total=total, nodes=nodes, edges=edge_items)
+
+
 def register_query_tools(mcp: FastMCP) -> None:
     """注册查询类工具到 FastMCP 实例。"""
 
@@ -375,6 +452,38 @@ def register_query_tools(mcp: FastMCP) -> None:
                     offset=offset,
                     items=[_item(r) for r in rows],
                 )
+        except (ValueError, ToolError) as e:
+            raise to_tool_error(e) from e
+
+    @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]
+    async def get_requirement_graph(
+        system_id: uuid.UUID | None = Field(
+            default=None, description="归属 system 域（与 project_id 至少其一或走 Key 兜底）"
+        ),
+        project_id: uuid.UUID | None = Field(
+            default=None, description="归属项目 ID"
+        ),
+        source_doc_prefix: str | None = Field(
+            default=None, description="按 source_doc 前缀圈定一个批次"
+        ),
+        limit: int = Field(default=50, description="最多返回需求节点数（上限 200）"),
+    ) -> RequirementGraphOutput:
+        """导出需求关系图：节点 + 集合内有向边（requirement↔requirement）。
+
+        PM/Admin 共享。批量录入后用于校验同页/跨版本关系是否齐全、
+        是否有孤立节点或方向错误的边（如 supersedes 反向）。
+        资产节点（代码/方案/坑）不在此图内，用 get_requirement_context 查看。
+        """
+        try:
+            project_id, system_id = resolve_and_validate_scope(project_id, system_id)
+            lifespan_ctx = get_lifespan_context()
+            return await _get_requirement_graph_core(
+                project_id=project_id,
+                system_id=system_id,
+                source_doc_prefix=source_doc_prefix,
+                limit=min(max(limit, 1), 200),
+                graph_store=lifespan_ctx.graph_store,
+            )
         except (ValueError, ToolError) as e:
             raise to_tool_error(e) from e
 

@@ -61,6 +61,7 @@ def test_pm_tools_exact():
         "bind_requirement_to_project",
         "get_project_info",
         "get_submission",
+        "get_requirement_graph",
     }
     assert PM_TOOLS == expected
 

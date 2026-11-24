@@ -25,6 +25,7 @@ PM_TOOLS: frozenset[str] = frozenset({
     "bind_requirement_to_project",
     "get_project_info",
     "get_submission",
+    "get_requirement_graph",
 })
 
 DEV_TOOLS: frozenset[str] = frozenset({

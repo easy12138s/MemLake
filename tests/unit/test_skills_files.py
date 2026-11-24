@@ -48,11 +48,11 @@ class TestSkillsFiles:
             assert "## Skills 文件放置指南" in body
             assert ".agents/skills/" in body
 
-    def test_version_1_17_0(self):
-        """1.17.0：文档全量同步（33 工具计数、get_node_info/软删语义、pm mode 话术、审计枚举）。"""
+    def test_version_1_18_0(self):
+        """1.18.0：批量发布/预检/批量更新/提交时间线/关系图与新工具计数同步。"""
         for role in ("admin", "pm", "dev"):
             _, version = _load_skill(role)
-            assert version == "1.17.0"
+            assert version == "1.18.0"
 
     def test_github_distribution_note(self):
         """文件含 GitHub 分发说明（raw URL 指引）。"""

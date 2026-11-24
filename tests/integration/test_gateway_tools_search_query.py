@@ -1248,3 +1248,47 @@ class TestActorNameResolution:
         without = _to_audit_log_item_output(log)
         assert without.actor == str(key_id)
         assert without.actor_name is None
+
+
+async def test_get_requirement_graph_core_returns_nodes_and_edges(
+    db_session, graph_store, mock_embedding_client, knowledge_helpers
+):
+    """需求关系图：集合内节点 + 有向边（source→target）。"""
+    from mem_lake.gateway.tools.query_tools import _get_requirement_graph_core
+    from mem_lake.knowledge.repository import add_edge
+
+    project_id, system_id = uuid.uuid4(), uuid.uuid4()
+    a = await create_node(
+        db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+        project_id=project_id, node_type="Requirement", title="需求A", content="A",
+        properties=knowledge_helpers["Requirement"](), created_by="ak_pm",
+        system_id=system_id,
+    )
+    b = await create_node(
+        db_session, graph_store=graph_store, embedding_client=mock_embedding_client,
+        project_id=project_id, node_type="Requirement", title="需求B", content="B",
+        properties=knowledge_helpers["Requirement"](), created_by="ak_pm",
+        system_id=system_id,
+    )
+    await add_edge(
+        db_session, graph_store=graph_store, from_id=a.id, to_id=b.id,
+        edge_type="supersedes", actor="ak_pm",
+    )
+
+    await db_session.commit()
+    try:
+        out = await _get_requirement_graph_core(
+            project_id=project_id,
+            system_id=system_id,
+            source_doc_prefix=None,
+            limit=50,
+            graph_store=graph_store,
+        )
+    finally:
+        await _cleanup_project_data(db_session, graph_store, project_id)
+    assert out.total == 2
+    assert {n.node_id for n in out.nodes} == {a.id, b.id}
+    assert len(out.edges) == 1
+    assert out.edges[0].source == a.id
+    assert out.edges[0].target == b.id
+    assert out.edges[0].edge_type == "supersedes"
