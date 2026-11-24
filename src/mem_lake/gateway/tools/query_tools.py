@@ -111,6 +111,9 @@ class RequirementListItem(BaseModel):
     source_doc: str | None = Field(
         default=None, description="来源文档路径（存量导入的原始相对路径）"
     )
+    external_id: str | None = Field(
+        default=None, description="外部需求号（properties.external_id，如 Jira/ADO）"
+    )
 
 
 class ListRequirementsOutput(BaseModel):
@@ -306,6 +309,10 @@ def register_query_tools(mcp: FastMCP) -> None:
             default=None,
             description="需求主键精确直查（如 SYS-1416），已知 key 时免翻分页",
         ),
+        external_id: str | None = Field(
+            default=None,
+            description="外部需求号精确直查（properties.external_id，如 Jira/ADO）",
+        ),
         fields: list[str] | None = Field(
             default=None,
             description="出参字段白名单裁剪（可裁：module/priority/requirement_key/"
@@ -339,6 +346,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                     module=module,
                     source_doc_prefix=source_doc_prefix,
                     requirement_key=requirement_key,
+                    external_id=external_id,
                     tags=tuple(tags) if tags else None,
                     tags_op=tags_op,
                     limit=min(max(limit, 1), 200),
@@ -355,6 +363,7 @@ def register_query_tools(mcp: FastMCP) -> None:
                         "priority": (r.properties or {}).get("priority"),
                         "requirement_key": r.requirement_key,
                         "source_doc": (r.properties or {}).get("source_doc"),
+                        "external_id": (r.properties or {}).get("external_id"),
                     }
                     if keep is not None:
                         payload = {k: v for k, v in payload.items() if k in keep}

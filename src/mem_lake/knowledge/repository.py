@@ -331,6 +331,28 @@ async def get_node_ids_with_vectors(
     return set(result.scalars().all())
 
 
+async def find_requirements_by_ref(
+    session: AsyncSession,
+    ref: str,
+) -> list[KnowledgeNode]:
+    """按 requirement_key 或 properties.external_id 查 Requirement（approved/未删）。
+
+    返回列表而非单值：external_id 未做唯一约束，跨 system 可能重名；
+    调用方须在 len>1 时报歧义，提示改用 UUID。
+    """
+    stmt = select(KnowledgeNode).where(
+        KnowledgeNode.type == "Requirement",
+        KnowledgeNode.status == "approved",
+        KnowledgeNode.is_deleted == False,  # noqa: E712
+        or_(
+            KnowledgeNode.requirement_key == ref,
+            KnowledgeNode.properties["external_id"].astext == ref,
+        ),
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def get_nodes_by_ids(
     session: AsyncSession,
     *,
@@ -599,6 +621,7 @@ async def list_requirements(
     module: str | None = None,
     source_doc_prefix: str | None = None,
     requirement_key: str | None = None,
+    external_id: str | None = None,
     tags: tuple[str, ...] | None = None,
     tags_op: str = "all",
     limit: int = 50,
@@ -634,6 +657,9 @@ async def list_requirements(
     if requirement_key is not None:
         # requirement_key 直查（已知唯一 ID 免翻分页）
         clauses.append(KnowledgeNode.requirement_key == requirement_key)
+    if external_id is not None:
+        # Jira/ADO 原始需求号（properties.external_id）
+        clauses.append(KnowledgeNode.properties["external_id"].astext == external_id)
     if tags:
         # 复用 FilterSpec 的 tags AND/OR 编译（其自带 status/is_deleted 子句与
         # 上方 clauses 重复但语义一致，无害）

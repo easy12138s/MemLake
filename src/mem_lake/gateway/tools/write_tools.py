@@ -20,10 +20,10 @@ Access Key 为宽松模式（lax_mode=true 且全局 LAX_MODE_ENABLED 开启）�
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.approval.service import (
@@ -52,6 +52,7 @@ from mem_lake.gateway.tools._shared import (
 from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
+    find_requirements_by_ref,
     get_node,
     get_nodes_by_ids,
     get_system,
@@ -138,14 +139,32 @@ class RelatedInput(StrictInputModel):
 
 
 class RelationInput(StrictInputModel):
-    """需求间关系（用于 update_requirement_relations）。"""
+    """需求间关系（用于 update_requirement_relations）。
 
-    from_id: uuid.UUID = Field(description="源需求节点 ID")
-    to_id: uuid.UUID = Field(description="目标需求节点 ID")
+    端点二选一：from_id/to_id（UUID）或 from_ref/to_ref（requirement_key 或
+    external_id）。混用同侧字段直接拒绝，避免歧义。
+    """
+
+    from_id: uuid.UUID | None = Field(default=None, description="源需求节点 ID")
+    to_id: uuid.UUID | None = Field(default=None, description="目标需求节点 ID")
+    from_ref: str | None = Field(
+        default=None, description="源需求 requirement_key 或 external_id（与 from_id 二选一）"
+    )
+    to_ref: str | None = Field(
+        default=None, description="目标需求 requirement_key 或 external_id（与 to_id 二选一）"
+    )
     relation_type: str = Field(
         description="关系类型：conflicts_with/duplicates/relates_to/supersedes/version_of"
     )
     properties: dict[str, Any] = Field(default={}, description="边属性")
+
+    @model_validator(mode="after")  # type: ignore[untyped-decorator]
+    def _require_one_endpoint(self) -> "RelationInput":
+        if (self.from_id is None) == (self.from_ref is None):
+            raise ValueError("from_id 与 from_ref 必须二选一")
+        if (self.to_id is None) == (self.to_ref is None):
+            raise ValueError("to_id 与 to_ref 必须二选一")
+        return self
 
 
 class BatchRequirementInput(StrictInputModel):
@@ -382,6 +401,25 @@ async def _publish_requirements_batch(
     )
 
 
+async def _resolve_requirement_ref(ref: str) -> uuid.UUID:
+    """把 requirement_key / external_id / UUID 字符串解析为节点 UUID。"""
+    try:
+        return uuid.UUID(ref)
+    except (ValueError, TypeError, AttributeError):
+        pass
+    async with readonly_session() as session:
+        rows = await find_requirements_by_ref(session, ref)
+    if not rows:
+        raise PayloadValidationError(
+            f"需求引用不存在: {ref}（requirement_key 或 external_id）"
+        )
+    if len(rows) > 1:
+        raise PayloadValidationError(
+            f"需求引用不唯一: {ref}，命中 {len(rows)} 条，请改用节点 UUID"
+        )
+    return cast(uuid.UUID, rows[0].id)
+
+
 async def _submit_requirement_relations(
     *,
     project_id: uuid.UUID | None,
@@ -398,20 +436,33 @@ async def _submit_requirement_relations(
     if not relations:
         raise PayloadValidationError("relations 不能为空")
 
+    resolved: list[tuple[uuid.UUID, uuid.UUID, RelationInput]] = []
+    for r in relations:
+        from_id = (
+            r.from_id
+            if r.from_id is not None
+            else await _resolve_requirement_ref(r.from_ref or "")
+        )
+        to_id = (
+            r.to_id
+            if r.to_id is not None
+            else await _resolve_requirement_ref(r.to_ref or "")
+        )
+        resolved.append((from_id, to_id, r))
+
     ref_ids = [
-        *(str(r.from_id) for r in relations),
-        *(str(r.to_id) for r in relations),
+        str(node_id) for from_id, to_id, _ in resolved for node_id in (from_id, to_id)
     ]
     await _validate_requirement_refs(project_id, ref_ids, "需求关系引用")
 
     items = [
         build_edge_item(
-            from_ref=str(r.from_id),
-            to_ref=str(r.to_id),
+            from_ref=str(from_id),
+            to_ref=str(to_id),
             edge_type=r.relation_type,
             properties=r.properties,
         )
-        for r in relations
+        for from_id, to_id, r in resolved
     ]
 
     return await submit_write_batch(

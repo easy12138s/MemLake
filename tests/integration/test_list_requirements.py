@@ -144,3 +144,30 @@ class TestListRequirementsEnhancements:
 
         allowed = set(RequirementListItem.model_fields)
         assert {"node_id", "title", "requirement_key", "module", "priority", "source_doc"} <= allowed
+
+
+async def test_external_id_exact_filter(
+    db_session, seeded, graph_store, mock_embedding_client, knowledge_helpers
+):
+    """external_id 精确查询（properties.external_id）。"""
+    node = await create_node(
+        db_session,
+        graph_store=graph_store,
+        embedding_client=mock_embedding_client,
+        project_id=seeded["pid"],
+        node_type="Requirement",
+        title="外部号需求",
+        content="正文",
+        properties={
+            "priority": "P2",
+            "module": "药库",
+            "external_id": "ADO-123",
+        },
+        created_by="ak_pm",
+        system_id=seeded["sys_a"].id,
+    )
+    rows, total = await list_requirements(
+        db_session, system_id=seeded["sys_a"].id, external_id="ADO-123"
+    )
+    assert total == 1
+    assert rows[0].id == node.id
