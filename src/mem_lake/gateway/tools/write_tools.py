@@ -258,6 +258,47 @@ class ArtifactsInput(StrictInputModel):
 # ============================================================================
 
 
+async def _submit_requirement_relations(
+    *,
+    project_id: uuid.UUID | None,
+    relations: list[RelationInput],
+    operation_id: str | None,
+) -> WriteToolOutput:
+    """需求关系提交核心：可选项目锚点 + 按两端需求自身归属鉴权。
+
+    project_id 仅为兼容显式项目场景；省略时由 _validate_requirement_refs
+    通过 is_requirement_visible 校验 project/system 两级可见性。
+    """
+    if project_id is not None:
+        validate_project_access(project_id)
+    if not relations:
+        raise PayloadValidationError("relations 不能为空")
+
+    ref_ids = [
+        *(str(r.from_id) for r in relations),
+        *(str(r.to_id) for r in relations),
+    ]
+    await _validate_requirement_refs(project_id, ref_ids, "需求关系引用")
+
+    items = [
+        build_edge_item(
+            from_ref=str(r.from_id),
+            to_ref=str(r.to_id),
+            edge_type=r.relation_type,
+            properties=r.properties,
+        )
+        for r in relations
+    ]
+
+    return await submit_write_batch(
+        project_id=project_id,
+        batch_type="update_requirement_relations",
+        submitter_role="pm",
+        items=items,
+        operation_id=operation_id,
+    )
+
+
 def register_write_tools(mcp: FastMCP) -> None:
     """注册写入类工具到 FastMCP 实例。"""
 
@@ -318,8 +359,12 @@ def register_write_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def update_requirement_relations(
-        project_id: uuid.UUID = Field(description="归属项目 ID"),
         relations: list[RelationInput] = Field(description="需求间关系列表"),
+        project_id: uuid.UUID | None = Field(
+            default=None,
+            description="归属项目 ID（可选；悬浮需求关系可省略，按两端需求自身 "
+            "project/system 归属鉴权）",
+        ),
         operation_id: str | None = Field(
             default=None, description="幂等键，同 operation_id 重复提交返回首次结果"
         ),
@@ -330,37 +375,14 @@ def register_write_tools(mcp: FastMCP) -> None:
 
         PM 工具。批量添加需求节点间的关系边，审批通过后写入知识图谱。
         from_id/to_id 必须为已有 Requirement 节点的 UUID。
+        project_id 可省略：两端需求按自身归属（project 或 system）校验可见性，
+        悬浮需求不再需要一个无关项目作为权限锚点。
         支持 operation_id 幂等。
         """
         try:
-            validate_project_access(project_id)
-            if not relations:
-                raise PayloadValidationError("relations 不能为空")
-
-            # 提交前校验两端节点存在且类型为 Requirement，避免延迟到审批通过才失败
-            ref_ids = [
-                *(str(r.from_id) for r in relations),
-                *(str(r.to_id) for r in relations),
-            ]
-            await _validate_requirement_refs(
-                project_id, ref_ids, "需求关系引用"
-            )
-
-            items = [
-                build_edge_item(
-                    from_ref=str(r.from_id),
-                    to_ref=str(r.to_id),
-                    edge_type=r.relation_type,
-                    properties=r.properties,
-                )
-                for r in relations
-            ]
-
-            return await submit_write_batch(
+            return await _submit_requirement_relations(
                 project_id=project_id,
-                batch_type="update_requirement_relations",
-                submitter_role="pm",
-                items=items,
+                relations=relations,
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
