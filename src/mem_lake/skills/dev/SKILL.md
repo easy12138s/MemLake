@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.19.0
+version: 1.20.0
 ---
 
 # Dev Skills（开发者）
@@ -27,7 +27,7 @@ version: 1.19.0
 ### 使用建议
 - 检索时注意向量可能有短暂延迟（刚提交的内容可能检索不到）
 - 如需确保数据最新，可先用 get_project_info 检查项目状态
-- 发现数据问题可用 update_node 修正（需重新审批）
+- 发现数据问题可用 update_node 修正（需重新审批；仅限研发资产节点，需求内容归 PM）
 
 ## When to Use
 
@@ -73,8 +73,8 @@ version: 1.19.0
 
 ### 写入类
 - **submit_dev_artifacts** — 批量提交开发产物（代码/方案/意图/坑）
-- **update_node** — 修正已审批节点（PM/Dev 共享）
-- **update_requirements** — 批量追加/移除需求标签、增量改属性（显式 node_ids）
+- **update_node** — 修正已审批节点（PM/Dev 共享；Dev 仅可改研发资产节点，需求内容归 PM）
+- **bind_requirement_to_project** — 悬浮需求 ↔ 项目归属绑定（Dev 仅可绑定到自己项目，不能解绑/改绑）
 
 ### 检索类
 - **search_similar_requirements** — 检索相似需求（向量+全文融合）
@@ -89,6 +89,12 @@ version: 1.19.0
 - **get_skill** — 读取角色技能文档（SKILL/REFERENCE），按需查询不占常驻上下文
 
 > **详细参数表和示例见 `dev/REFERENCE.md`**
+
+## 角色边界与项目建档
+
+- **需求内容归 PM**：Dev 用 `update_node` 只能改研发资产节点（`CodeSnippet` / `Solution` / `DesignIntent` / `Decision` / `Pitfall`）；命中 `Requirement` 会被拒并提示改用 `bind_requirement_to_project`。**悬浮节点都是 `Requirement`，Dev 无法更新**——省略 `project_id` 的悬浮更新路径对 Dev 同样被闸门挡住。
+- **归属治理**：Dev 可把**可见的悬浮需求绑定到自己项目**（`bind_requirement_to_project`），但**不能解绑、不能改绑**（归属变更属治理动作，归 PM）。目标项目必须在你的项目范围内。
+- **项目画像 = 项目建档**：项目名称与工作目录只存在于画像节点里。`get_project_info` 显示 `has_profile=false` 说明该项目**尚未建档**（你只会看到一个 UUID，判断不出是哪个项目、代码在哪）——请找 admin 用 `manage_project_profile` 补建（建档顺序：先建画像 → 再 `manage_system add_projects` 挂载 → 最后 `create_access_key` 授权；无画像的项目会被后两处入口拒绝）。
 
 ## 关键要点
 

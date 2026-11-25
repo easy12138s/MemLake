@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm-reference
 description: "Mem Lake PM 技能参考：工具参数表、嵌套结构与工作流示例。"
-version: 1.19.0
+version: 1.20.0
 ---
 
 # PM Reference（详细参数表与示例）
@@ -90,17 +90,21 @@ system 维度：`system_id` 必填；`project_id` 可选（None=悬浮，表示"
 
 ### update_node — 修正已审批节点
 
-PM/Dev 共享。修正已写入知识图谱（审批通过）的错误节点内容；节点不存在/不属于本项目/已归档则拒绝。「不属于本项目」的报错自带三态诊断（悬浮需求 / 节点实际归属项目 ID / 目标项目不在 system 归属清单时提示 `manage_system add_projects`），按提示修复后重试即可。
+PM/Dev 共享。修正已写入知识图谱（审批通过）的错误节点内容；节点不存在/不属于本项目/已归档则拒绝。「不属于本项目」的报错自带四态诊断（传了 project_id 但目标是悬浮需求 → 提示省略 project_id / 节点实际归属项目 ID / 省略 project_id 但节点在项目内 → 提示补传 project_id / 目标项目不在 system 归属清单时提示 `manage_system add_projects`），按提示修复后重试即可。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | 是 | 节点所属项目 ID |
+| project_id | UUID \| None | 否 | 节点所属项目 ID；留空 = 更新悬浮需求（目标节点无项目归属且对当前 Key 可见）|
 | node_id | UUID | 是 | 要更新的已审批节点 UUID |
 | title | str | 否 | 新标题；留空不更新 |
 | content | str | 否 | 新正文；留空不更新 |
 | properties | dict | 否 | 新属性字典，整体替换原属性；留空不更新 |
 | tags | list | 否 | 新标签列表；留空不更新 |
 | operation_id | str | 否 | 幂等键 |
+
+**角色×类型闸门**：PM 可更新任意节点类型，**`ProjectProfile` 除外**——它由 admin 通过 `manage_project_profile` 直接维护，用本工具改会被拒。需求内容归 PM 维护；Dev 侧的可改类型见 `dev/REFERENCE.md`。
+
+**悬浮需求更新**：省略 `project_id` 表示目标节点无项目归属——仅支持 `Requirement` 类型，可见性按 system 口径（`is_requirement_visible`）判定，对当前 Key 不可见的悬浮需求会被拒。项目内节点必须传 `project_id`，否则报错提示补传。
 
 **何时用**：发现已审批入库的节点内容写错、需要修正时——产生审批批次，通过后版本号 +1、重新生成向量、写审计日志。
 
@@ -113,24 +117,31 @@ update_node(
     content="更正后的正文...",
     tags=["auth", "login"]
 )
+
+# 更新悬浮需求（无项目归属）：省略 project_id
+update_node(
+    node_id="floating-req-uuid",
+    content="更正后的悬浮需求正文..."
+)
 ```
 
 ---
 
 ### bind_requirement_to_project — 悬浮需求 ↔ 项目归属绑定/解绑
 
-PM 工具。把悬浮需求（`project_id=null`，先于实现/跨项目建模发布）挂载到项目，或解绑回悬浮态；也支持改绑。归属变更是**治理操作**：走审批流留痕（宽松模式下无冲突自动入库——绑定不触发冲突检测，体验等同直写）。
+PM 与 Dev 均可调用。PM 全权（绑定/解绑/改绑）；**Dev 仅可把悬浮需求绑定到自己项目，不能解绑、不能改绑**（归属变更属治理动作，收在 PM 手里）。把悬浮需求（`project_id=null`，先于实现/跨项目建模发布）挂载到项目，或解绑回悬浮态；也支持改绑。归属变更是**治理操作**：走审批流留痕（宽松模式下无冲突自动入库——绑定不触发冲突检测，体验等同直写）。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | requirement_ids | list[UUID] | 是 | 待绑定/解绑的需求节点 ID 列表（保序去重，逐项生成审批项）|
-| project_id | UUID \| None | 否 | 目标项目 ID；**None=解绑回悬浮**。绑定要求目标项目在需求的 system 归属清单内（否则报错提示 `manage_system add_projects`）|
+| project_id | UUID \| None | 否 | 目标项目 ID；**None=解绑回悬浮**（Dev 不可解绑）。绑定要求目标项目在需求的 system 归属清单内（否则报错提示 `manage_system add_projects`）|
 | operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
 
 **语义要点**：
 - `system_id` 不随绑定变更（跨 system 搬迁是另一操作，本工具不做）
 - 已是目标归属的项幂等跳过，不进批次；全部已命中目标归属则报错「无需变更」
 - 改绑/解绑时，节点当前所属项目须对调用者可见（防越权操作他人项目节点）
+- **Dev 边界**：目标项目必须在 Dev 自己的 `project_scope` 内；解绑（`project_id=null`）与改绑（目标项目 ≠ 节点当前项目）一律拒绝并提示交由 PM 执行
 - 底层经 node+update 审批项落地：版本 +1 + 审计 + 图属性同步，**不重新生成向量**（绑定后节点即时可检索）
 
 **回执**：`affected=[{node_id, node_type, title, project_id}]` 为绑定确定性依据（`project_id=null` 即解绑）。
@@ -299,6 +310,8 @@ PM/Dev/Admin 共享。list 枚举当前 key 可见的项目；get 按 project_id
 
 **何时用（PM）**：确认自己可访问哪些项目（list）、查看项目基本信息与画像（get）；`has_profile=false` 表示画像占位，返回的 `hint` 会引导补建。
 get 回 `project=null` 时带 `reason=no_profile` 与 hint：项目无画像 ≠ 项目不存在/不在 system 归属，归属对账用 `manage_system action=list` 的 `project_ids`。
+
+**项目画像即项目建档**：画像里含**项目名称**与**工作目录**（`work_dir`，跨平台绝对路径），PM/Dev 据此判断「这是哪个项目、代码在哪」。项目 UUID 全系统只以 UUID 形式存在于归属关系里，**没有画像就没有名字**——若 `get_project_info` 显示 `has_profile=false`，说明该项目尚未建档，请找 admin 用 `manage_project_profile` 补建（建档顺序：先建画像 → 再 `manage_system add_projects` 挂载 → 最后 `create_access_key` 授权；无画像的项目会被这三处入口拒绝）。
 
 **何时不用**：要检索需求/资产内容用对应 search 工具。
 

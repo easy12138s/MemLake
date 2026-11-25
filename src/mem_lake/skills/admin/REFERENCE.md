@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin-reference
 description: "Mem Lake Admin 技能参考：管理工具参数表、冲突检测与审批工作流。"
-version: 1.19.0
+version: 1.20.0
 ---
 
 # Admin Reference（详细参数表与示例）
@@ -66,7 +66,7 @@ version: 1.19.0
 
 ---
 
-**批次类型补充（bind_requirement，ISSUE-15）**：悬浮需求 ↔ 项目归属绑定/解绑批次（PM 经 `bind_requirement_to_project` 提交，admin 只负责审批；底层为 node+update 审批项携带 project_id 载荷）。该类批次**不触发冲突检测**（归属治理操作，无内容冲突面），`review_auto_process` 直接 auto_approved；审批后落库版本 +1 + 图属性同步，无新建节点（`created` 为空）。回执确定性依据在提交方 `affected` 清单，详细参数表见 `pm/REFERENCE.md`。
+**批次类型补充（bind_requirement，ISSUE-15）**：悬浮需求 ↔ 项目归属绑定/解绑批次（PM/Dev 经 `bind_requirement_to_project` 提交——Dev 仅可绑定到自己项目，不能解绑/改绑；admin 只负责审批；底层为 node+update 审批项携带 project_id 载荷）。该类批次**不触发冲突检测**（归属治理操作，无内容冲突面），`review_auto_process` 直接 auto_approved；审批后落库版本 +1 + 图属性同步，无新建节点（`created` 为空）。回执确定性依据在提交方 `affected` 清单，详细参数表见 `pm/REFERENCE.md` 与 `dev/REFERENCE.md`。
 
 ---
 
@@ -260,12 +260,34 @@ version: 1.19.0
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | create 时可省略 | 项目 ID |
+| project_id | UUID | create 时可省略 | 项目 ID；**传已有 UUID = 给该项目补建画像** |
 | action | str | 是 | `create` / `update` |
-| profile | dict | 是 | 画像内容 |
+| profile | dict | 是 | 画像内容（含 `work_dir` 必填字段，见下）|
 | node_id | UUID | update 时必填 | 现有 ProjectProfile 节点 ID |
 
+**profile 内必填字段**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| title / content | str | 是 | 画像标题与描述 |
+| properties.name | str | 是 | **项目名称**——全系统只存于画像节点，没有它 PM/Dev 只看得到 UUID |
+| properties.description | str | 是 | 项目描述 |
+| properties.tech_stack | list | 是 | 技术栈 |
+| properties.architecture | str | 是 | 架构说明 |
+| **work_dir** | str | **是** | **项目本地工作目录绝对路径**：Windows 盘符（`D:\a\b`）/ UNC（`\\server\share\x`）/ POSIX（`/a/b`）皆可；**服务端不校验其是否存在**（MemLake 跑在容器内，未挂载 agent 工作树）；相对路径（`proj-a`、`./x`、`C:foo`）会被拒绝 |
+| repo | str | 否 | 代码仓库标识/名称（可选，**强烈建议填写**，便于检索与核对）|
+
 **返回**：`ManageProjectProfileOutput`（project_id, node_id, action, status="approved", version, warning——create 时项目已有其他画像则附提示）
+
+**建档顺序（重要）**：项目 UUID 在系统里只以 UUID 形式存在于归属关系中，**项目名称只存在于画像节点**。因此新项目接入必须按此顺序，否则会出现「只有 UUID、没有名字」的幽灵项目：
+
+```
+1. manage_project_profile(action="create", project_id=<UUID 或留空自动生成>, profile={...含 name 与 work_dir})
+2. manage_system(action="add_projects", system_id=..., project_ids=[<上面返回的 project_id>])
+3. create_access_key(role="pm"/"dev", project_scope=[<同上 project_id>])
+```
+
+第 2、3 步会校验项目已有画像——**未建画像的项目会被拒绝**，报错提示先用 `manage_project_profile` 建档。
 
 ---
 
@@ -410,7 +432,7 @@ set_access_key_mode(lax_mode=true, key_ids=["dev-key-uuid"])
 ### 场景四：项目画像维护
 
 ```
-# 新项目接入
+# 新项目接入（顺序不可颠倒：先建画像 → 再挂载 → 最后授权）
 manage_project_profile(
     action="create",
     profile={
@@ -422,10 +444,23 @@ manage_project_profile(
             "tech_stack": ["Python", "FastAPI", "PostgreSQL"],
             "architecture": "monolith"
         },
-        "tags": []
+        "tags": [],
+        "work_dir": "/home/user/projects/xxx-service",   # 必填：跨平台绝对路径
+        "repo": "team/xxx-service"                        # 可选，强烈建议
     }
 )
 # 出参 project_id 即服务端生成的项目 ID
+
+# 给已有 UUID 的项目补建画像（存量项目按需补，一次一个）
+manage_project_profile(
+    action="create",
+    project_id="<已有 UUID>",
+    profile={... 同上，含 name 与 work_dir}
+)
+
+# 再把它挂到 system 并授权给 Key（顺序：画像 → 挂载 → 授权）
+manage_system(action="add_projects", system_id="...", project_ids=["<project_id>"])
+create_access_key(role="dev", project_scope=["<project_id>"], name="xxx-dev", owner="张三")
 ```
 
 ---

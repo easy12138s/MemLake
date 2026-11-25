@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev-reference
 description: "Mem Lake Dev 技能参考：工具参数表、产物结构与工作流示例。"
-version: 1.19.0
+version: 1.20.0
 ---
 
 # Dev Reference（详细参数表与示例）
@@ -158,15 +158,19 @@ submit_dev_artifacts(project_id=uuid, artifacts={"pitfalls":[{
 
 ### update_node — 修正已审批通过的节点
 
+PM/Dev 共享，但**Dev 有类型闸门**。
+
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| project_id | UUID | 是 | 节点所属项目 ID |
+| project_id | UUID \| None | 否 | 节点所属项目 ID；Dev 只能更新研发资产节点，需求内容由 PM 维护 |
 | node_id | UUID | 是 | 要更新的已审批节点 UUID |
 | title | str | 否 | 新标题；留空则不更新 |
 | content | str | 否 | 新正文；留空则不更新 |
 | properties | dict | 否 | 新属性字典，整体替换原属性；留空则不更新 |
 | tags | list[str] | 否 | 新标签列表；留空则不更新 |
 | operation_id | str | 否 | 幂等键 |
+
+**类型闸门（Dev）**：Dev 仅可更新 `CodeSnippet` / `Solution` / `DesignIntent` / `Decision` / `Pitfall` 五类研发资产；命中 `Requirement` 会被拒并提示改用 `bind_requirement_to_project`。**悬浮节点都是 `Requirement`，Dev 无法更新**——省略 `project_id` 的悬浮更新路径对 Dev 同样被闸门挡住。
 
 ```python
 update_node(
@@ -175,6 +179,31 @@ update_node(
     content="修正后的正确描述...",
     properties={"name": "LoginService", "type": "class",
                 "responsibility": "处理用户认证逻辑", "file_path": "src/auth/login_service.py"}
+)
+```
+
+---
+
+### bind_requirement_to_project — 悬浮需求 ↔ 项目归属绑定
+
+PM 与 Dev 均可调用。**PM 全权**（绑定/解绑/改绑）；**Dev 仅可把悬浮需求绑定到自己项目，不能解绑、不能改绑**。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| requirement_ids | list[UUID] | 是 | 待绑定的需求节点 ID 列表（保序去重，逐项生成审批项）|
+| project_id | UUID \| None | 否 | 目标项目 ID；**Dev 不可传 None（不可解绑）**，且必须在自己的项目范围内 |
+| operation_id | str | 否 | 幂等键，同 operation_id 重复提交返回首次结果 |
+
+**Dev 边界**：目标项目必须在 Dev 自己的 `project_scope` 内；解绑（`project_id=null`）被拒（提示「Dev 角色不可解绑需求」）；改绑（目标项目 ≠ 节点当前项目）被拒（提示「Dev 角色仅可绑定悬浮需求到自己项目」）。需求内容仍归 PM 维护——本工具只改归属，不改内容。
+
+**回执**：`affected=[{node_id, node_type, title, project_id}]` 为绑定确定性依据。
+
+```python
+# Dev：把可见的悬浮需求绑定到自己项目
+bind_requirement_to_project(
+    requirement_ids=["floating-req-uuid"],
+    project_id="my-project-uuid",
+    operation_id="op-bind-001"
 )
 ```
 
@@ -305,6 +334,8 @@ list 枚举可见项目；get 查询单个项目。
 
 `has_profile=false` 表示画像占位，返回的 `hint` 会引导补建。
 get 回 `project=null` 时带 `reason=no_profile` 与 hint：项目无画像 ≠ 项目不存在/不在 system 归属，归属对账用 `manage_system action=list` 的 `project_ids`。
+
+**项目画像即项目建档**：画像里含**项目名称**与**工作目录**（`work_dir`，跨平台绝对路径），Dev 据此判断「这是哪个项目、代码在哪」。项目 UUID 全系统只以 UUID 形式存在于归属关系里，**没有画像就没有名字**——若 `has_profile=false`，说明该项目尚未建档，请找 admin 补建（建档顺序：先建画像 → 再 `manage_system add_projects` 挂载 → 最后 `create_access_key` 授权；无画像的项目会被这三处入口拒绝）。
 
 ---
 
@@ -486,7 +517,7 @@ Dev: "记录 YAML 缩进的坑，不绑定具体需求"
     "decision": "auto_approved",     # 仅宽松模式返回：auto_approved / needs_human_review
     "created": [...],                # 仅宽松 auto_approved 返回：[{ref, node_id, node_type, title}]
     "edges_created": 1,              # 仅宽松 auto_approved 返回：建边数
-    "affected": [...]                # 仅 bind_requirement_to_project（仅 PM 有此工具，dev/admin 无）返回：[{node_id, node_type, title, project_id}]
+    "affected": [...]                # 仅 bind_requirement_to_project（PM/Dev 有此工具，admin 无）返回：[{node_id, node_type, title, project_id}]
 }
 ```
 

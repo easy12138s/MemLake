@@ -49,11 +49,11 @@ class TestSkillsFiles:
             assert "## Skills 文件放置指南" in body
             assert ".agents/skills/" in body
 
-    def test_version_1_19_0(self):
-        """1.19.0：技能分发改 MCP Resource 优先、admin 收敛为只读查询口径。"""
+    def test_version_1_20_0(self):
+        """1.20.0：update_node 悬浮语义、角色×类型闸门、bind 边界、画像建档顺序。"""
         for role in ("admin", "pm", "dev"):
             _, version = _load_skill(role)
-            assert version == "1.19.0"
+            assert version == "1.20.0"
 
     def test_reference_files_carry_version(self):
         """REFERENCE.md 也带 frontmatter 版本（get_skill 自证用）。"""
@@ -61,7 +61,7 @@ class TestSkillsFiles:
             text = (_SKILLS_DIR / role / "REFERENCE.md").read_text(encoding="utf-8")
             parts = text.split("---", 2)
             frontmatter = yaml.safe_load(parts[1])
-            assert str(frontmatter.get("version")) == "1.19.0"
+            assert str(frontmatter.get("version")) == "1.20.0"
 
     def test_mcp_resource_distribution_note(self):
         """文件含 MCP 资源获取说明与 get_skill 兜底。"""
@@ -107,3 +107,49 @@ class TestRoleSkillsContent:
             ref = _SKILLS_DIR / role / "REFERENCE.md"
             assert ref.exists()
             assert len(ref.read_text(encoding="utf-8")) > 0
+
+
+def _read_reference(role: str) -> str:
+    return (_SKILLS_DIR / role / "REFERENCE.md").read_text(encoding="utf-8")
+
+
+class TestSkillsRoleSemantics:
+    """角色×节点类型分权与悬浮语义在技能文档中的落点。"""
+
+    def test_pm_skill_documents_floating_update(self):
+        """PM 侧：update_node 的悬浮用法须写明。"""
+        body, _ = _load_skill("pm")
+        assert "update_node" in body
+        assert "悬浮" in body
+        assert "bind_requirement_to_project" in body
+
+    def test_dev_skill_tool_list_matches_rbac(self):
+        """Dev 侧：update_requirements 已收为 PM 专属；bind_requirement_to_project 已提权。"""
+        body, _ = _load_skill("dev")
+        assert "- **update_requirements**" not in body
+        assert "- **bind_requirement_to_project**" in body
+
+    def test_admin_skill_documents_project_onboarding_order(self):
+        """Admin 侧：项目建档顺序（画像 → 挂载 → 授权）须写明。"""
+        body, _ = _load_skill("admin")
+        assert "manage_project_profile" in body
+        assert "add_projects" in body
+
+    def test_pm_reference_documents_optional_project_id(self):
+        """PM REFERENCE：project_id 改为可选 + 四态诊断。"""
+        text = _read_reference("pm")
+        assert "留空 = 更新悬浮需求" in text
+        assert "ProjectProfile" in text
+
+    def test_dev_reference_documents_type_gate_and_bind_boundary(self):
+        """Dev REFERENCE：类型闸门 + bind 边界（不可解绑/改绑）。"""
+        text = _read_reference("dev")
+        assert "PM 维护" in text
+        assert "不可解绑" in text
+        assert "仅可绑定悬浮需求" in text
+
+    def test_admin_reference_documents_work_dir_required(self):
+        """Admin REFERENCE：work_dir 必填 + 跨平台绝对路径。"""
+        text = _read_reference("admin")
+        assert "work_dir" in text
+        assert "绝对路径" in text

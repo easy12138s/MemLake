@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
 description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile, get_skill, get_node_info."
-version: 1.19.0
+version: 1.20.0
 ---
 
 # Admin Skills（管理员）
@@ -85,7 +85,7 @@ version: 1.19.0
 
 ### 项目管理类
 - **manage_system** — 建立并签发 system 域
-- **manage_project_profile** — 直接写入项目画像
+- **manage_project_profile** — 直接写入项目画像（项目名称与工作目录的唯一来源）
 - **get_project_info** — 枚举/查询项目
 
 ### 数据质量类
@@ -127,7 +127,21 @@ version: 1.19.0
 
 6. **宽松模式生效需两者同时为真**：Key 标记 lax_mode=true 且全局开关 LAX_MODE_ENABLED=true。
 
-7. **bind_requirement 批次（悬浮需求↔项目绑定）不触发冲突检测**：`review_auto_process` 对该类批次直接 auto_approved——归属变更是治理操作，无内容冲突面；回执无 `created`（无新节点），绑定结果看 PM 侧 `affected` 清单。
+7. **bind_requirement 批次（悬浮需求↔项目绑定）不触发冲突检测**：`review_auto_process` 对该类批次直接 auto_approved——归属变更是治理操作，无内容冲突面；回执无 `created`（无新节点），绑定结果看 PM/Dev 侧 `affected` 清单（Dev 只能绑定到自己项目，解绑/改绑由 PM 执行）。
+
+## 项目建档顺序（不可颠倒）
+
+项目 UUID 在系统里只以 UUID 形式存在于归属关系中，**项目名称与工作目录只存在于画像节点**。缺画像的项目会让 PM/Dev 只看到 UUID、无法判断是哪个项目（俗称「幽灵项目」）。新项目接入必须按此顺序：
+
+```
+1. manage_project_profile(action="create", project_id=<UUID 或留空自动生成>, profile={... 含 properties.name 与 work_dir})
+2. manage_system(action="add_projects", system_id=..., project_ids=[<上面返回的 project_id>])
+3. create_access_key(role="pm"/"dev", project_scope=[<同上 project_id>])
+```
+
+- 第 1 步的 `work_dir` **必填**，填项目本地工作目录的**跨平台绝对路径**（`D:\a\b`、`\\server\share\x`、`/a/b` 皆可）；服务端**不校验其是否存在**（MemLake 跑在容器内，未挂载 agent 工作树）。`repo` 可选但强烈建议填写。
+- 第 2、3 步会校验项目已有画像——**未建画像的项目会被拒绝**，报错提示先用 `manage_project_profile` 建档。
+- 存量项目按需补建：`manage_project_profile(action="create", project_id=<已有 UUID>, ...)` 给它补一份画像即可，无需数据迁移。
 
 ## 冲突检测简述
 

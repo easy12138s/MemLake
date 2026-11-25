@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, 悬浮需求, bind_requirement_to_project, get_node_info, requirement, PRD."
-version: 1.19.0
+version: 1.20.0
 ---
 
 # PM Skills（产品经理）
@@ -28,7 +28,7 @@ version: 1.19.0
 - 检索时注意向量可能有短暂延迟（刚提交的内容可能检索不到）
 - **验证写入用 `get_requirement_context(requirement_id, depth=1)`**——图遍历不读向量索引，审批通过（或宽松模式入库）后即时可见
 - 如需确保数据最新，可先用 get_project_info 检查项目状态
-- 发现数据问题可用 update_node 修正（需重新审批）
+- 发现数据问题可用 update_node 修正（需重新审批；`project_id` 留空可修悬浮需求）
 
 ## When to Use
 
@@ -69,7 +69,7 @@ version: 1.19.0
 - **publish_requirements** — 批量发布：一个 submission_id 下每条需求一个批次，返回逐条 client_ref/batch_id/decision/conflict_hint
 - **validate_requirements** — 发布前 dry-run：字段/引用/重复预检 + 冲突预览，不写库
 - **update_requirement_relations** — 更新需求间关系（批量；端点支持 UUID 或 requirement_key/external_id）
-- **update_node** — 修正已审批节点（PM/Dev 共享）
+- **update_node** — 修正已审批节点（PM/Dev 共享；`project_id` 留空 = 更新悬浮需求）
 - **update_requirements** — 批量追加/移除标签、增量改属性（显式 node_ids，一个批次）
 - **bind_requirement_to_project** — 悬浮需求 ↔ 项目归属绑定/解绑（走审批流；绑定是归属治理，不触发冲突检测）
 
@@ -87,6 +87,13 @@ version: 1.19.0
 - **get_skill** — 读取角色技能文档（SKILL/REFERENCE），按需查询不占常驻上下文
 
 > **详细参数表和示例见 `pm/REFERENCE.md`**
+
+## 角色边界与项目建档
+
+- **需求内容归 PM**：需求（`Requirement`）的标题/正文/属性由 PM 维护。Dev 侧只改研发资产节点（代码/方案/意图/决策/踩坑）；命中需求会被拒并提示改用 `bind_requirement_to_project`。
+- **归属治理归 PM**：绑定悬浮需求到项目，PM 全权（绑定/解绑/改绑）；Dev 只能把悬浮需求绑定到自己项目，不能解绑、不能改绑。
+- **项目画像 = 项目建档**：项目名称与工作目录只存在于画像节点里。`get_project_info` 显示 `has_profile=false` 说明该项目**尚未建档**（你只会看到一个 UUID，判断不出是哪个项目）——请找 admin 用 `manage_project_profile` 补建（建档顺序：先建画像 → 再 `manage_system add_projects` 挂载 → 最后 `create_access_key` 授权；无画像的项目会被后两处入口拒绝）。
+- **悬浮需求可由 PM 直接更新**：省略 `update_node` 的 `project_id` 即表示目标是无项目归属的悬浮需求（可见性按 system 口径判定）。
 
 ## 需求内容模板（建议）
 
