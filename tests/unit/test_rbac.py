@@ -52,6 +52,7 @@ def test_admin_keeps_management_and_read():
         "list_requirements",
         "get_requirement_context",
         "search_code_snippets",
+        "get_skill",
     ):
         assert has_tool_access("admin", name) is True, name
 
@@ -96,6 +97,7 @@ def test_pm_tools_exact():
         "get_project_info",
         "get_submission",
         "get_requirement_graph",
+        "get_skill",
     }
     assert PM_TOOLS == expected
 
@@ -114,6 +116,7 @@ def test_dev_tools_exact():
         "search_similar_requirements",
         "analyze_impact_scope",
         "get_project_info",
+        "get_skill",
     }
     assert DEV_TOOLS == expected
 

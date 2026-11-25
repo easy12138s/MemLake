@@ -36,6 +36,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     注册顺序无要求（FastMCP 内部按 name 索引），为可读性按类型分组注册。
     """
     from mem_lake.gateway.tools.graph_tools import register_graph_tools
+    from mem_lake.gateway.tools.help_tools import register_help_tools
     from mem_lake.gateway.tools.manage_tools import register_manage_tools
     from mem_lake.gateway.tools.query_tools import register_query_tools
     from mem_lake.gateway.tools.review_tools import register_review_tools
@@ -48,3 +49,4 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_search_tools(mcp)
     register_query_tools(mcp)
     register_graph_tools(mcp)
+    register_help_tools(mcp)

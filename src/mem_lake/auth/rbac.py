@@ -30,6 +30,8 @@ COMMON_READ_TOOLS: frozenset[str] = frozenset({
     "get_project_info",
     "search_similar_requirements",
     "analyze_impact_scope",
+    # 技能文档按需读取（MCP Resource 的兜底工具）
+    "get_skill",
 })
 
 # PM 额外查询面：冲突排查、提交时间线、需求关系图
