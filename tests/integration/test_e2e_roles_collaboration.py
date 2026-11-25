@@ -1058,3 +1058,18 @@ async def test_bind_requirement_to_project_end_to_end(
         )
         await db_session.execute(delete(System).where(System.id == uuid.UUID(sid)))
         await db_session.commit()
+
+
+async def test_role_tool_lists_match_rbac(monkeypatch):
+    """真实网关的 tools/list 必须等于 RBAC 分层集合（防 admin 退回并集）。"""
+    from mem_lake.auth.rbac import ADMIN_TOOLS, DEV_TOOLS, PM_TOOLS
+
+    for role, expected in (
+        ("pm", PM_TOOLS),
+        ("dev", DEV_TOOLS),
+        ("admin", ADMIN_TOOLS),
+    ):
+        app = _make_role_app(monkeypatch, role=role, project_id=str(uuid.uuid4()))
+        async with Client(app) as client:
+            names = {t.name for t in await client.list_tools()}
+        assert names == set(expected), f"{role} 工具集不一致: {names ^ set(expected)}"
