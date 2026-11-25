@@ -66,7 +66,7 @@ version: 1.19.0
 
 ---
 
-**批次类型补充（bind_requirement，ISSUE-15）**：悬浮需求 ↔ 项目归属绑定/解绑批次（PM/Admin 经 `bind_requirement_to_project` 提交，底层为 node+update 审批项携带 project_id 载荷）。该类批次**不触发冲突检测**（归属治理操作，无内容冲突面），`review_auto_process` 直接 auto_approved；审批后落库版本 +1 + 图属性同步，无新建节点（`created` 为空）。回执确定性依据在提交方 `affected` 清单，详细参数表见 `pm/REFERENCE.md`。
+**批次类型补充（bind_requirement，ISSUE-15）**：悬浮需求 ↔ 项目归属绑定/解绑批次（PM 经 `bind_requirement_to_project` 提交，admin 只负责审批；底层为 node+update 审批项携带 project_id 载荷）。该类批次**不触发冲突检测**（归属治理操作，无内容冲突面），`review_auto_process` 直接 auto_approved；审批后落库版本 +1 + 图属性同步，无新建节点（`created` 为空）。回执确定性依据在提交方 `affected` 清单，详细参数表见 `pm/REFERENCE.md`。
 
 ---
 

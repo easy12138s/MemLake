@@ -486,7 +486,7 @@ Dev: "记录 YAML 缩进的坑，不绑定具体需求"
     "decision": "auto_approved",     # 仅宽松模式返回：auto_approved / needs_human_review
     "created": [...],                # 仅宽松 auto_approved 返回：[{ref, node_id, node_type, title}]
     "edges_created": 1,              # 仅宽松 auto_approved 返回：建边数
-    "affected": [...]                # 仅 bind_requirement_to_project（PM/Admin，dev 无此工具）返回：[{node_id, node_type, title, project_id}]
+    "affected": [...]                # 仅 bind_requirement_to_project（仅 PM 有此工具，dev/admin 无）返回：[{node_id, node_type, title, project_id}]
 }
 ```
 
