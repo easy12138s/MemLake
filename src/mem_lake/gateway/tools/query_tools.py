@@ -15,7 +15,7 @@
 - get_requirement_context 调 graph.traverse 获取需求关联节点
 - query_audit_log 调 audit.service.query_audit_logs 多条件过滤
 
-skills 分发不经工具面（见 manage_tools._build_user_hint 的 GitHub 指引）；
+skills 分发走 MCP Resource（见 manage_tools._build_user_hint 的资源指引）；
 项目画像查询由 get_project_info（action=get + include_profile）覆盖。
 """
 

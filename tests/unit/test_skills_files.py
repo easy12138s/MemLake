@@ -1,7 +1,8 @@
-"""skills 文件内容测试（文件级，批次三起 skills 改 GitHub 分发）。
+"""skills 文件内容测试（文件级）。
 
-get_role_skills 工具已删除；SKILL.md/REFERENCE.md 作为 GitHub 分发材料保留，
-其内容质量回归直接读文件断言（frontmatter 版本 / 关键工具引用 / 安装指南段）。
+技能文档随镜像经 MCP Resource 分发（memlake://skills/...），get_role_skills
+工具已删除；SKILL.md/REFERENCE.md 内容质量回归直接读文件断言
+（frontmatter 版本 / 关键工具引用 / 资源获取说明）。
 """
 
 from pathlib import Path
@@ -48,17 +49,30 @@ class TestSkillsFiles:
             assert "## Skills 文件放置指南" in body
             assert ".agents/skills/" in body
 
-    def test_version_1_18_0(self):
-        """1.18.0：批量发布/预检/批量更新/提交时间线/关系图与新工具计数同步。"""
+    def test_version_1_19_0(self):
+        """1.19.0：技能分发改 MCP Resource 优先、admin 收敛为只读查询口径。"""
         for role in ("admin", "pm", "dev"):
             _, version = _load_skill(role)
-            assert version == "1.18.0"
+            assert version == "1.19.0"
 
-    def test_github_distribution_note(self):
-        """文件含 GitHub 分发说明（raw URL 指引）。"""
+    def test_mcp_resource_distribution_note(self):
+        """文件含 MCP 资源获取说明与 get_skill 兜底。"""
         for role in ("admin", "pm", "dev"):
             body, _ = _load_skill(role)
-            assert "raw.githubusercontent.com" in body
+            assert "memlake://skills/" in body
+            assert "get_skill" in body
+
+    def test_admin_skill_no_write_tools(self):
+        """admin 收敛后技能文档不得再列 PM/Dev 写入工具。"""
+        body, _ = _load_skill("admin")
+        for banned in (
+            "publish_requirement",
+            "update_requirement_relations",
+            "submit_dev_artifacts",
+            "update_node",
+            "bind_requirement_to_project",
+        ):
+            assert banned not in body, banned
 
 
 class TestRoleSkillsContent:

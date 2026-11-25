@@ -1,7 +1,7 @@
 ---
 name: mem-lake-admin
-description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile, bind_requirement_to_project, get_node_info."
-version: 1.18.0
+description: "Mem Lake administrator skills for approval workflow management, access key governance, and project profile maintenance. Use when managing pending approval batches, auto-processing conflicts, issuing or revoking access keys, or maintaining project profiles. Triggers on: 审批, 待审批, access key, 密钥, 项目画像, review_auto_process, 自动审批, review_pending, review_approve, review_reject, create_access_key, revoke_access_key, list_access_keys, update_access_key_scope, rotate_access_key, set_access_key_mode, manage_project_profile, get_skill, get_node_info."
+version: 1.19.0
 ---
 
 # Admin Skills（管理员）
@@ -97,21 +97,19 @@ version: 1.18.0
 - **get_graph_quality_report** — 图质量基线（孤儿/重复度/连通分量）
 - **generate_rule_edges** — 规则边生成（走审批批次）
 
-### 检索与写入类（与 PM/Dev 共享）
-- **publish_requirement** — 发布需求节点
-- **update_requirement_relations** — 更新需求间关系
-- **submit_dev_artifacts** — 批量提交开发产物
-- **update_node** — 修正已审批节点
+### 检索类（只读，与 PM/Dev 共享）
 - **search_similar_requirements** — 融合检索相似需求
 - **search_code_snippets** — 融合检索研发资产
 - **analyze_impact_scope** — 变更影响范围分析
 - **check_requirement_conflicts** — 需求冲突排查
 
-### 共享类
+### 查询类（只读）
 - **list_requirements** — 清单式枚举需求（分页+过滤；requirement_key 直查、fields 裁剪）
 - **get_requirement_context** — 查询需求上下文
 - **get_node_info** — 按 node_id 反查归属（project/system/悬浮状态）
-- **bind_requirement_to_project** — 悬浮需求 ↔ 项目绑定/解绑（PM/Admin；走审批流，不触发冲突检测）
+- **get_skill** — 读取角色技能文档（SKILL/REFERENCE），按需查询不占常驻上下文
+
+> **admin 是管理与查询角色**：不代 PM/Dev 发布需求、更新关系或提交产物；需要写入时请由对应角色完成。
 
 > **Admin 专属工具详细参数表和示例见 `admin/REFERENCE.md`；与 PM/Dev 共享工具的参数表见 `pm/REFERENCE.md` 与 `dev/REFERENCE.md`**
 
@@ -168,14 +166,15 @@ set_access_key_mode(lax_mode=true, key_ids=["..."])
 
 - **Admin**: 参考 `admin/REFERENCE.md`
 
-按需加载方式：
-1. 本文件与 `admin/REFERENCE.md` 均在 GitHub 仓库（raw.githubusercontent.com/easy12138s/MemLake/master/src/mem_lake/skills/admin/）
-2. 如需详细工具参数或示例，下载 REFERENCE.md 放到本文件同目录
-3. REFERENCE.md 仅在需要时加载，节省 context token
+按需加载方式（MCP Resource，无需下载落盘）：
+1. 主文档即本文件：读取资源 `memlake://skills/admin/SKILL`（或调用 `get_skill()`）
+2. 详细参数：读取资源 `memlake://skills/admin/REFERENCE`（或 `get_skill(file="REFERENCE")`）
+3. 工具参数以 tools/list 的实际 schema 为准；本文件与 REFERENCE 补充用法与工作流
 
 ## Skills 文件放置指南
 
-本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
+技能文档随 MCP 服务分发（同一 `X-MCP-Key` 鉴权、按需读取），**无需从 GitHub 下载**。
+仅当客户端不支持 MCP Resources 时，才用下面的放置方式兜底（GitHub raw 可能滞后于镜像版本）。
 
 ### 跨客户端项目级（推荐，首选）
 - `.agents/skills/mem-lake-{role}/SKILL.md`（符合 Agent Skills 标准 agentskills.io，主流 Agent 通用）

@@ -130,8 +130,8 @@ def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
 
     hint = output["user_hint"]
     assert isinstance(hint, str) and hint.strip()
-    assert "raw.githubusercontent.com" in hint
-    assert "skills/" in hint
+    assert f"memlake://skills/{role}/SKILL" in hint
+    assert "get_skill" in hint
     # 安全：Key 不应出现在给用户的提示词里
     assert plaintext not in hint
 

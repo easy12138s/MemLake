@@ -1,7 +1,7 @@
 ---
 name: mem-lake-pm
 description: "Mem Lake product manager skills for publishing and managing requirement nodes in the team knowledge graph. Use when creating new requirements, updating requirement relationships (supersede/relate), or managing requirement versions. Triggers on: 需求发布, publish_requirement, 需求关系, update_requirement_relations, 需求替代, 需求关联, 悬浮需求, bind_requirement_to_project, get_node_info, requirement, PRD."
-version: 1.18.0
+version: 1.19.0
 ---
 
 # PM Skills（产品经理）
@@ -84,6 +84,7 @@ version: 1.18.0
 - **get_project_info** — 枚举/查询项目（list/get）
 - **get_node_info** — 按 node_id 反查归属（悬浮/已软删/越权均可诊断）
 - **get_submission** — 按 submission_id 查看批次状态/审批人/时间线（非 admin 仅见自己）
+- **get_skill** — 读取角色技能文档（SKILL/REFERENCE），按需查询不占常驻上下文
 
 > **详细参数表和示例见 `pm/REFERENCE.md`**
 
@@ -125,14 +126,15 @@ version: 1.18.0
 
 - **PM**: 参考 `pm/REFERENCE.md`
 
-按需加载方式：
-1. 本文件与 `pm/REFERENCE.md` 均在 GitHub 仓库（raw.githubusercontent.com/easy12138s/MemLake/master/src/mem_lake/skills/pm/）
-2. 如需详细工具参数或示例，下载 REFERENCE.md 放到本文件同目录
-3. REFERENCE.md 仅在需要时加载，节省 context token
+按需加载方式（MCP Resource，无需下载落盘）：
+1. 主文档即本文件：读取资源 `memlake://skills/pm/SKILL`（或调用 `get_skill()`）
+2. 详细参数：读取资源 `memlake://skills/pm/REFERENCE`（或 `get_skill(file="REFERENCE")`）
+3. 工具参数以 tools/list 的实际 schema 为准；本文件与 REFERENCE 补充用法与工作流
 
 ## Skills 文件放置指南
 
-本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
+技能文档随 MCP 服务分发（同一 `X-MCP-Key` 鉴权、按需读取），**无需从 GitHub 下载**。
+仅当客户端不支持 MCP Resources 时，才用下面的放置方式兜底（GitHub raw 可能滞后于镜像版本）。
 
 ### 跨客户端项目级（推荐，首选）
 - `.agents/skills/mem-lake-{role}/SKILL.md`（符合 Agent Skills 标准 agentskills.io，主流 Agent 通用）

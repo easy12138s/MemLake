@@ -180,15 +180,13 @@ def _build_mcp_config(mcp_url: str, plaintext: str) -> str:
 def _build_user_hint(role: str) -> str:
     """生成给【用户】的一句话接入提示（不含 Key）。
 
-    skills 不经 MCP 工具分发，改指引用户
-    让 Agent 从 GitHub 仓库自取安装——工具面少一个 schema，skills 内容更新
-    走仓库发布，Agent 侧安装一次后所有会话生效。
+    技能文档随镜像经 MCP Resource 分发（同一 Key 鉴权、按需读取），
+    不再要求 Agent 从 GitHub 下载或落盘安装。
     """
     return (
-        f"已生成 {role} 角色的 MCP 配置（见 mcp_config）。将它粘贴进你的 MCP 客户端后，"
-        "让你的 Agent 从 GitHub 下载并安装角色技能（安装一次，后续会话自动生效）：\n"
-        f"https://raw.githubusercontent.com/easy12138s/MemLake/master/"
-        f"src/mem_lake/skills/{role}/SKILL.md"
+        f"已生成 {role} 角色的 MCP 配置（见 mcp_config）。粘贴进 MCP 客户端后：\n"
+        f"· 技能文档：读取资源 memlake://skills/{role}/SKILL"
+        "（或调用 get_skill()），无需安装文件\n"
     )
 
 

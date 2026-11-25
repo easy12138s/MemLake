@@ -1,7 +1,7 @@
 ---
 name: mem-lake-dev
 description: "Mem Lake developer skills for submitting development artifacts (code snippets, solutions, design intents, pitfalls) to the team knowledge graph. Use when recording code implementations, design decisions, solutions, or pitfalls encountered during development. Triggers on: 代码片段, submit_dev_artifacts, 方案, 设计意图, 踩坑, CodeSnippet, Solution, DesignIntent, Pitfall, ref, 批量提交."
-version: 1.18.0
+version: 1.19.0
 ---
 
 # Dev Skills（开发者）
@@ -86,6 +86,7 @@ version: 1.18.0
 ### 查询类
 - **get_project_info** — 枚举/查询项目
 - **get_node_info** — 按 node_id 反查归属（悬浮/已软删/越权均可诊断）
+- **get_skill** — 读取角色技能文档（SKILL/REFERENCE），按需查询不占常驻上下文
 
 > **详细参数表和示例见 `dev/REFERENCE.md`**
 
@@ -119,14 +120,15 @@ version: 1.18.0
 
 - **Dev**: 参考 `dev/REFERENCE.md`
 
-按需加载方式：
-1. 本文件与 `dev/REFERENCE.md` 均在 GitHub 仓库（raw.githubusercontent.com/easy12138s/MemLake/master/src/mem_lake/skills/dev/）
-2. 如需详细工具参数或示例，下载 REFERENCE.md 放到本文件同目录
-3. REFERENCE.md 仅在需要时加载，节省 context token
+按需加载方式（MCP Resource，无需下载落盘）：
+1. 主文档即本文件：读取资源 `memlake://skills/dev/SKILL`（或调用 `get_skill()`）
+2. 详细参数：读取资源 `memlake://skills/dev/REFERENCE`（或 `get_skill(file="REFERENCE")`）
+3. 工具参数以 tools/list 的实际 schema 为准；本文件与 REFERENCE 补充用法与工作流
 
 ## Skills 文件放置指南
 
-本文件（SKILL.md）与同目录 REFERENCE.md 从 GitHub 仓库分发。按需保存/放置到对应 Agent 目录，安装一次后所有会话生效：
+技能文档随 MCP 服务分发（同一 `X-MCP-Key` 鉴权、按需读取），**无需从 GitHub 下载**。
+仅当客户端不支持 MCP Resources 时，才用下面的放置方式兜底（GitHub raw 可能滞后于镜像版本）。
 
 ### 跨客户端项目级（推荐，首选）
 - `.agents/skills/mem-lake-{role}/SKILL.md`（符合 Agent Skills 标准 agentskills.io，主流 Agent 通用）
