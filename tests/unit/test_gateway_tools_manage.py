@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mem_lake.approval.validation import PayloadValidationError
 from mem_lake.gateway.server import create_mcp_server
 from mem_lake.gateway.tools.manage_tools import (
     _build_mcp_config,
@@ -175,7 +176,7 @@ class TestProjectMustHaveProfile:
 
         monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
 
-        with pytest.raises(ValueError, match="尚未创建画像"):
+        with pytest.raises(PayloadValidationError, match="尚未创建画像"):
             await manage_tools._assert_projects_have_profile(None, [uuid.uuid4()])
 
     @pytest.mark.asyncio
@@ -210,7 +211,7 @@ class TestProjectMustHaveProfile:
 
         monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
 
-        with pytest.raises(ValueError) as exc:
+        with pytest.raises(PayloadValidationError) as exc:
             await manage_tools._assert_projects_have_profile(None, [p_missing])
 
         msg = str(exc.value)

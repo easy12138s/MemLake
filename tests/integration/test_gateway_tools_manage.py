@@ -41,6 +41,16 @@ def _parse(result):
     return {}
 
 
+def _error_text(result) -> str:
+    """从 CallToolResult 提取错误文案（is_error=True 时）。"""
+    text = ""
+    for item in getattr(result, "content", []) or []:
+        if hasattr(item, "text"):
+            text = item.text
+            break
+    return text
+
+
 def _profile_payload(name: str = "AutoIDProject") -> dict:
     return {
         "title": "自动ID项目画像",
@@ -92,6 +102,40 @@ async def test_manage_project_profile_explicit_id_returns_same(admin_app):
         )
         data = _parse(result)
         assert uuid.UUID(data["project_id"]) == pid
+
+
+async def test_create_access_key_rejects_project_without_profile(admin_app):
+    """无画像项目被拒时，错误文案必须带「尚未创建画像」+ 可执行修复指引。
+
+    回归缺陷：裸 ValueError 经 to_tool_error 会退化成「工具调用失败: ValueError」，
+    运维拿不到「先用 manage_project_profile 建档」的可执行提示，幽灵项目治理形同虚设。
+    """
+    async with Client(admin_app) as client:
+        result = await client.call_tool(
+            "create_access_key",
+            {"role": "dev", "project_scope": [str(uuid.uuid4())]},
+            raise_on_error=False,
+        )
+        assert result.is_error
+        text = _error_text(result)
+        assert "尚未创建画像" in text
+        assert "manage_project_profile" in text
+
+
+async def test_manage_project_profile_rejects_relative_work_dir(admin_app):
+    """work_dir 非法时错误文案必须带「绝对路径」指引（而非泛化错误）。"""
+    async with Client(admin_app) as client:
+        payload = _profile_payload()
+        payload["work_dir"] = "relative/path"
+        result = await client.call_tool(
+            "manage_project_profile",
+            {"action": "create", "profile": payload},
+            raise_on_error=False,
+        )
+        assert result.is_error
+        text = _error_text(result)
+        assert "绝对路径" in text
+        assert "work_dir" in text
 
 
 async def test_create_access_key_rotate(admin_app):

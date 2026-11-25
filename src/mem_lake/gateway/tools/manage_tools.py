@@ -26,6 +26,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mem_lake.approval.validation import PayloadValidationError
 from mem_lake.auth.models import AccessKey
 from mem_lake.auth.service import (
     create_access_key as svc_create_access_key,
@@ -205,8 +206,8 @@ class ProjectProfileInput(StrictInputModel):
     properties: dict[str, Any] = Field(
         description=(
             "ProjectProfile 属性，必填：name（项目名）、description（描述）、"
-            "tech_stack（技术栈数组）、architecture（架构）；可选：conventions、team、"
-            "work_dir（本地工作目录）、repo（代码仓库标识）"
+            "tech_stack（技术栈数组）、architecture（架构）；可选：conventions、team。"
+            "工作目录（work_dir）与仓库标识（repo）是独立的顶层字段，不要塞进 properties"
         )
     )
     tags: list[str] = Field(default=[], description="标签数组")
@@ -726,7 +727,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
         """
         try:
             if not _is_absolute_any_platform(profile.work_dir):
-                raise ValueError(
+                # PayloadValidationError：文案会随 ToolError 透出（裸 ValueError 会被吞）
+                raise PayloadValidationError(
                     f"work_dir 必须是绝对路径（当前: {profile.work_dir}），"
                     "用于定位项目工作目录"
                 )
@@ -927,7 +929,9 @@ async def _assert_projects_have_profile(
     ok = {n.project_id for n in nodes if n.project_id is not None}
     missing = [str(p) for p in uniq if p not in ok]
     if missing:
-        raise ValueError(
+        # 用 PayloadValidationError（而非裸 ValueError）：to_tool_error 会保留其文案，
+        # 裸 ValueError 会被吞成「工具调用失败: ValueError」，运维拿不到修复指引。
+        raise PayloadValidationError(
             f"以下项目尚未创建画像（无项目名称/工作目录），无法挂载：{', '.join(missing)}。"
             "请先用 manage_project_profile action=create 并指定 project_id 建画像后再试。"
         )
