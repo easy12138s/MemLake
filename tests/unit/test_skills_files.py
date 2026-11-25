@@ -55,6 +55,14 @@ class TestSkillsFiles:
             _, version = _load_skill(role)
             assert version == "1.19.0"
 
+    def test_reference_files_carry_version(self):
+        """REFERENCE.md 也带 frontmatter 版本（get_skill 自证用）。"""
+        for role in ("admin", "pm", "dev"):
+            text = (_SKILLS_DIR / role / "REFERENCE.md").read_text(encoding="utf-8")
+            parts = text.split("---", 2)
+            frontmatter = yaml.safe_load(parts[1])
+            assert str(frontmatter.get("version")) == "1.19.0"
+
     def test_mcp_resource_distribution_note(self):
         """文件含 MCP 资源获取说明与 get_skill 兜底。"""
         for role in ("admin", "pm", "dev"):

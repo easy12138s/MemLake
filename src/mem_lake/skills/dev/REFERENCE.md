@@ -1,3 +1,9 @@
+---
+name: mem-lake-dev-reference
+description: "Mem Lake Dev 技能参考：工具参数表、产物结构与工作流示例。"
+version: 1.19.0
+---
+
 # Dev Reference（详细参数表与示例）
 
 > 本文件为 Dev Skill 的参考文档，包含完整的工具参数表、嵌套结构定义和详细工作流示例。

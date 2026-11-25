@@ -1,3 +1,9 @@
+---
+name: mem-lake-admin-reference
+description: "Mem Lake Admin 技能参考：管理工具参数表、冲突检测与审批工作流。"
+version: 1.19.0
+---
+
 # Admin Reference（详细参数表与示例）
 
 > 本文件为 Admin Skill 的参考文档，包含 Admin 专属工具的完整参数表、冲突检测机制和详细工作流示例。
