@@ -95,3 +95,36 @@ async def test_missing_role_empty(monkeypatch, middleware):
         context=SimpleNamespace(), call_next=_call_next
     )
     assert result == []
+
+
+async def test_unauthenticated_sees_no_resources(monkeypatch, middleware):
+    """未认证时不暴露资源清单与模板（避免「0 工具 + 有资源」的半连接假象）。"""
+    monkeypatch.setattr(
+        "mem_lake.gateway.middleware.get_access_token", lambda: None
+    )
+
+    async def call_next(_context):
+        return [SimpleNamespace(name="skills_index", uri="memlake://skills/index")]
+
+    assert await middleware.on_list_resources(
+        context=SimpleNamespace(), call_next=call_next
+    ) == []
+    assert await middleware.on_list_resource_templates(
+        context=SimpleNamespace(), call_next=call_next
+    ) == []
+
+
+async def test_authenticated_sees_resources(monkeypatch, middleware):
+    """认证通过后资源清单原样透传（资源读取仍需处理器角色校验）。"""
+    monkeypatch.setattr(
+        "mem_lake.gateway.middleware.get_access_token",
+        lambda: _fake_token("dev"),
+    )
+
+    async def call_next(_context):
+        return [SimpleNamespace(name="skills_index", uri="memlake://skills/index")]
+
+    resources = await middleware.on_list_resources(
+        context=SimpleNamespace(), call_next=call_next
+    )
+    assert [r.name for r in resources] == ["skills_index"]

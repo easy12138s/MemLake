@@ -100,8 +100,19 @@ class TestExtractAccessKey:
         assert extract_access_key_from_headers(headers) == "ak_test"
 
     def test_extract_empty_value_returns_none(self):
-        """空字符串值返回 None（falsy）。"""
-        # extract 返回空字符串，调用方按 not access_key_plain 判断
-        headers = {ACCESS_KEY_HEADER.lower(): ""}
-        result = extract_access_key_from_headers(headers)
-        assert result == ""  # 函数返回空字符串，调用方判断 falsy
+        """空字符串值返回 None（调用方按 not access_key_plain 拒绝）。"""
+        assert extract_access_key_from_headers({ACCESS_KEY_HEADER.lower(): ""}) is None
+
+    def test_extract_mixed_case_header(self):
+        """头名大小写混合也能提取（客户端可能不做规范化）。"""
+        assert extract_access_key_from_headers({"X-MCP-Key": "ak_mixed"}) == "ak_mixed"
+
+    def test_extract_bearer_token(self):
+        """兼容只支持 Authorization: Bearer 的客户端。"""
+        headers = {"authorization": "Bearer ak_bearer.token"}
+        assert extract_access_key_from_headers(headers) == "ak_bearer.token"
+
+    def test_extract_prefers_x_mcp_key_over_bearer(self):
+        """同时存在时优先 X-MCP-Key。"""
+        headers = {"x-mcp-key": "ak_header", "authorization": "Bearer ak_bearer"}
+        assert extract_access_key_from_headers(headers) == "ak_header"

@@ -84,6 +84,18 @@ def extract_access_key_from_headers(headers: dict[str, str]) -> str | None:
     """从 HTTP 请求头提取 Access Key 明文。
 
     PDD 3.1 / 6.2：X-MCP-Key 头传递 Access Key。
+    兼容只支持 `Authorization: Bearer <key>` 的 MCP 客户端（部分 GUI 客户端）。
     返回 None 表示未提供（由调用方决定是否拒绝）。
     """
-    return headers.get(ACCESS_KEY_HEADER.lower())
+    normalized = {key.lower(): value for key, value in headers.items()}
+
+    key = normalized.get(ACCESS_KEY_HEADER.lower())
+    if key and key.strip():
+        return key.strip()
+
+    auth = normalized.get("authorization")
+    if auth and auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token:
+            return token
+    return None

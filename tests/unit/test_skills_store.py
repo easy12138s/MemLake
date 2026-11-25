@@ -54,13 +54,13 @@ async def test_server_registers_skill_resources():
     from mem_lake.gateway.server import create_mcp_server
 
     mcp = create_mcp_server()
-    templates = await mcp.list_resource_templates()
+    templates = await mcp.list_resource_templates(run_middleware=False)
     uris = {
         getattr(t, "uri_template", None) or getattr(t, "uriTemplate", None)
         for t in templates
     }
     assert "memlake://skills/{role}/{file}" in uris
-    resources = {str(r.uri) for r in await mcp.list_resources()}
+    resources = {str(r.uri) for r in await mcp.list_resources(run_middleware=False)}
     assert "memlake://skills/index" in resources
     assert "memlake://skills/" in (mcp.instructions or "")
 

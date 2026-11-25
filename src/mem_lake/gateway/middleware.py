@@ -90,7 +90,14 @@ class AccessKeyAuthMiddleware(Middleware):
         # 提取 Access Key
         access_key_plain = extract_access_key_from_headers(headers)
         if not access_key_plain:
-            # 未提供 Access Key，不设置 scope["user"]，由 RBACMiddleware 拒绝
+            # 未提供 Access Key：不设置 scope["user"]，由 RBACMiddleware 拒绝。
+            # 记 WARNING 便于定位「客户端 tools/list 为空」的配置问题（不带 Key 明文）。
+            logger.warning(
+                "MCP 请求未携带 Access Key（method=%s, has_authorization=%s）；"
+                "检查客户端 X-MCP-Key 头或 Authorization: Bearer",
+                getattr(context.message, "method", None),
+                any(k.lower() == "authorization" for k in headers),
+            )
             return await call_next(context)
 
         # 异步查 DB 认证
@@ -102,7 +109,11 @@ class AccessKeyAuthMiddleware(Middleware):
             return await call_next(context)
 
         if auth_result is None:
-            # 认证失败，不设置 scope["user"]，由 RBACMiddleware 拒绝
+            # 认证失败：不设置 scope["user"]，由 RBACMiddleware 拒绝
+            logger.warning(
+                "Access Key 认证失败（method=%s）；Key 可能已吊销/轮换",
+                getattr(context.message, "method", None),
+            )
             return await call_next(context)
 
         # 构造 AccessToken
@@ -155,6 +166,20 @@ class RBACMiddleware(Middleware):
             return []
         allowed = ROLE_TOOLSET.get(role, frozenset())
         return [t for t in tools if t.name in allowed]
+
+    async def on_list_resources(
+        self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
+    ) -> list[Any]:
+        """未认证不暴露资源清单（与工具列表同口径，避免「0 工具 + 有资源」误导）。"""
+        resources = await call_next(context)
+        return list(resources) if get_access_token() is not None else []
+
+    async def on_list_resource_templates(
+        self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
+    ) -> list[Any]:
+        """未认证不暴露资源模板（与资源清单一同鉴权）。"""
+        templates = await call_next(context)
+        return list(templates) if get_access_token() is not None else []
 
     async def on_call_tool(
         self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
