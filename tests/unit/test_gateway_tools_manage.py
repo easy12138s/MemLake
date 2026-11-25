@@ -10,6 +10,8 @@
 import json
 import uuid
 
+import pytest
+
 from mem_lake.gateway.server import create_mcp_server
 from mem_lake.gateway.tools.manage_tools import (
     _build_mcp_config,
@@ -98,3 +100,63 @@ def test_create_mcp_server_registers_manage_project_profile():
     """
     mcp = create_mcp_server()
     assert mcp is not None
+
+
+class TestWorkDirValidation:
+    """work_dir 必填 + 跨平台绝对路径判定。"""
+
+    def test_accepts_cross_platform_absolute_paths(self):
+        from mem_lake.gateway.tools.manage_tools import _is_absolute_any_platform
+
+        for ok in (
+            r"D:\EasyFiles\private\project\MemLake",
+            "d:/proj-a",
+            "/a/b",
+            "/x",
+            r"\\server\share\x",
+        ):
+            assert _is_absolute_any_platform(ok) is True, ok
+
+    def test_rejects_relative_and_drive_relative_paths(self):
+        from mem_lake.gateway.tools.manage_tools import _is_absolute_any_platform
+
+        for bad in ("C:foo", "proj-a", "./x", "../x", ""):
+            assert _is_absolute_any_platform(bad) is False, bad
+
+    def test_work_dir_is_required(self):
+        """work_dir 缺失 → Pydantic 必填报错。"""
+        import pydantic
+
+        from mem_lake.gateway.tools.manage_tools import ProjectProfileInput
+
+        with pytest.raises(pydantic.ValidationError):
+            ProjectProfileInput(
+                title="t",
+                content="c",
+                properties={
+                    "name": "n",
+                    "description": "d",
+                    "tech_stack": [],
+                    "architecture": "a",
+                },
+            )
+
+    def test_profile_properties_writes_work_dir_unconditionally(self):
+        from mem_lake.gateway.tools.manage_tools import (
+            ProjectProfileInput,
+            _profile_properties,
+        )
+
+        p = ProjectProfileInput(
+            title="t",
+            content="c",
+            properties={
+                "name": "n",
+                "description": "d",
+                "tech_stack": [],
+                "architecture": "a",
+            },
+            work_dir="/abs/path",
+        )
+        assert _profile_properties(p)["work_dir"] == "/abs/path"
+

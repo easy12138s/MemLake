@@ -250,6 +250,7 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
                         "architecture": "MCP 网关 + 知识图谱 + 三引擎检索",
                     },
                     "tags": ["测试", "知识管理"],
+                    "work_dir": "/tmp/e2e-project",
                 },
             },
         )

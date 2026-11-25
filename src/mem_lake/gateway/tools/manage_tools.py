@@ -19,6 +19,7 @@ import logging
 import re
 import uuid
 from datetime import datetime
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Sequence
 
 from fastmcp import FastMCP
@@ -208,11 +209,16 @@ class ProjectProfileInput(StrictInputModel):
         )
     )
     tags: list[str] = Field(default=[], description="标签数组")
-    work_dir: str | None = Field(
-        default=None, description="项目本地工作目录绝对路径（可选，登记便于自证隔离/定位）"
+    work_dir: str = Field(
+        description=(
+            "项目本地工作目录绝对路径（必填）：Windows 盘符 / UNC / POSIX 均可，"
+            "如 D:\\EasyFiles\\projects\\his-back-mall 或 /home/user/proj。"
+            "该路径位于 agent 本机，服务端不校验其是否存在"
+        )
     )
     repo: str | None = Field(
-        default=None, description="代码仓库标识/名称（可选，登记便于检索与核对）"
+        default=None,
+        description="代码仓库标识/名称（可选，强烈建议填写，便于检索与核对）",
     )
 
 
@@ -714,6 +720,11 @@ def register_manage_tools(mcp: FastMCP) -> None:
         并通过出参 project_id 返回，调用方无需预先自行生成 UUID。
         """
         try:
+            if not _is_absolute_any_platform(profile.work_dir):
+                raise ValueError(
+                    f"work_dir 必须是绝对路径（当前: {profile.work_dir}），"
+                    "用于定位项目工作目录"
+                )
             profile_id = _resolve_profile_id(project_id)
             if project_id is not None:
                 validate_project_access(project_id)
@@ -886,14 +897,23 @@ async def _has_approved_profile(
     return result.scalar_one_or_none() is not None
 
 
+def _is_absolute_any_platform(value: str) -> bool:
+    """work_dir 是 agent 本机路径：Windows 盘符 / UNC / POSIX 皆算绝对路径。
+
+    不校验存在性——MemLake 跑在 Docker 内、未挂载 agent 工作树。
+    """
+    if not value:
+        return False
+    return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
 def _profile_properties(profile: "ProjectProfileInput") -> dict[str, Any]:
     """合并 work_dir/repo 到 properties 副本，避免修改入参。
 
-    work_dir/repo 为可选元数据字段，仅当非空时写入，便于 get_project_info 回显。
+    work_dir 无条件写入（工具层已强制必填）；repo 仍按非空写入。
     """
     props: dict[str, Any] = dict(profile.properties or {})
-    if profile.work_dir is not None:
-        props["work_dir"] = profile.work_dir
+    props["work_dir"] = profile.work_dir
     if profile.repo is not None:
         props["repo"] = profile.repo
     return props

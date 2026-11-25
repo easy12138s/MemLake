@@ -52,6 +52,7 @@ def _profile_payload(name: str = "AutoIDProject") -> dict:
             "architecture": "monolith",
         },
         "tags": [],
+        "work_dir": "/tmp/test-project",
     }
 
 
