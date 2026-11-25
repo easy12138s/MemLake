@@ -1090,6 +1090,12 @@ def register_write_tools(mcp: FastMCP) -> None:
                     )
                     if node.project_id == project_id:
                         continue  # 幂等：已是目标归属
+                    # Dev 边界：仅可把悬浮需求绑定到自己项目；解绑/改绑归 PM
+                    _check_bind_dev_boundary(
+                        role=get_current_role(),
+                        target_project_id=project_id,
+                        node_project_id=node.project_id,
+                    )
                     # 改绑/解绑：源项目须对调用者可见（防越权操作他人项目节点）
                     if node.project_id is not None:
                         validate_project_access(node.project_id)
@@ -1505,3 +1511,26 @@ async def _update_node_impl(
         items=items,
         operation_id=operation_id,
     )
+
+
+def _check_bind_dev_boundary(
+    *, role: str, target_project_id: uuid.UUID | None, node_project_id: uuid.UUID | None
+) -> None:
+    """Dev 的 bind 边界：仅可把悬浮需求绑定到自己项目，不能解绑/改绑。
+
+    PM 全权（绑定/解绑/改绑）。归属变更是治理动作，收在 PM 手里。
+    目标项目是否属于 Dev 自身范围，由 validate_project_access 在入口处把关。
+
+    调用点必须在幂等分支（node.project_id == target_project_id）之后 ——
+    Dev 对自己项目的幂等绑定不应被误拒。
+    """
+    if role != "dev":
+        return
+    if target_project_id is None:
+        raise PayloadValidationError(
+            "Dev 角色不可解绑需求（解绑/改绑由 PM 执行）"
+        )
+    if node_project_id is not None:
+        raise PayloadValidationError(
+            "Dev 角色仅可绑定悬浮需求到自己项目；改绑已归属需求的请求请由 PM 执行"
+        )

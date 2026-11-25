@@ -58,7 +58,14 @@ class _FakeRequest:
         self.scope: dict = {}
 
 
-def _make_role_app(monkeypatch, *, role: str, project_id: str, system_scope: list[str] | None = None):
+def _make_role_app(
+    monkeypatch,
+    *,
+    role: str,
+    project_id: str,
+    system_scope: list[str] | None = None,
+    project_scope: list[str] | None = None,
+):
     """构造一个以指定角色身份运行的 app（create_mcp_server() 内存实例）。
 
     通过 patch 认证链路注入角色身份：
@@ -66,19 +73,22 @@ def _make_role_app(monkeypatch, *, role: str, project_id: str, system_scope: lis
     - middleware.get_access_token 与 dependencies.get_access_token 两个命名空间
     role ∈ admin/pm/dev。pm/dev 注入 project_scope=[project_id] 以通过项目权限校验；
     admin 注入空 scope（不受限）。system_scope 可注入 dev/pm 的 system 绑定（数据回传
-    测试需求检索的 system 兜底等）。
+    测试需求检索的 system 兜底等）。project_scope 可显式覆盖项目范围（多项目场景）。
     """
     req = _FakeRequest()
     # 同一 role+project 派生稳定 key_id，保证同角色多次调用使用同一 actor
     #（幂等键依赖 submitted_by，若每次随机会造成同 operation_id 二次提交判为不同 key）
     key_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"memlake-e2e/{role}/{project_id}"))
     system_scope = system_scope or []
+    scope = (
+        [] if role == "admin" else (list(project_scope) if project_scope is not None else [project_id])
+    )
 
     async def _fake_auth(_session, _key):
         return {
             "key_id": key_id,
             "role": role,
-            "project_scope": ([] if role == "admin" else [project_id]),
+            "project_scope": scope,
             "system_scope": system_scope,
             "lax_mode": False,
         }
@@ -91,7 +101,7 @@ def _make_role_app(monkeypatch, *, role: str, project_id: str, system_scope: lis
             claims={
                 "role": role,
                 "key_id": key_id,
-                "project_scope": ([] if role == "admin" else [project_id]),
+                "project_scope": scope,
                 "system_scope": system_scope,
                 "lax_mode": False,
             },
@@ -1070,6 +1080,202 @@ async def test_bind_requirement_to_project_end_to_end(
         ) as c:
             tools = {t.name for t in await c.list_tools()}
         assert "bind_requirement_to_project" in tools
+    finally:
+        rows = (
+            await db_session.execute(
+                sa_select(KnowledgeNode.id).where(
+                    KnowledgeNode.system_id == uuid.UUID(sid)
+                )
+            )
+        ).scalars().all()
+        await _cleanup_nodes(db_session, graph_store, rows)
+        await db_session.execute(
+            delete(SystemProject).where(SystemProject.system_id == uuid.UUID(sid))
+        )
+        await db_session.execute(delete(System).where(System.id == uuid.UUID(sid)))
+        await db_session.commit()
+
+
+async def test_bind_requirement_dev_boundary(
+    monkeypatch, db_session, graph_store, mock_embedding_client
+):
+    """Dev 的 bind 边界（工具层接线）：可绑悬浮需求到自己项目；解绑/改绑被拒。
+
+    覆盖 4 条：
+    1. Dev 把悬浮需求绑定到自己项目 → 成功（走审批）
+    2. Dev 解绑已归属需求 → 拒（不可解绑）
+    3. Dev 把已归属需求改绑到另一项目 → 拒（仅可绑定悬浮需求）
+    4. Dev 对自己项目的幂等绑定 → 不被边界误伤（报「无需变更」而非边界错误）
+    """
+    from sqlalchemy import delete
+    from sqlalchemy import select as sa_select
+
+    from mem_lake.knowledge.models import KnowledgeNode, System, SystemProject
+    from mem_lake.knowledge.repository import get_node
+
+    project_a = str(uuid.uuid4())
+    project_b = str(uuid.uuid4())
+    sid = None
+
+    # admin 建两份画像 + system（含两个项目）
+    async with Client(
+        _make_role_app(monkeypatch, role="admin", project_id=project_a)
+    ) as c:
+        for pid, name in ((project_a, "Dev 边界项目 A"), (project_b, "Dev 边界项目 B")):
+            await _call(
+                c,
+                "manage_project_profile",
+                {
+                    "project_id": pid,
+                    "action": "create",
+                    "profile": {
+                        "title": name,
+                        "content": f"{name} 的画像",
+                        "properties": {
+                            "name": name,
+                            "description": "Dev bind 边界验证",
+                            "tech_stack": ["Python"],
+                            "architecture": "monolith",
+                        },
+                        "tags": ["测试"],
+                        "work_dir": "/tmp/dev-boundary-project",
+                    },
+                },
+            )
+        sid = (
+            await _call(
+                c,
+                "manage_system",
+                {"action": "create", "name": f"sys-devb-{uuid.uuid4().hex[:8]}"},
+            )
+        )["system_id"]
+        await _call(
+            c,
+            "manage_system",
+            {
+                "action": "add_projects",
+                "system_id": sid,
+                "project_ids": [project_a, project_b],
+            },
+        )
+
+    try:
+        # PM 发布悬浮需求 → admin 审批
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_a, system_scope=[sid]
+            )
+        ) as c:
+            r = await _call(
+                c,
+                "publish_requirement",
+                {
+                    "system_id": sid,
+                    "requirement": {
+                        "title": "Dev 边界验证需求",
+                        "content": "验证 Dev 只能绑定悬浮需求到自己项目",
+                        "properties": {"priority": "P3", "module": "bind"},
+                        "tags": [],
+                    },
+                    "operation_id": f"op-devb-pub-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_a)
+        ) as c:
+            await _call(c, "review_auto_process", {"batch_id": r["batch_id"]})
+            detail = await _call(
+                c, "review_batch_detail", {"batch_id": r["batch_id"]}
+            )
+            req_id = next(
+                (it["target_id"] for it in detail.get("items", []) if it.get("target_id")),
+                None,
+            )
+        assert req_id
+
+        dev_scope = [project_a, project_b]
+
+        # 1. Dev 把悬浮需求绑定到自己项目 A → 成功（pending_review）
+        async with Client(
+            _make_role_app(
+                monkeypatch,
+                role="dev",
+                project_id=project_a,
+                system_scope=[sid],
+                project_scope=dev_scope,
+            )
+        ) as c:
+            b = await _call(
+                c,
+                "bind_requirement_to_project",
+                {
+                    "requirement_ids": [req_id],
+                    "project_id": project_a,
+                    "operation_id": f"op-devb-bind-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        assert b["status"] == "pending_review", b
+        assert len(b.get("affected") or []) == 1
+
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_a)
+        ) as c:
+            await _call(c, "review_auto_process", {"batch_id": b["batch_id"]})
+        db_session.expire_all()
+        bound = await get_node(db_session, uuid.UUID(req_id))
+        assert bound.project_id == uuid.UUID(project_a)
+
+        # 2. Dev 解绑 → 拒（不可解绑）
+        async with Client(
+            _make_role_app(
+                monkeypatch,
+                role="dev",
+                project_id=project_a,
+                system_scope=[sid],
+                project_scope=dev_scope,
+            )
+        ) as c:
+            err = await _expect_tool_error(
+                c,
+                "bind_requirement_to_project",
+                {"requirement_ids": [req_id], "project_id": None},
+            )
+        assert "不可解绑" in err, err
+
+        # 3. Dev 改绑到项目 B → 拒（仅可绑定悬浮需求）
+        async with Client(
+            _make_role_app(
+                monkeypatch,
+                role="dev",
+                project_id=project_a,
+                system_scope=[sid],
+                project_scope=dev_scope,
+            )
+        ) as c:
+            err = await _expect_tool_error(
+                c,
+                "bind_requirement_to_project",
+                {"requirement_ids": [req_id], "project_id": project_b},
+            )
+        assert "仅可绑定悬浮需求" in err, err
+
+        # 4. Dev 幂等绑定（节点已在 A，目标也是 A）→ 不被边界误伤
+        async with Client(
+            _make_role_app(
+                monkeypatch,
+                role="dev",
+                project_id=project_a,
+                system_scope=[sid],
+                project_scope=dev_scope,
+            )
+        ) as c:
+            err = await _expect_tool_error(
+                c,
+                "bind_requirement_to_project",
+                {"requirement_ids": [req_id], "project_id": project_a},
+            )
+        assert "不可解绑" not in err and "仅可绑定悬浮需求" not in err, err
+        assert "无需变更" in err, err
     finally:
         rows = (
             await db_session.execute(

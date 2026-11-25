@@ -918,3 +918,48 @@ class TestUpdateNodePayloadPurity:
         assert captured["project_id"] == node.project_id
 
 
+class TestBindDevBoundary:
+    """Dev 只能把悬浮需求绑定到自己项目，不能解绑/改绑。"""
+
+    def test_dev_cannot_unbind(self):
+        from mem_lake.gateway.tools.write_tools import _check_bind_dev_boundary
+
+        with pytest.raises(Exception, match="不可解绑"):
+            _check_bind_dev_boundary(
+                role="dev", target_project_id=None, node_project_id=uuid.uuid4()
+            )
+
+    def test_dev_cannot_rebind_other_project(self):
+        from mem_lake.gateway.tools.write_tools import _check_bind_dev_boundary
+
+        with pytest.raises(Exception, match="仅可绑定悬浮需求"):
+            _check_bind_dev_boundary(
+                role="dev",
+                target_project_id=uuid.uuid4(),
+                node_project_id=uuid.uuid4(),
+            )
+
+    def test_dev_can_bind_floating_to_own_project(self):
+        from mem_lake.gateway.tools.write_tools import _check_bind_dev_boundary
+
+        # 不抛异常
+        _check_bind_dev_boundary(
+            role="dev", target_project_id=uuid.uuid4(), node_project_id=None
+        )
+
+    def test_pm_unrestricted(self):
+        from mem_lake.gateway.tools.write_tools import _check_bind_dev_boundary
+
+        _check_bind_dev_boundary(
+            role="pm", target_project_id=None, node_project_id=uuid.uuid4()
+        )
+
+    def test_admin_unrestricted(self):
+        """admin 不持有 bind 工具，但边界函数不应误伤（非 dev 一律放行）。"""
+        from mem_lake.gateway.tools.write_tools import _check_bind_dev_boundary
+
+        _check_bind_dev_boundary(
+            role="admin", target_project_id=None, node_project_id=uuid.uuid4()
+        )
+
+
