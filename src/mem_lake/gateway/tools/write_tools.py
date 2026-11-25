@@ -108,22 +108,30 @@ def _check_update_node_type(node: KnowledgeNode, *, role: str) -> None:
 
 def _ownership_mismatch_hint(
     node: KnowledgeNode,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     *,
     system_name: str | None,
     system_member_ids: set[uuid.UUID] | None,
 ) -> str:
-    """节点归属与目标项目不一致的报错文案（ISSUE-13/14）。
+    """节点归属与目标项目不一致的报错文案（ISSUE-13/14 + 悬浮支持）。
 
-    三态：悬浮节点 / 归属他项目（回实际 project_id）/ 目标项目不在节点
-    system 的归属清单（追加 add_projects 修复指引；system 信息仅错误路径查询）。
+    四态：
+    - 传了 project_id、节点为悬浮 → 提示「更新悬浮需求请不传 project_id」
+    - 传了 project_id、节点归属他项目 → 回实际 project_id
+    - 没传 project_id（悬浮路径）、节点在项目内 → 回实际 project_id + 提示「请传 project_id」
+    - 目标项目不在节点 system 的归属清单 → 追加 add_projects 修复指引
     """
     msg = f"节点不属于本项目: {node.id}"
     if node.project_id is None:
-        msg += "（节点为悬浮需求，无项目归属；update_node 仅支持项目归属节点）"
+        if project_id is None:
+            msg += "（节点为悬浮需求，无项目归属）"
+        else:
+            msg += "（节点为悬浮需求，无项目归属；更新悬浮需求请不传 project_id）"
     else:
         msg += f"（节点实际归属项目: {node.project_id}）"
-    if system_name is not None and system_member_ids is not None:
+        if project_id is None:
+            msg += "；更新项目内节点请传 project_id"
+    if system_name is not None and system_member_ids is not None and project_id is not None:
         if project_id not in system_member_ids:
             msg += f"；目标项目不在 system「{system_name}」归属清单，{_ADD_PROJECTS_FIX}"
     return msg
@@ -949,8 +957,14 @@ def register_write_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
     async def update_node(
-        project_id: uuid.UUID = Field(description="节点所属项目 ID"),
         node_id: uuid.UUID = Field(description="要更新的已审批节点 UUID"),
+        project_id: uuid.UUID | None = Field(
+            default=None,
+            description=(
+                "节点所属项目 ID；留空 = 更新悬浮需求"
+                "（目标节点须无项目归属且对当前 Key 可见）"
+            ),
+        ),
         title: str | None = Field(default=None, description="新标题；留空则不更新"),
         content: str | None = Field(default=None, description="新正文；留空则不更新"),
         properties: dict[str, Any] | None = Field(
@@ -973,65 +987,21 @@ def register_write_tools(mcp: FastMCP) -> None:
         角色×类型闸门：PM 可改需求与研发资产节点；Dev 仅可改研发资产节点
         （CodeSnippet/Solution/DesignIntent/Decision/Pitfall），需求内容归 PM 维护；
         ProjectProfile 由 admin 用 manage_project_profile 维护，本工具不可改。
+        project_id 留空 = 更新悬浮需求（目标节点须为无项目归属的 Requirement，
+        且对当前 Key 可见）；项目内节点必须传 project_id。
         审批通过后原子落地：版本号 +1、标题变更同步 AGE 图投影、标题/正文/属性任一
         变更均重新生成向量（embed 输入含属性段）、写审计日志。
         节点类型不可变更；Node 不存在/不属于本项目/已归档则拒绝。
         支持 operation_id 幂等。
         """
         try:
-            validate_project_access(project_id)
-            if all(v is None for v in (title, content, properties, tags)):
-                raise PayloadValidationError(
-                    "至少提供一个要变更的字段: title/content/properties/tags"
-                )
-            _check_content_length(content, f"节点 {node_id} 的 content")
-            if properties is not None and not isinstance(properties, dict):
-                raise PayloadValidationError("properties 必须为 JSON 对象")
-
-            # 预校验目标节点存在、归属本项目且未归档，并取节点类型用于审批项实体标识
-            async with readonly_session() as session:
-                try:
-                    node = await get_node(session, node_id)
-                except NodeNotFoundError:
-                    raise PayloadValidationError(f"node_id 不存在: {node_id}")
-                # 角色×节点类型闸门（需求内容归 PM，研发资产归 Dev）
-                _check_update_node_type(node, role=get_current_role())
-                if node.project_id != project_id:
-                    # 归属诊断：成功路径零额外查询，仅错误路径查 system 归属
-                    system_name: str | None = None
-                    member_ids: set[uuid.UUID] | None = None
-                    if node.system_id is not None:
-                        sys_row = await get_system(session, node.system_id)
-                        system_name = sys_row.name if sys_row else None
-                        member_ids = await get_system_project_ids(
-                            session, system_id=node.system_id
-                        )
-                    raise PayloadValidationError(
-                        _ownership_mismatch_hint(
-                            node,
-                            project_id,
-                            system_name=system_name,
-                            system_member_ids=member_ids,
-                        )
-                    )
-                if node.status == "archived":
-                    raise PayloadValidationError(f"已归档节点不可更新: {node_id}")
-
-            items = [
-                build_update_node_item(
-                    node_id=node_id,
-                    node_type=node.type,
-                    title=title,
-                    content=content,
-                    properties=properties,
-                    tags=tags,
-                )
-            ]
-            return await submit_write_batch(
+            return await _update_node_impl(
                 project_id=project_id,
-                batch_type="update_node",
-                submitter_role=get_current_role(),
-                items=items,
+                node_id=node_id,
+                title=title,
+                content=content,
+                properties=properties,
+                tags=tags,
                 operation_id=operation_id,
             )
         except (PayloadValidationError, SchemaValidationError, ValueError) as e:
@@ -1449,3 +1419,89 @@ def _build_dev_items(
         )
 
     return items
+
+
+async def _update_node_impl(
+    *,
+    project_id: uuid.UUID | None,
+    node_id: uuid.UUID,
+    title: str | None,
+    content: str | None,
+    properties: dict[str, Any] | None,
+    tags: list[str] | None,
+    operation_id: str | None,
+) -> WriteToolOutput:
+    """update_node 核心逻辑（工具层薄封装，便于单测直接调用）。
+
+    project_id=None 表示更新悬浮需求：目标节点必须是无项目归属的 Requirement，
+    且对当前 Key 可见（is_requirement_visible，system 口径）。
+
+    红线：提交的审批 payload **绝不能含 project_id 键**——执行器按
+    `"project_id" in payload` 分流（命中 → set_node_project 解绑，未命中 → 内容更新）。
+    """
+    if project_id is not None:
+        validate_project_access(project_id)
+    if all(v is None for v in (title, content, properties, tags)):
+        raise PayloadValidationError(
+            "至少提供一个要变更的字段: title/content/properties/tags"
+        )
+    _check_content_length(content, f"节点 {node_id} 的 content")
+    if properties is not None and not isinstance(properties, dict):
+        raise PayloadValidationError("properties 必须为 JSON 对象")
+
+    # 预校验目标节点存在、归属一致且未归档，并取节点类型用于审批项实体标识
+    async with readonly_session() as session:
+        try:
+            node = await get_node(session, node_id)
+        except NodeNotFoundError:
+            raise PayloadValidationError(f"node_id 不存在: {node_id}")
+        # 角色×节点类型闸门（需求内容归 PM，研发资产归 Dev）
+        _check_update_node_type(node, role=get_current_role())
+        if node.project_id != project_id:
+            # 归属诊断：成功路径零额外查询，仅错误路径查 system 归属
+            system_name: str | None = None
+            member_ids: set[uuid.UUID] | None = None
+            if node.system_id is not None:
+                sys_row = await get_system(session, node.system_id)
+                system_name = sys_row.name if sys_row else None
+                member_ids = await get_system_project_ids(
+                    session, system_id=node.system_id
+                )
+            raise PayloadValidationError(
+                _ownership_mismatch_hint(
+                    node,
+                    project_id,
+                    system_name=system_name,
+                    system_member_ids=member_ids,
+                )
+            )
+        if project_id is None:
+            # 悬浮路径：仅支持 Requirement，且须对当前 Key 可见
+            await _ensure_requirement_visible(
+                session,
+                node,
+                type_err=(
+                    f"悬浮更新仅支持 Requirement 节点，节点 {node_id} 类型为 {node.type}"
+                ),
+                invisible_err=f"需求节点 {node_id} 对当前 Key 不可见",
+            )
+        if node.status == "archived":
+            raise PayloadValidationError(f"已归档节点不可更新: {node_id}")
+
+    items = [
+        build_update_node_item(
+            node_id=node_id,
+            node_type=node.type,
+            title=title,
+            content=content,
+            properties=properties,
+            tags=tags,
+        )
+    ]
+    return await submit_write_batch(
+        project_id=project_id,
+        batch_type="update_node",
+        submitter_role=get_current_role(),
+        items=items,
+        operation_id=operation_id,
+    )

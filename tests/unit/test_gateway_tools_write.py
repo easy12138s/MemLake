@@ -15,6 +15,8 @@
 """
 
 import uuid
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +26,7 @@ from mem_lake.gateway.tools.write_tools import (
     RequirementInput,
     _build_dev_items,
     _build_publish_items,
+    _update_node_impl,
 )
 
 
@@ -694,4 +697,224 @@ class TestUpdateNodeTypeGate:
             _check_update_node_type(self._node(node_type=t), role="dev")
         with pytest.raises(Exception):
             _check_update_node_type(self._node(node_type="Requirement"), role="dev")
+
+
+# ============================================================================
+# update_node 悬浮需求支持（project_id 可选）
+# ============================================================================
+
+
+@asynccontextmanager
+async def _fake_session():
+    yield None
+
+
+def _stub_update_node_deps(
+    monkeypatch,
+    *,
+    node,
+    role="pm",
+    visible=True,
+    captured=None,
+):
+    """给 update_node 打桩：session / get_node / 角色 / 可见性 / 提交。
+
+    captured 为 dict 时，submit_write_batch 的入参会写入该 dict。
+    """
+    from mem_lake.gateway.tools import write_tools
+
+    async def fake_get_node(session, node_id):
+        if node is None:
+            from mem_lake.knowledge.repository import NodeNotFoundError
+
+            raise NodeNotFoundError(str(node_id))
+        return node
+
+    async def fake_is_visible(session, *, req_node, role, project_scope, system_scope):
+        return visible
+
+    async def fake_submit(**kwargs):
+        if captured is not None:
+            captured.update(kwargs)
+        return SimpleNamespace(batch_id="b", status="pending_review")
+
+    def fake_validate_project_access(project_id):
+        return None
+
+    monkeypatch.setattr(write_tools, "readonly_session", _fake_session)
+    monkeypatch.setattr(write_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(write_tools, "is_requirement_visible", fake_is_visible)
+    monkeypatch.setattr(write_tools, "submit_write_batch", fake_submit)
+    monkeypatch.setattr(write_tools, "validate_project_access", fake_validate_project_access)
+    monkeypatch.setattr(write_tools, "get_current_role", lambda: role)
+    monkeypatch.setattr(write_tools, "get_current_project_scope", lambda: [])
+    monkeypatch.setattr(write_tools, "get_current_system_scope", lambda: [])
+    monkeypatch.setattr(
+        write_tools,
+        "get_settings",
+        lambda: type("S", (), {"MAX_CONTENT_LENGTH": 10000, "MAX_ITEMS_PER_BATCH": 50})(),
+    )
+
+
+def _make_node(*, node_type="Requirement", project_id=None, system_id=None, status="approved"):
+    from mem_lake.knowledge.models import KnowledgeNode
+
+    return KnowledgeNode(
+        id=uuid.uuid4(),
+        type=node_type,
+        title="t",
+        content="c",
+        properties={},
+        status=status,
+        project_id=project_id,
+        system_id=system_id,
+    )
+
+
+class TestUpdateNodeFloating:
+    """update_node 支持悬浮需求（project_id 可选）。"""
+
+    def _node(self, *, node_type="Requirement", project_id=None, system_id=None):
+        return _make_node(
+            node_type=node_type, project_id=project_id, system_id=system_id
+        )
+
+    def test_hint_points_to_omitting_project_id_for_floating_node(self):
+        """传了 project_id 但目标是悬浮节点 → 提示「不传 project_id」。"""
+        from mem_lake.gateway.tools.write_tools import _ownership_mismatch_hint
+
+        node = self._node(project_id=None)
+        msg = _ownership_mismatch_hint(
+            node, uuid.uuid4(), system_name=None, system_member_ids=None
+        )
+        assert "不传 project_id" in msg
+
+    def test_hint_shows_actual_project_when_omitting_project_id(self):
+        """没传 project_id 但节点在项目内 → 回显实际归属项目。"""
+        from mem_lake.gateway.tools.write_tools import _ownership_mismatch_hint
+
+        actual = uuid.uuid4()
+        node = self._node(project_id=actual)
+        msg = _ownership_mismatch_hint(
+            node, None, system_name=None, system_member_ids=None
+        )
+        assert str(actual) in msg
+        assert "传 project_id" in msg
+
+    @pytest.mark.asyncio
+    async def test_floating_update_succeeds_without_project_id(self, monkeypatch):
+        """悬浮需求：不传 project_id → 走内容更新，提交批次 project_id=None。"""
+        node = self._node(project_id=None, system_id=uuid.uuid4())
+        captured: dict = {}
+        _stub_update_node_deps(monkeypatch, node=node, role="pm", captured=captured)
+
+        await _update_node_impl(
+            project_id=None, node_id=node.id, title="新标题",
+            content=None, properties=None, tags=None, operation_id=None,
+        )
+
+        assert captured["project_id"] is None
+        assert captured["batch_type"] == "update_node"
+        assert captured["items"][0]["action"] == "update"
+
+    @pytest.mark.asyncio
+    async def test_floating_update_rejects_non_requirement(self, monkeypatch):
+        """悬浮路径仅支持 Requirement 节点；资产节点须走项目内路径。"""
+        node = self._node(node_type="Solution", project_id=None)
+        _stub_update_node_deps(monkeypatch, node=node, role="pm")
+
+        with pytest.raises(Exception, match="仅支持 Requirement"):
+            await _update_node_impl(
+                project_id=None, node_id=node.id, title="新标题",
+                content=None, properties=None, tags=None, operation_id=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_floating_update_rejects_invisible_requirement(self, monkeypatch):
+        """悬浮需求不可见 → 拒绝（沿用 is_requirement_visible 口径）。"""
+        node = self._node(project_id=None, system_id=uuid.uuid4())
+        _stub_update_node_deps(monkeypatch, node=node, role="pm", visible=False)
+
+        with pytest.raises(Exception, match="不可见"):
+            await _update_node_impl(
+                project_id=None, node_id=node.id, title="新标题",
+                content=None, properties=None, tags=None, operation_id=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_floating_update_rejects_dev_role(self, monkeypatch):
+        """Dev 不可改需求内容 → 悬浮路径同样被类型闸门挡住。"""
+        node = self._node(project_id=None, system_id=uuid.uuid4())
+        _stub_update_node_deps(monkeypatch, node=node, role="dev")
+
+        with pytest.raises(Exception, match="PM 维护"):
+            await _update_node_impl(
+                project_id=None, node_id=node.id, title="新标题",
+                content=None, properties=None, tags=None, operation_id=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_project_node_rejects_missing_project_id(self, monkeypatch):
+        """项目内节点省略 project_id → 提示「更新项目内节点请传 project_id」。"""
+        node = self._node(project_id=uuid.uuid4())
+        _stub_update_node_deps(monkeypatch, node=node, role="pm")
+
+        with pytest.raises(Exception, match="请传 project_id"):
+            await _update_node_impl(
+                project_id=None, node_id=node.id, title="新标题",
+                content=None, properties=None, tags=None, operation_id=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_floating_node_rejects_given_project_id(self, monkeypatch):
+        """悬浮节点却传了 project_id → 提示「更新悬浮需求请不传 project_id」。"""
+        node = self._node(project_id=None)
+        _stub_update_node_deps(monkeypatch, node=node, role="pm")
+
+        with pytest.raises(Exception, match="不传 project_id"):
+            await _update_node_impl(
+                project_id=uuid.uuid4(), node_id=node.id, title="新标题",
+                content=None, properties=None, tags=None, operation_id=None,
+            )
+
+
+class TestUpdateNodePayloadPurity:
+    """update_node 载荷纯净：payload 绝不能含 project_id 键。
+
+    执行器按 `"project_id" in payload` 分流：命中 → set_node_project（解绑），
+    未命中 → 内容更新。混入即把「改内容」变成「解绑」。
+    """
+
+    @pytest.mark.asyncio
+    async def test_floating_update_payload_has_no_project_id(self, monkeypatch):
+        node = _make_node(project_id=None, system_id=uuid.uuid4())
+        captured: dict = {}
+        _stub_update_node_deps(monkeypatch, node=node, role="pm", captured=captured)
+
+        await _update_node_impl(
+            project_id=None, node_id=node.id, content="新正文",
+            title=None, properties=None, tags=None, operation_id=None,
+        )
+
+        payload = captured["items"][0]["payload"]
+        assert "project_id" not in payload
+        assert payload["content"] == "新正文"
+
+    @pytest.mark.asyncio
+    async def test_project_update_payload_has_no_project_id(self, monkeypatch):
+        node = _make_node(project_id=uuid.uuid4())
+        captured: dict = {}
+        _stub_update_node_deps(monkeypatch, node=node, role="pm", captured=captured)
+
+        await _update_node_impl(
+            project_id=node.project_id, node_id=node.id, title="新标题",
+            content=None, properties=None, tags=None, operation_id=None,
+        )
+
+        payload = captured["items"][0]["payload"]
+        assert "project_id" not in payload
+        assert payload["title"] == "新标题"
+        # 批次层面的 project_id 仍为项目（与 payload 分层，不混淆）
+        assert captured["project_id"] == node.project_id
+
 
