@@ -104,7 +104,9 @@ def test_pm_tools_exact():
 
 def test_dev_tools_exact():
     """DEV_TOOLS 精确匹配工具名（批次三：-skills/-profile +list_requirements；
-    反馈跟进：+get_node_info 归属反查）。"""
+    反馈跟进：+get_node_info 归属反查）。
+    角色×节点类型分权：-update_requirements（收为 PM 专属）
+    +bind_requirement_to_project（提权给 Dev，仅可绑定到自己项目）。"""
     expected = {
         "list_requirements",
         "get_requirement_context",
@@ -112,7 +114,7 @@ def test_dev_tools_exact():
         "search_code_snippets",
         "submit_dev_artifacts",
         "update_node",
-        "update_requirements",
+        "bind_requirement_to_project",
         "search_similar_requirements",
         "analyze_impact_scope",
         "get_project_info",
@@ -164,6 +166,35 @@ def test_update_node_only_for_pm_and_dev():
     assert has_tool_access("pm", "update_node") is True
     assert has_tool_access("dev", "update_node") is True
     assert has_tool_access("admin", "update_node") is False
+
+
+def test_rbac_tool_sets_after_role_split():
+    """update_requirements 收为 PM 专属；bind_requirement_to_project 提权给 Dev。"""
+    from mem_lake.auth.rbac import (
+        ADMIN_TOOLS,
+        DEV_TOOLS,
+        PM_TOOLS,
+        has_tool_access,
+    )
+
+    # update_requirements：PM 有、Dev 无
+    assert has_tool_access("pm", "update_requirements") is True
+    assert has_tool_access("dev", "update_requirements") is False
+
+    # bind_requirement_to_project：PM 与 Dev 都有
+    assert has_tool_access("pm", "bind_requirement_to_project") is True
+    assert has_tool_access("dev", "bind_requirement_to_project") is True
+
+    # admin 仍不持有任何写入工具
+    assert has_tool_access("admin", "update_node") is False
+    assert has_tool_access("admin", "update_requirements") is False
+    assert has_tool_access("admin", "bind_requirement_to_project") is False
+    assert has_tool_access("admin", "publish_requirement") is False
+
+    # 工具数不漂移
+    assert len(PM_TOOLS) == 17
+    assert len(DEV_TOOLS) == 11
+    assert len(ADMIN_TOOLS) == 32
 
 
 def test_validate_role():

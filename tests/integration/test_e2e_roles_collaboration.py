@@ -251,6 +251,7 @@ class TestRolesCollaboration:
                             "architecture": "MCP 网关 + 知识图谱 + 三引擎检索",
                         },
                         "tags": ["测试"],
+                        "work_dir": "/tmp/e2e-collab-project",
                     },
                 },
             )
@@ -1038,12 +1039,12 @@ async def test_bind_requirement_to_project_end_to_end(
             )
         assert "add_projects" in err, err
 
-        # RBAC：dev 无此工具
+        # RBAC：dev 已有 bind_requirement_to_project（仅可绑定到自己项目，不能解绑/改绑）
         async with Client(
             _make_role_app(monkeypatch, role="dev", project_id=project_id)
         ) as c:
             tools = {t.name for t in await c.list_tools()}
-        assert "bind_requirement_to_project" not in tools
+        assert "bind_requirement_to_project" in tools
     finally:
         rows = (
             await db_session.execute(

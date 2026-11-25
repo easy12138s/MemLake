@@ -50,7 +50,16 @@ ADMIN_READ_TOOLS: frozenset[str] = PM_READ_TOOLS | DEV_READ_TOOLS
 # PM/Dev 共享的写入工具（admin 不持有）
 SHARED_WRITE_TOOLS: frozenset[str] = frozenset({
     "update_node",
-    "update_requirements",
+    "bind_requirement_to_project",
+})
+
+# Dev 可通过 update_node 修改的研发资产节点类型（需求内容归 PM）
+DEV_UPDATABLE_NODE_TYPES: frozenset[str] = frozenset({
+    "CodeSnippet",
+    "Solution",
+    "DesignIntent",
+    "Decision",
+    "Pitfall",
 })
 
 # PM 专属写入工具（admin 不持有）
@@ -59,7 +68,7 @@ PM_WRITE_TOOLS: frozenset[str] = SHARED_WRITE_TOOLS | {
     "publish_requirements",
     "validate_requirements",
     "update_requirement_relations",
-    "bind_requirement_to_project",
+    "update_requirements",
 }
 
 PM_TOOLS: frozenset[str] = PM_READ_TOOLS | PM_WRITE_TOOLS
