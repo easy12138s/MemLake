@@ -79,7 +79,8 @@ class AccessKeyAuthMiddleware(Middleware):
         self, context: MiddlewareContext, call_next: Callable[..., Awaitable[Any]]
     ) -> Any:
         """提取 X-MCP-Key → 异步认证 → 设置 request.scope["user"]。"""
-        headers = get_http_headers()
+        # include authorization：FastMCP 默认剔除 credential 头，Bearer 兼容需要显式包含
+        headers = get_http_headers(include={"authorization"})
 
         # 协议版本校验（PDD 3.1）
         message = context.message
