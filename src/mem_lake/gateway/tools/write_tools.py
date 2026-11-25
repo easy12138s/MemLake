@@ -1030,7 +1030,7 @@ def register_write_tools(mcp: FastMCP) -> None:
     ) -> WriteToolOutput:
         """批量更新需求标签/属性（一个审批批次，逐节点 update item）。
 
-        PM/Dev 共享。用于「11 条待确认需求统一加标签」「产品确认后批量改 module/
+        PM 专属。用于「11 条待确认需求统一加标签」「产品确认后批量改 module/
         优先级」等治理场景，避免逐条 update_node 产生 N 个批次。
         必须显式传 node_ids；合并后无实际变更的节点会跳过。
         """
@@ -1055,8 +1055,8 @@ def register_write_tools(mcp: FastMCP) -> None:
         project_id: uuid.UUID | None = Field(
             default=None,
             description=(
-                "目标项目 ID；None=解绑回悬浮。绑定要求目标项目在需求的 system "
-                "归属清单内（否则提示 manage_system add_projects）"
+                "目标项目 ID；None=解绑回悬浮（Dev 不可解绑）。绑定要求目标项目在"
+                "需求的 system 归属清单内（否则提示 manage_system add_projects）"
             ),
         ),
         operation_id: str | None = Field(
@@ -1065,13 +1065,21 @@ def register_write_tools(mcp: FastMCP) -> None:
     ) -> WriteToolOutput:
         """悬浮需求 ↔ 项目归属绑定/解绑（ISSUE-15）。
 
-        PM/Admin 治理操作，走审批流但不触发冲突检测；system_id 不变；
+        PM/Dev 共享：PM 全权（绑定/解绑/改绑）；Dev 仅可把悬浮需求绑定到自己项目，
+        不能解绑、不能改绑。走审批流但不触发冲突检测；system_id 不变；
         已是目标归属的项幂等跳过；解绑传 project_id=None。回执 affected 为
         绑定确定性依据（底层 node+update 载荷 → 版本+1、审计、图属性同步）。
         """
         try:
             if project_id is not None:
                 validate_project_access(project_id)
+            # Dev 解绑一律拒绝——含「对已悬浮的需求解绑」这种幂等形态：
+            # 幂等跳过分支在循环内、先于 _check_bind_dev_boundary，
+            # 会把 Dev 的解绑请求答成「已是目标归属，无需变更」（与契约不符）。
+            if get_current_role() == "dev" and project_id is None:
+                raise PayloadValidationError(
+                    "Dev 角色不可解绑需求（解绑/改绑由 PM 执行）"
+                )
             uniq = list(dict.fromkeys(requirement_ids))
 
             affected: list[dict[str, Any]] = []

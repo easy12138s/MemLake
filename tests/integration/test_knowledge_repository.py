@@ -27,6 +27,7 @@ from mem_lake.knowledge.repository import (
     get_node,
     get_node_ids_with_vectors,
     list_nodes_by_project,
+    list_project_ids_with_profile,
     update_node,
 )
 from mem_lake.knowledge.schema import SchemaValidationError
@@ -858,6 +859,92 @@ class TestListNodesByProject:
         assert len(page1) == 2
         assert len(page2) == 2
         assert len(page3) == 1  # 最后一个
+
+
+# ============ list_project_ids_with_profile ============
+
+
+class TestListProjectIdsWithProfile:
+    """存在性判定（项目是否已建档）查询测试。"""
+
+    async def _make_profile(
+        self, session, graph_store, embedding_client, project_id, title="P"
+    ):
+        return await create_node(
+            session,
+            graph_store=graph_store,
+            embedding_client=embedding_client,
+            project_id=project_id,
+            node_type="ProjectProfile",
+            title=title,
+            content="画像内容",
+            properties={
+                "name": title,
+                "description": "d",
+                "tech_stack": ["Python"],
+                "architecture": "monolith",
+            },
+            created_by="ak",
+        )
+
+    async def test_returns_only_projects_with_profile(
+        self, db_session, graph_store, mock_embedding_client
+    ):
+        """有画像的项目进集合，无画像的不进。"""
+        pid_ok = uuid.uuid4()
+        pid_missing = uuid.uuid4()
+        await self._make_profile(
+            db_session, graph_store, mock_embedding_client, pid_ok, "有画像"
+        )
+
+        found = await list_project_ids_with_profile(
+            db_session, project_ids=[pid_ok, pid_missing]
+        )
+        assert found == {pid_ok}
+
+    async def test_duplicate_profiles_do_not_hide_other_projects(
+        self, db_session, graph_store, mock_embedding_client
+    ):
+        """回归：同一项目多份画像不得把其他项目的画像挤出结果集。
+
+        旧实现走 list_project_profiles(limit=N*4)，而该 LIMIT 是**全局**的
+        （created_at 倒序取前 N 行）——A 有 8 份画像时，B 的画像会被挤掉，
+        导致 B 被误判为「尚未建档」，合法授权被拒。
+        """
+        from datetime import datetime
+
+        from sqlalchemy import update as sa_update
+
+        from mem_lake.knowledge.models import KnowledgeNode
+
+        pid_many = uuid.uuid4()
+        pid_one = uuid.uuid4()
+        await self._make_profile(
+            db_session, graph_store, mock_embedding_client, pid_one, "画像B"
+        )
+        for i in range(8):
+            await self._make_profile(
+                db_session, graph_store, mock_embedding_client, pid_many, f"画像{i}"
+            )
+        # 让 A 的画像都比 B 新（created_at 倒序时 A 占据前 8 行）
+        # 注：Postgres now() 在同一事务内取值相同，故显式错开以保证顺序确定
+        rows = (
+            await db_session.execute(
+                sa_update(KnowledgeNode)
+                .where(KnowledgeNode.project_id == pid_many)
+                .values(created_at=datetime(2026, 1, 2, 0, 0, 0))
+            )
+        )
+        assert rows.rowcount == 8
+
+        found = await list_project_ids_with_profile(
+            db_session, project_ids=[pid_many, pid_one]
+        )
+        assert found == {pid_many, pid_one}
+
+    async def test_empty_input_returns_empty_set(self, db_session):
+        """空入参不查库。"""
+        assert await list_project_ids_with_profile(db_session, project_ids=[]) == set()
 
 
 # ============ 事务性共写 ============

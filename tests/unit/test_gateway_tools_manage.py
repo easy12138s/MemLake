@@ -9,7 +9,6 @@
 
 import json
 import uuid
-from types import SimpleNamespace
 
 import pytest
 
@@ -170,11 +169,11 @@ class TestProjectMustHaveProfile:
     async def test_rejects_projects_without_profile(self, monkeypatch):
         from mem_lake.gateway.tools import manage_tools
 
-        async def fake_list(session, *, project_ids=None, limit=100, offset=0):
+        async def fake_ids(session, *, project_ids):
             # 库里没有任何画像
-            return []
+            return set()
 
-        monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
+        monkeypatch.setattr(manage_tools, "list_project_ids_with_profile", fake_ids)
 
         with pytest.raises(PayloadValidationError, match="尚未创建画像"):
             await manage_tools._assert_projects_have_profile(None, [uuid.uuid4()])
@@ -185,10 +184,10 @@ class TestProjectMustHaveProfile:
 
         p_ok = uuid.uuid4()
 
-        async def fake_list(session, *, project_ids=None, limit=100, offset=0):
-            return [SimpleNamespace(project_id=p_ok)]
+        async def fake_ids(session, *, project_ids):
+            return set(project_ids)
 
-        monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
+        monkeypatch.setattr(manage_tools, "list_project_ids_with_profile", fake_ids)
 
         # 不抛异常
         await manage_tools._assert_projects_have_profile(None, [p_ok])
@@ -206,10 +205,10 @@ class TestProjectMustHaveProfile:
 
         p_missing = uuid.uuid4()
 
-        async def fake_list(session, *, project_ids=None, limit=100, offset=0):
-            return []
+        async def fake_ids(session, *, project_ids):
+            return set()
 
-        monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
+        monkeypatch.setattr(manage_tools, "list_project_ids_with_profile", fake_ids)
 
         with pytest.raises(PayloadValidationError) as exc:
             await manage_tools._assert_projects_have_profile(None, [p_missing])
@@ -217,4 +216,24 @@ class TestProjectMustHaveProfile:
         msg = str(exc.value)
         assert str(p_missing) in msg
         assert "manage_project_profile" in msg
+
+    @pytest.mark.asyncio
+    async def test_does_not_use_limit_capped_profile_list(self, monkeypatch):
+        """回归：存在性判定不得再走「全局 LIMIT + created_at 倒序」的列表查询。
+
+        list_project_profiles 的 limit 是全局的：某项目画像过多时会把其他项目的
+        画像挤出结果集，导致已建档项目被误判为「尚未建档」（fail-closed 的误拒）。
+        """
+        from mem_lake.gateway.tools import manage_tools
+
+        async def boom(*_args, **_kwargs):
+            raise AssertionError("不应调用 list_project_profiles 做存在性判定")
+
+        async def fake_ids(session, *, project_ids):
+            return set(project_ids)
+
+        monkeypatch.setattr(manage_tools, "list_project_profiles", boom, raising=False)
+        monkeypatch.setattr(manage_tools, "list_project_ids_with_profile", fake_ids)
+
+        await manage_tools._assert_projects_have_profile(None, [uuid.uuid4()])
 

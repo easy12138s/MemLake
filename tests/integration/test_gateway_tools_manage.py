@@ -6,6 +6,7 @@
 
 import json
 import uuid
+from datetime import datetime
 
 import pytest
 from fastmcp import Client
@@ -102,6 +103,42 @@ async def test_manage_project_profile_explicit_id_returns_same(admin_app):
         )
         data = _parse(result)
         assert uuid.UUID(data["project_id"]) == pid
+
+
+async def test_create_access_key_accepts_many_duplicate_profiles(admin_app, db_session):
+    """回归：某项目有多份画像时，其他项目的授权不得被误拒。
+
+    旧实现用 list_project_profiles(limit=N*4) 做存在性判定，而该 LIMIT 是全局的
+    （created_at 倒序取前 N 行）——A 的画像占满配额时 B 会被误判为「尚未建档」。
+    """
+    from sqlalchemy import update as sa_update
+
+    from mem_lake.knowledge.models import KnowledgeNode
+
+    async with Client(admin_app) as client:
+        pid_many = str(uuid.uuid4())
+        pid_one = str(uuid.uuid4())
+        # 先建 B 的画像，再建 A 的 8 份画像——created_at 倒序时 A 全部排在 B 前面，
+        # 全局 LIMIT=4*2=8 恰好把 B 挤出结果集（Postgres now() 同事务同值，
+        # 故显式错开 created_at 以保证顺序确定）。
+        await _create_profile(client, pid_one, "项目B")
+        for i in range(8):
+            await _create_profile(client, pid_many, f"项目A-{i}")
+        rows = (
+            await db_session.execute(
+                sa_update(KnowledgeNode)
+                .where(KnowledgeNode.project_id == uuid.UUID(pid_many))
+                .values(created_at=datetime(2026, 1, 2, 0, 0, 0))
+            )
+        )
+        assert rows.rowcount == 8
+
+        created = await client.call_tool(
+            "create_access_key",
+            {"role": "dev", "project_scope": [pid_many, pid_one]},
+        )
+        data = _parse(created)
+        assert set(data["project_scope"]) == {pid_many, pid_one}
 
 
 async def test_create_access_key_rejects_project_without_profile(admin_app):

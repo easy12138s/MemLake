@@ -74,7 +74,7 @@ from mem_lake.knowledge.repository import (
     create_system,
     get_system,
     get_system_project_ids,
-    list_project_profiles,
+    list_project_ids_with_profile,
     list_systems,
     remove_system_projects,
     set_system_projects,
@@ -727,7 +727,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
         """
         try:
             if not _is_absolute_any_platform(profile.work_dir):
-                # PayloadValidationError：文案会随 ToolError 透出（裸 ValueError 会被吞）
+                # PayloadValidationError：经 except 里的 to_tool_error 转成 ToolError，
+                # 文案随「参数校验失败: …」透出（裸 ValueError 会被吞成泛化错误）
                 raise PayloadValidationError(
                     f"work_dir 必须是绝对路径（当前: {profile.work_dir}），"
                     "用于定位项目工作目录"
@@ -807,7 +808,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     )
                 else:
                     raise ValueError(f"未知 action: {action}")
-        except (NodeNotFoundError, SchemaValidationError, ValueError) as e:
+        except (NodeNotFoundError, SchemaValidationError, PayloadValidationError, ValueError) as e:
             raise to_tool_error(e) from e
 
     @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
@@ -925,8 +926,10 @@ async def _assert_projects_have_profile(
     if not project_ids:
         return
     uniq = list(dict.fromkeys(project_ids))
-    nodes = await list_project_profiles(session, project_ids=uniq, limit=len(uniq) * 4)
-    ok = {n.project_id for n in nodes if n.project_id is not None}
+    # 用「按 project_id 去重」的存在性查询：list_project_profiles 的 LIMIT 是全局的
+    # （created_at 倒序取前 N 行），某项目画像过多时会把其他项目的画像挤出结果集，
+    # 导致「已建档项目」被误判为「尚未建档」。
+    ok = await list_project_ids_with_profile(session, project_ids=uniq)
     missing = [str(p) for p in uniq if p not in ok]
     if missing:
         # 用 PayloadValidationError（而非裸 ValueError）：to_tool_error 会保留其文案，

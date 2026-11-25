@@ -863,6 +863,32 @@ async def list_project_profiles(
     return list(result.scalars().all())
 
 
+async def list_project_ids_with_profile(
+    session: AsyncSession,
+    *,
+    project_ids: list[uuid.UUID],
+) -> set[uuid.UUID]:
+    """返回「已有 approved ProjectProfile 画像」的项目 ID 集合。
+
+    与 list_project_profiles 的关键区别：按 project_id 去重（每个项目只算一次），
+    不受「同一项目多份画像」影响。建档工具允许同项目存在多份画像，而
+    list_project_profiles 的 LIMIT 是**全局**的（按 created_at 倒序取前 N 行），
+    某项目画像过多时会把其他项目的画像挤出结果集——用后者做「是否已建档」的
+    存在性判定会误判为「尚未建档」。
+    """
+    if not project_ids:
+        return set()
+    stmt = (
+        select(KnowledgeNode.project_id)
+        .where(KnowledgeNode.type == "ProjectProfile")
+        .where(*node_active_approved())
+        .where(KnowledgeNode.project_id.in_(project_ids))
+        .distinct()
+    )
+    result = await session.execute(stmt)
+    return {pid for pid in result.scalars().all() if pid is not None}
+
+
 # ============================================================================
 # System / SystemProject 域 repository（set/add/remove 归属操作收口于本层）
 # ============================================================================

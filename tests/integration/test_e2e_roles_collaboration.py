@@ -1101,11 +1101,12 @@ async def test_bind_requirement_dev_boundary(
 ):
     """Dev 的 bind 边界（工具层接线）：可绑悬浮需求到自己项目；解绑/改绑被拒。
 
-    覆盖 4 条：
+    覆盖 5 条：
     1. Dev 把悬浮需求绑定到自己项目 → 成功（走审批）
     2. Dev 解绑已归属需求 → 拒（不可解绑）
     3. Dev 把已归属需求改绑到另一项目 → 拒（仅可绑定悬浮需求）
     4. Dev 对自己项目的幂等绑定 → 不被边界误伤（报「无需变更」而非边界错误）
+    5. Dev 对「已悬浮」需求解绑（幂等形态）→ 仍须拒（不可解绑），不得答成「无需变更」
     """
     from sqlalchemy import delete
     from sqlalchemy import select as sa_select
@@ -1276,6 +1277,57 @@ async def test_bind_requirement_dev_boundary(
             )
         assert "不可解绑" not in err and "仅可绑定悬浮需求" not in err, err
         assert "无需变更" in err, err
+
+        # 5. Dev 对「已悬浮」需求解绑（幂等形态）→ 仍须拒（不可解绑）
+        #    幂等跳过分支在循环内、先于边界检查：若无入口级拦截，
+        #    Dev 的解绑请求会被答成「已是目标归属，无需变更」。
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_a, system_scope=[sid]
+            )
+        ) as c:
+            r2 = await _call(
+                c,
+                "publish_requirement",
+                {
+                    "system_id": sid,
+                    "requirement": {
+                        "title": "Dev 解绑悬浮需求验证",
+                        "content": "验证 Dev 对已悬浮需求解绑被拒",
+                        "properties": {"priority": "P3", "module": "bind"},
+                        "tags": [],
+                    },
+                    "operation_id": f"op-devb-pub2-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_a)
+        ) as c:
+            await _call(c, "review_auto_process", {"batch_id": r2["batch_id"]})
+            detail2 = await _call(
+                c, "review_batch_detail", {"batch_id": r2["batch_id"]}
+            )
+            req2_id = next(
+                (it["target_id"] for it in detail2.get("items", []) if it.get("target_id")),
+                None,
+            )
+        assert req2_id
+        async with Client(
+            _make_role_app(
+                monkeypatch,
+                role="dev",
+                project_id=project_a,
+                system_scope=[sid],
+                project_scope=dev_scope,
+            )
+        ) as c:
+            err = await _expect_tool_error(
+                c,
+                "bind_requirement_to_project",
+                {"requirement_ids": [req2_id], "project_id": None},
+            )
+        assert "不可解绑" in err, err
+        assert "无需变更" not in err, err
     finally:
         rows = (
             await db_session.execute(
@@ -1290,6 +1342,218 @@ async def test_bind_requirement_dev_boundary(
         )
         await db_session.execute(delete(System).where(System.id == uuid.UUID(sid)))
         await db_session.commit()
+
+
+async def test_update_node_mcp_boundary_floating_and_project(
+    monkeypatch, db_session, graph_store, mock_embedding_client
+):
+    """MCP 边界回归：update_node 的 project_id 可选 + 悬浮批次 project_id 为空。
+
+    覆盖设计 §7 的集成项：
+    - 省略 project_id → 更新悬浮需求 → 批次 pending_review、batch.project_id 为空
+    - 审批 payload **不含 project_id 键**（执行器按 `"project_id" in payload` 分流：
+      命中 → set_node_project 解绑，未命中 → 内容更新；payload 带键会误解绑）
+    - 审批通过后节点 version+1、content 更新
+    - 传 project_id → 项目内需求走同一入口，批次 project_id 为该项目
+    """
+    from sqlalchemy import delete
+    from sqlalchemy import select as sa_select
+
+    from mem_lake.knowledge.models import KnowledgeNode, System, SystemProject
+    from mem_lake.knowledge.repository import get_node
+
+    project_a = str(uuid.uuid4())
+    sid = None
+
+    async with Client(
+        _make_role_app(monkeypatch, role="admin", project_id=project_a)
+    ) as c:
+        await _call(
+            c,
+            "manage_project_profile",
+            {
+                "project_id": project_a,
+                "action": "create",
+                "profile": {
+                    "title": "update_node 边界项目",
+                    "content": "画像",
+                    "properties": {
+                        "name": "update_node 边界项目",
+                        "description": "MCP 边界回归",
+                        "tech_stack": ["Python"],
+                        "architecture": "monolith",
+                    },
+                    "tags": [],
+                    "work_dir": "/tmp/update-node-boundary",
+                },
+            },
+        )
+        sid = (
+            await _call(
+                c,
+                "manage_system",
+                {"action": "create", "name": f"sys-upd-{uuid.uuid4().hex[:8]}"},
+            )
+        )["system_id"]
+        await _call(
+            c,
+            "manage_system",
+            {
+                "action": "add_projects",
+                "system_id": sid,
+                "project_ids": [project_a],
+            },
+        )
+
+    try:
+        # PM 发布悬浮需求 → admin 审批
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_a, system_scope=[sid]
+            )
+        ) as c:
+            pub = await _call(
+                c,
+                "publish_requirement",
+                {
+                    "system_id": sid,
+                    "requirement": {
+                        "title": "update_node 边界验证需求",
+                        "content": "原始内容",
+                        "properties": {"priority": "P3", "module": "update"},
+                        "tags": [],
+                    },
+                    "operation_id": f"op-upd-pub-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_a)
+        ) as c:
+            await _call(c, "review_auto_process", {"batch_id": pub["batch_id"]})
+            detail = await _call(
+                c, "review_batch_detail", {"batch_id": pub["batch_id"]}
+            )
+            req_id = next(
+                (it["target_id"] for it in detail.get("items", []) if it.get("target_id")),
+                None,
+            )
+        assert req_id
+
+        # 悬浮更新：省略 project_id
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_a, system_scope=[sid]
+            )
+        ) as c:
+            upd = await _call(
+                c,
+                "update_node",
+                {
+                    "node_id": req_id,
+                    "content": "悬浮更新后的内容",
+                    "operation_id": f"op-upd-float-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        assert upd["status"] == "pending_review", upd
+
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_a)
+        ) as c:
+            upd_detail = await _call(
+                c, "review_batch_detail", {"batch_id": upd["batch_id"]}
+            )
+            # 批次 project_id 为空（悬浮）+ payload 不含 project_id 键（红线）
+            assert upd_detail["project_id"] is None, upd_detail
+            payloads = [it["payload"] for it in upd_detail.get("items", [])]
+            assert payloads, upd_detail
+            for payload in payloads:
+                assert "project_id" not in payload, payload
+
+            await _call(c, "review_auto_process", {"batch_id": upd["batch_id"]})
+        db_session.expire_all()
+        node = await get_node(db_session, uuid.UUID(req_id))
+        assert node.version == 2, node.version
+        assert node.content == "悬浮更新后的内容"
+        assert node.project_id is None
+
+        # 项目内更新：传 project_id
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_a, system_scope=[sid]
+            )
+        ) as c:
+            bind = await _call(
+                c,
+                "bind_requirement_to_project",
+                {
+                    "requirement_ids": [req_id],
+                    "project_id": project_a,
+                    "operation_id": f"op-upd-bind-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_a)
+        ) as c:
+            await _call(c, "review_auto_process", {"batch_id": bind["batch_id"]})
+        async with Client(
+            _make_role_app(
+                monkeypatch, role="pm", project_id=project_a, system_scope=[sid]
+            )
+        ) as c:
+            upd2 = await _call(
+                c,
+                "update_node",
+                {
+                    "project_id": project_a,
+                    "node_id": req_id,
+                    "content": "项目内更新后的内容",
+                    "operation_id": f"op-upd-proj-{uuid.uuid4().hex[:8]}",
+                },
+            )
+        assert upd2["status"] == "pending_review", upd2
+        async with Client(
+            _make_role_app(monkeypatch, role="admin", project_id=project_a)
+        ) as c:
+            upd2_detail = await _call(
+                c, "review_batch_detail", {"batch_id": upd2["batch_id"]}
+            )
+            assert upd2_detail["project_id"] == project_a, upd2_detail
+            for item in upd2_detail.get("items", []):
+                assert "project_id" not in item["payload"], item
+    finally:
+        rows = (
+            await db_session.execute(
+                sa_select(KnowledgeNode.id).where(
+                    KnowledgeNode.system_id == uuid.UUID(sid)
+                )
+            )
+        ).scalars().all()
+        await _cleanup_nodes(db_session, graph_store, rows)
+        await db_session.execute(
+            delete(SystemProject).where(SystemProject.system_id == uuid.UUID(sid))
+        )
+        await db_session.execute(delete(System).where(System.id == uuid.UUID(sid)))
+        await db_session.commit()
+
+
+async def test_tool_descriptions_match_rbac(monkeypatch):
+    """工具描述（tools/list 的 description）不得与 RBAC 漂移。
+
+    描述就是 Agent 看到的能力说明——写错会直接误导 Dev 去找不存在的工具
+    （历史漂移：update_requirements 仍写「PM/Dev 共享」、bind_requirement_to_project
+    仍写「PM/Admin 治理操作」）。
+    """
+    app = _make_role_app(monkeypatch, role="pm", project_id=str(uuid.uuid4()))
+    async with Client(app) as client:
+        tools = {t.name: (t.description or "") for t in await client.list_tools()}
+
+    upd_req_desc = tools["update_requirements"]
+    assert "PM 专属" in upd_req_desc, upd_req_desc
+    assert "PM/Dev 共享" not in upd_req_desc, upd_req_desc
+
+    bind_desc = tools["bind_requirement_to_project"]
+    assert "Dev" in bind_desc, bind_desc
+    assert "PM/Admin" not in bind_desc, bind_desc
 
 
 async def test_role_tool_lists_match_rbac(monkeypatch):
