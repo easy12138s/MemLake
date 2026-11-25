@@ -7,6 +7,7 @@ import pytest
 
 from mem_lake.auth.rbac import (
     ADMIN_ONLY_TOOLS,
+    ADMIN_READ_TOOLS,
     ADMIN_TOOLS,
     DEV_TOOLS,
     PM_TOOLS,
@@ -17,9 +18,42 @@ from mem_lake.auth.rbac import (
 )
 
 
-def test_admin_has_all_tools():
-    """admin 工具集等于 pm + dev + admin_only 的并集。"""
-    assert ADMIN_TOOLS == PM_TOOLS | DEV_TOOLS | ADMIN_ONLY_TOOLS
+def test_admin_is_management_plus_read():
+    """admin 只保留管理类 + 查询类，不再等于三角色并集。"""
+    assert ADMIN_TOOLS == ADMIN_ONLY_TOOLS | ADMIN_READ_TOOLS
+    assert ADMIN_TOOLS != PM_TOOLS | DEV_TOOLS | ADMIN_ONLY_TOOLS
+
+
+def test_admin_excludes_pm_dev_write_tools():
+    """admin 不得持有 PM/Dev 的写入工具（admin 是管理角色，不代写）。"""
+    for name in (
+        "publish_requirement",
+        "publish_requirements",
+        "validate_requirements",
+        "update_requirement_relations",
+        "update_requirements",
+        "update_node",
+        "bind_requirement_to_project",
+        "submit_dev_artifacts",
+    ):
+        assert name not in ADMIN_TOOLS, name
+
+
+def test_admin_keeps_management_and_read():
+    """admin 仍能审批、管密钥/system/画像、审计与查看需求。"""
+    for name in (
+        "review_approve",
+        "review_submission",
+        "list_access_keys",
+        "manage_system",
+        "manage_project_profile",
+        "query_audit_log",
+        "list_knowledge",
+        "list_requirements",
+        "get_requirement_context",
+        "search_code_snippets",
+    ):
+        assert has_tool_access("admin", name) is True, name
 
 
 def test_reindex_tools_admin_only():
@@ -122,11 +156,11 @@ def test_has_tool_access_deny():
     assert has_tool_access("dev", "review_approve") is False
 
 
-def test_update_node_access_for_pm_and_dev():
-    """update_node 对 pm / dev / admin 开放（admin 为全量并集）。"""
+def test_update_node_only_for_pm_and_dev():
+    """update_node 是 PM/Dev 共享写，admin 不持有。"""
     assert has_tool_access("pm", "update_node") is True
     assert has_tool_access("dev", "update_node") is True
-    assert has_tool_access("admin", "update_node") is True
+    assert has_tool_access("admin", "update_node") is False
 
 
 def test_validate_role():

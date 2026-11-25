@@ -43,10 +43,10 @@ async def _list_as(app, role, monkeypatch):
     return {t.name for t in tools}
 
 
-async def test_admin_sees_all(app, monkeypatch):
-    """admin 角色看到全部已注册工具。"""
+async def test_admin_sees_only_management(app, monkeypatch):
+    """admin 收敛后只看到管理/查询工具，看不到 PM 写入工具。"""
     names = await _list_as(app, "admin", monkeypatch)
-    assert names == {"publish_requirement", "review_approve"}
+    assert names == {"review_approve"}
 
 
 async def test_pm_sees_only_pm(app, monkeypatch):

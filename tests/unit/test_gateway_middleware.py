@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mem_lake.auth.rbac import ADMIN_ONLY_TOOLS, ADMIN_TOOLS, PM_TOOLS
+from mem_lake.auth.rbac import ADMIN_ONLY_TOOLS, ADMIN_TOOLS, PM_TOOLS, ROLE_TOOLSET
 from mem_lake.gateway.middleware import RBACMiddleware
 
 
@@ -16,8 +16,9 @@ def _fake_token(role: str):
 
 
 def _all_tools():
-    # 全部工具 = admin 工具集（pm + dev + admin 专属的并集）
-    return [SimpleNamespace(name=n) for n in ADMIN_TOOLS]
+    # 全部已注册工具 = 三角色工具集并集（admin 不再是全量超集）
+    all_names = set().union(*ROLE_TOOLSET.values())
+    return [SimpleNamespace(name=n) for n in all_names]
 
 
 async def _call_next(context):
@@ -61,7 +62,6 @@ async def test_dev_sees_only_own_tools(monkeypatch, middleware):
 
 async def test_admin_sees_all(monkeypatch, middleware):
     """admin 列工具看到全部（含 admin 专属）。"""
-    from mem_lake.auth.rbac import ADMIN_TOOLS
 
     monkeypatch.setattr(
         "mem_lake.gateway.middleware.get_access_token",
