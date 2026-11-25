@@ -31,6 +31,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("mem_lake.gateway.server")
 
+# 初始化响应里的服务级指引：告诉 Agent 技能文档走 MCP 资源按需读取
+SERVER_INSTRUCTIONS = (
+    "角色技能文档通过 MCP 资源按需获取：memlake://skills/{role}/SKILL（主文档）、"
+    "memlake://skills/{role}/REFERENCE（详细参数），或调用 get_skill()。"
+    "不要从 GitHub 下载技能文件。"
+)
+
 
 @dataclass
 class LifespanContext:
@@ -189,6 +196,7 @@ def create_mcp_server() -> FastMCP:
 
     mcp = FastMCP(
         name=settings.MCP_SERVER_NAME,
+        instructions=SERVER_INSTRUCTIONS,
         cache_ttl=300,
         cache_scope="private",
         # auth 不设：AccessKeyAuthMiddleware 负责 X-MCP-Key 认证 + 设置 scope["user"]
@@ -206,5 +214,10 @@ def create_mcp_server() -> FastMCP:
 
     register_all_tools(mcp)
 
-    logger.info("FastMCP 实例创建完成，工具已注册")
+    # 注册技能文档资源（memlake://skills/...），供 Agent 按需读取
+    from mem_lake.gateway.reference_resources import register_reference_resources
+
+    register_reference_resources(mcp)
+
+    logger.info("FastMCP 实例创建完成，工具与技能资源已注册")
     return mcp
