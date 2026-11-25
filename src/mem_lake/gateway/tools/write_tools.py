@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mem_lake.approval.service import (
     PayloadValidationError,
 )
+from mem_lake.auth.rbac import DEV_UPDATABLE_NODE_TYPES
 from mem_lake.config import get_settings
 from mem_lake.gateway.access import is_requirement_visible
 from mem_lake.gateway.dependencies import (
@@ -82,6 +83,26 @@ def _check_content_length(value: str | None, label: str) -> None:
     if value is not None and len(value) > max_len:
         raise PayloadValidationError(
             f"{label} 长度 {len(value)} 超过上限 {max_len} 字符"
+        )
+
+
+def _check_update_node_type(node: KnowledgeNode, *, role: str) -> None:
+    """update_node 的角色×节点类型闸门。
+
+    需求内容归 PM（Dev 不可改 Requirement）；研发资产内容归 Dev；
+    ProjectProfile 归 admin（用 manage_project_profile 直写）。
+
+    Dev 可改的类型集合统一取自 auth.rbac.DEV_UPDATABLE_NODE_TYPES，避免两处口径漂移。
+    """
+    if node.type == "ProjectProfile":
+        raise PayloadValidationError(
+            "ProjectProfile 由 admin 通过 manage_project_profile 维护，"
+            "不可用 update_node 修改"
+        )
+    if role == "dev" and node.type not in DEV_UPDATABLE_NODE_TYPES:
+        raise PayloadValidationError(
+            "Dev 角色不可修改需求节点内容（需求内容由 PM 维护）；"
+            "如需把需求落到项目，请用 bind_requirement_to_project"
         )
 
 
@@ -949,6 +970,9 @@ def register_write_tools(mcp: FastMCP) -> None:
         直接入库（status="approved" + decision="auto_approved"），有冲突停在待审批。
 
         PM/Dev 工具。用于修正已写入知识图谱的错误节点内容（写错且审批通过的场景）。
+        角色×类型闸门：PM 可改需求与研发资产节点；Dev 仅可改研发资产节点
+        （CodeSnippet/Solution/DesignIntent/Decision/Pitfall），需求内容归 PM 维护；
+        ProjectProfile 由 admin 用 manage_project_profile 维护，本工具不可改。
         审批通过后原子落地：版本号 +1、标题变更同步 AGE 图投影、标题/正文/属性任一
         变更均重新生成向量（embed 输入含属性段）、写审计日志。
         节点类型不可变更；Node 不存在/不属于本项目/已归档则拒绝。
@@ -970,6 +994,8 @@ def register_write_tools(mcp: FastMCP) -> None:
                     node = await get_node(session, node_id)
                 except NodeNotFoundError:
                     raise PayloadValidationError(f"node_id 不存在: {node_id}")
+                # 角色×节点类型闸门（需求内容归 PM，研发资产归 Dev）
+                _check_update_node_type(node, role=get_current_role())
                 if node.project_id != project_id:
                     # 归属诊断：成功路径零额外查询，仅错误路径查 system 归属
                     system_name: str | None = None

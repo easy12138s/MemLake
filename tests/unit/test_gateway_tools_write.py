@@ -632,3 +632,66 @@ class TestOwnershipMismatchHint:
         )
         assert "add_projects" not in msg
         assert "悬浮" not in msg  # 非悬浮节点不出现悬浮措辞
+
+
+class TestUpdateNodeTypeGate:
+    """update_node 角色×节点类型闸门（需求内容归 PM，研发资产归 Dev）。"""
+
+    def _node(self, *, node_type="Solution", project_id=None, system_id=None):
+        from mem_lake.knowledge.models import KnowledgeNode
+
+        return KnowledgeNode(
+            id=uuid.uuid4(),
+            type=node_type,
+            title="t",
+            content="c",
+            properties={},
+            status="approved",
+            project_id=project_id,
+            system_id=system_id,
+        )
+
+    def test_dev_cannot_update_requirement(self):
+        """Dev 不可改需求内容 → 报错指向 PM 维护 + bind 路径。"""
+        from mem_lake.gateway.tools.write_tools import _check_update_node_type
+
+        node = self._node(node_type="Requirement")
+        with pytest.raises(Exception, match="PM 维护"):
+            _check_update_node_type(node, role="dev")
+
+    def test_dev_can_update_dev_assets(self):
+        """Dev 可改研发资产 5 类节点。"""
+        from mem_lake.gateway.tools.write_tools import _check_update_node_type
+
+        for t in ("Solution", "DesignIntent", "CodeSnippet", "Decision", "Pitfall"):
+            _check_update_node_type(self._node(node_type=t), role="dev")
+
+    def test_pm_cannot_update_project_profile(self):
+        """ProjectProfile 归 admin（manage_project_profile 直写），update_node 不可改。"""
+        from mem_lake.gateway.tools.write_tools import _check_update_node_type
+
+        node = self._node(node_type="ProjectProfile")
+        with pytest.raises(Exception, match="manage_project_profile"):
+            _check_update_node_type(node, role="pm")
+
+    def test_pm_can_update_requirement_and_assets(self):
+        """PM 可改需求与研发资产节点。"""
+        from mem_lake.gateway.tools.write_tools import _check_update_node_type
+
+        for t in ("Requirement", "Solution", "CodeSnippet"):
+            _check_update_node_type(self._node(node_type=t), role="pm")
+
+    def test_gate_uses_dev_updatable_types_constant(self):
+        """闸门必须复用 rbac.DEV_UPDATABLE_NODE_TYPES（避免两处口径漂移）。"""
+        from mem_lake.auth.rbac import DEV_UPDATABLE_NODE_TYPES
+        from mem_lake.gateway.tools.write_tools import _check_update_node_type
+
+        assert DEV_UPDATABLE_NODE_TYPES == frozenset(
+            {"CodeSnippet", "Solution", "DesignIntent", "Decision", "Pitfall"}
+        )
+        # 常量内的类型对 Dev 放行；不在常量内的类型对 Dev 拒绝
+        for t in DEV_UPDATABLE_NODE_TYPES:
+            _check_update_node_type(self._node(node_type=t), role="dev")
+        with pytest.raises(Exception):
+            _check_update_node_type(self._node(node_type="Requirement"), role="dev")
+
