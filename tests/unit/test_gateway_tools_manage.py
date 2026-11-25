@@ -9,6 +9,7 @@
 
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -159,4 +160,60 @@ class TestWorkDirValidation:
             work_dir="/abs/path",
         )
         assert _profile_properties(p)["work_dir"] == "/abs/path"
+
+
+class TestProjectMustHaveProfile:
+    """堵幽灵项目入口：项目 UUID 必须先经 manage_project_profile 建画像。"""
+
+    @pytest.mark.asyncio
+    async def test_rejects_projects_without_profile(self, monkeypatch):
+        from mem_lake.gateway.tools import manage_tools
+
+        async def fake_list(session, *, project_ids=None, limit=100, offset=0):
+            # 库里没有任何画像
+            return []
+
+        monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
+
+        with pytest.raises(ValueError, match="尚未创建画像"):
+            await manage_tools._assert_projects_have_profile(None, [uuid.uuid4()])
+
+    @pytest.mark.asyncio
+    async def test_accepts_projects_with_profile(self, monkeypatch):
+        from mem_lake.gateway.tools import manage_tools
+
+        p_ok = uuid.uuid4()
+
+        async def fake_list(session, *, project_ids=None, limit=100, offset=0):
+            return [SimpleNamespace(project_id=p_ok)]
+
+        monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
+
+        # 不抛异常
+        await manage_tools._assert_projects_have_profile(None, [p_ok])
+
+    @pytest.mark.asyncio
+    async def test_empty_project_ids_passes(self, monkeypatch):
+        from mem_lake.gateway.tools import manage_tools
+
+        # 空集合（admin project_scope=[]）不触发校验
+        await manage_tools._assert_projects_have_profile(None, [])
+
+    @pytest.mark.asyncio
+    async def test_error_message_lists_missing_uuids(self, monkeypatch):
+        from mem_lake.gateway.tools import manage_tools
+
+        p_missing = uuid.uuid4()
+
+        async def fake_list(session, *, project_ids=None, limit=100, offset=0):
+            return []
+
+        monkeypatch.setattr(manage_tools, "list_project_profiles", fake_list)
+
+        with pytest.raises(ValueError) as exc:
+            await manage_tools._assert_projects_have_profile(None, [p_missing])
+
+        msg = str(exc.value)
+        assert str(p_missing) in msg
+        assert "manage_project_profile" in msg
 

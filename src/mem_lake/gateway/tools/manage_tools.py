@@ -73,6 +73,7 @@ from mem_lake.knowledge.repository import (
     create_system,
     get_system,
     get_system_project_ids,
+    list_project_profiles,
     list_systems,
     remove_system_projects,
     set_system_projects,
@@ -379,6 +380,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     raise ValueError(
                         "create_access_key 必须指定 project_scope（admin 为空列表）"
                     )
+                await _assert_projects_have_profile(session, list(project_scope or []))
                 new_key_id, plaintext = await svc_create_access_key(
                     session,
                     role=role,
@@ -478,6 +480,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     raise ValueError(
                         "update_access_key_scope 必须指定 project_scope（新的项目范围）"
                     )
+                await _assert_projects_have_profile(session, list(project_scope))
                 updated = await svc_update_access_key_scope(
                     session,
                     project_scope=project_scope,
@@ -646,6 +649,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
 
                 pid_uuids = [uuid.UUID(str(p)) for p in (project_ids or [])]
                 if action == "set_projects":
+                    await _assert_projects_have_profile(session, pid_uuids)
                     await set_system_projects(
                         session,
                         system_id=system_id,
@@ -658,6 +662,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     )
 
                 if action == "add_projects":
+                    await _assert_projects_have_profile(session, pid_uuids)
                     added = await add_system_projects(
                         session, system_id=system_id, project_ids=pid_uuids
                     )
@@ -905,6 +910,27 @@ def _is_absolute_any_platform(value: str) -> bool:
     if not value:
         return False
     return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
+async def _assert_projects_have_profile(
+    session: AsyncSession, project_ids: list[uuid.UUID]
+) -> None:
+    """项目 UUID 必须已有 approved 的 ProjectProfile 画像，否则拒绝。
+
+    项目名在全系统只存于 ProjectProfile 节点（system_project 表只有 UUID 对），
+    无画像的项目会让 PM/Dev 只看到 UUID、无法判断是哪个项目 —— 属「幽灵项目」。
+    """
+    if not project_ids:
+        return
+    uniq = list(dict.fromkeys(project_ids))
+    nodes = await list_project_profiles(session, project_ids=uniq, limit=len(uniq) * 4)
+    ok = {n.project_id for n in nodes if n.project_id is not None}
+    missing = [str(p) for p in uniq if p not in ok]
+    if missing:
+        raise ValueError(
+            f"以下项目尚未创建画像（无项目名称/工作目录），无法挂载：{', '.join(missing)}。"
+            "请先用 manage_project_profile action=create 并指定 project_id 建画像后再试。"
+        )
 
 
 def _profile_properties(profile: "ProjectProfileInput") -> dict[str, Any]:

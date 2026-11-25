@@ -158,73 +158,7 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
         else:
             result.fail("1.1 验证 version", err or "未知错误")
 
-        # 1.2 创建 PM key
-        r, err = await call_tool_safe(
-            admin,
-            "create_access_key",
-            {"role": "pm", "project_scope": [ctx.project_id]},
-        )
-        if result.check(err is None, "1.2 创建 PM Access Key"):
-            ctx.pm_key = r.get("plaintext")
-            result.check(
-                bool(ctx.pm_key),
-                "1.2 验证返回 plaintext",
-                f"key_id={r.get('key_id', 'N/A')}",
-            )
-            mcp_cfg = r.get("mcp_config")
-            hint = r.get("user_hint")
-            result.check(
-                bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
-                "1.2 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
-            )
-            result.check(
-                bool(hint)
-                and "get_role_skills" in hint
-                and ctx.pm_key not in hint,
-                "1.2 验证返回 user_hint(指向技能安装, 不含 Key)",
-            )
-        else:
-            result.fail("1.2 创建 PM Key", err or "未知错误")
-
-        # 1.3 创建 Dev key
-        r, err = await call_tool_safe(
-            admin,
-            "create_access_key",
-            {"role": "dev", "project_scope": [ctx.project_id]},
-        )
-        if result.check(err is None, "1.3 创建 Dev Access Key"):
-            ctx.dev_key = r.get("plaintext")
-            result.check(
-                bool(ctx.dev_key),
-                "1.3 验证返回 plaintext",
-                f"key_id={r.get('key_id', 'N/A')}",
-            )
-            mcp_cfg = r.get("mcp_config")
-            hint = r.get("user_hint")
-            result.check(
-                bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
-                "1.3 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
-            )
-            result.check(
-                bool(hint)
-                and "get_role_skills" in hint
-                and ctx.dev_key not in hint,
-                "1.3 验证返回 user_hint(指向技能安装, 不含 Key)",
-            )
-        else:
-            result.fail("1.3 创建 Dev Key", err or "未知错误")
-
-        # 1.4 列出 access keys
-        r, err = await call_tool_safe(admin, "list_access_keys", {})
-        if result.check(err is None, "1.4 列出 Access Keys"):
-            listed = (r or {}).get("items", []) if isinstance(r, dict) else (r or [])
-            result.check(
-                len(listed) >= 3, "1.4 验证 >=3 个 key", f"count={len(listed)}"
-            )
-        else:
-            result.fail("1.4 列出 Keys", err or "未知错误")
-
-        # 1.5 创建 ProjectProfile
+        # 1.2 创建 ProjectProfile（项目须先有画像，才可挂载到 system / 授权给 Key）
         r, err = await call_tool_safe(
             admin,
             "manage_project_profile",
@@ -254,14 +188,80 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
                 },
             },
         )
-        if result.check(err is None, "1.5 创建 ProjectProfile"):
+        if result.check(err is None, "1.2 创建 ProjectProfile"):
             result.check(
                 bool(r.get("node_id")),
-                "1.5 验证返回 node_id",
+                "1.2 验证返回 node_id",
                 f"node_id={r.get('node_id', 'N/A')}",
             )
         else:
-            result.fail("1.5 创建 ProjectProfile", err or "未知错误")
+            result.fail("1.2 创建 ProjectProfile", err or "未知错误")
+
+        # 1.3 创建 PM key
+        r, err = await call_tool_safe(
+            admin,
+            "create_access_key",
+            {"role": "pm", "project_scope": [ctx.project_id]},
+        )
+        if result.check(err is None, "1.3 创建 PM Access Key"):
+            ctx.pm_key = r.get("plaintext")
+            result.check(
+                bool(ctx.pm_key),
+                "1.3 验证返回 plaintext",
+                f"key_id={r.get('key_id', 'N/A')}",
+            )
+            mcp_cfg = r.get("mcp_config")
+            hint = r.get("user_hint")
+            result.check(
+                bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
+                "1.3 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
+            )
+            result.check(
+                bool(hint)
+                and "get_role_skills" in hint
+                and ctx.pm_key not in hint,
+                "1.3 验证返回 user_hint(指向技能安装, 不含 Key)",
+            )
+        else:
+            result.fail("1.3 创建 PM Key", err or "未知错误")
+
+        # 1.4 创建 Dev key
+        r, err = await call_tool_safe(
+            admin,
+            "create_access_key",
+            {"role": "dev", "project_scope": [ctx.project_id]},
+        )
+        if result.check(err is None, "1.4 创建 Dev Access Key"):
+            ctx.dev_key = r.get("plaintext")
+            result.check(
+                bool(ctx.dev_key),
+                "1.4 验证返回 plaintext",
+                f"key_id={r.get('key_id', 'N/A')}",
+            )
+            mcp_cfg = r.get("mcp_config")
+            hint = r.get("user_hint")
+            result.check(
+                bool(mcp_cfg) and '"X-MCP-Key"' in mcp_cfg,
+                "1.4 验证返回 mcp_config(JSON, 含 X-MCP-Key)",
+            )
+            result.check(
+                bool(hint)
+                and "get_role_skills" in hint
+                and ctx.dev_key not in hint,
+                "1.4 验证返回 user_hint(指向技能安装, 不含 Key)",
+            )
+        else:
+            result.fail("1.4 创建 Dev Key", err or "未知错误")
+
+        # 1.5 列出 access keys
+        r, err = await call_tool_safe(admin, "list_access_keys", {})
+        if result.check(err is None, "1.5 列出 Access Keys"):
+            listed = (r or {}).get("items", []) if isinstance(r, dict) else (r or [])
+            result.check(
+                len(listed) >= 3, "1.5 验证 >=3 个 key", f"count={len(listed)}"
+            )
+        else:
+            result.fail("1.5 列出 Keys", err or "未知错误")
 
         # 1.6 查询 ProjectProfile
         r, err = await call_tool_safe(

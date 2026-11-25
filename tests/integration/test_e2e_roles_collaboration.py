@@ -201,6 +201,33 @@ class TestRolesCollaboration:
         system_id = None
 
         async with Client(_make_role_app(monkeypatch, role="admin", project_id=project_id)) as admin:
+            # 建 ProjectProfile（项目须先有画像，才可挂载到 system / 授权给 Key）
+            prof = await _call(
+                admin,
+                "manage_project_profile",
+                {
+                    "project_id": project_id,
+                    "action": "create",
+                    "profile": {
+                        "title": "E2E 测试项目",
+                        "content": "三角色协作端到端测试项目",
+                        "properties": {
+                            "name": "E2E 测试项目",
+                            "description": "pytest 自动化三角色协作",
+                            "tech_stack": ["Python", "FastMCP", "PostgreSQL"],
+                            "architecture": "MCP 网关 + 知识图谱 + 三引擎检索",
+                        },
+                        "tags": ["测试"],
+                        "work_dir": "/tmp/e2e-collab-project",
+                    },
+                },
+            )
+            assert prof.get("node_id")
+            # 查回
+            prof2 = await _call(admin, "get_project_info",
+                                 {"action": "get", "project_id": project_id, "include_profile": True})
+            assert prof2.get("project") is not None and prof2["project"].get("profile") is not None
+
             # 批次三：get_role_skills 已删除（skills 改 GitHub 分发），
             # 同点位改为 list_requirements 冒烟（新枚举工具）
             lst = await _call(
@@ -233,33 +260,6 @@ class TestRolesCollaboration:
             )
             assert pm["plaintext"]
             assert dev["plaintext"]
-
-            # 建 ProjectProfile
-            prof = await _call(
-                admin,
-                "manage_project_profile",
-                {
-                    "project_id": project_id,
-                    "action": "create",
-                    "profile": {
-                        "title": "E2E 测试项目",
-                        "content": "三角色协作端到端测试项目",
-                        "properties": {
-                            "name": "E2E 测试项目",
-                            "description": "pytest 自动化三角色协作",
-                            "tech_stack": ["Python", "FastMCP", "PostgreSQL"],
-                            "architecture": "MCP 网关 + 知识图谱 + 三引擎检索",
-                        },
-                        "tags": ["测试"],
-                        "work_dir": "/tmp/e2e-collab-project",
-                    },
-                },
-            )
-            assert prof.get("node_id")
-            # 查回
-            prof2 = await _call(admin, "get_project_info",
-                                 {"action": "get", "project_id": project_id, "include_profile": True})
-            assert prof2.get("project") is not None and prof2["project"].get("profile") is not None
 
         # 返回供后续用例使用（类属性跨用例传递）
         self.__class__._project_id = project_id
@@ -903,6 +903,31 @@ async def test_bind_requirement_to_project_end_to_end(
     from mem_lake.knowledge.repository import get_node
 
     project_id = str(uuid.uuid4())
+
+    # admin 建项目画像（项目须先有画像，才可挂载到 system）
+    async with Client(
+        _make_role_app(monkeypatch, role="admin", project_id=str(uuid.uuid4()))
+    ) as c:
+        await _call(
+            c,
+            "manage_project_profile",
+            {
+                "project_id": project_id,
+                "action": "create",
+                "profile": {
+                    "title": "绑定端到端验证项目",
+                    "content": "bind_requirement_to_project 端到端验证项目",
+                    "properties": {
+                        "name": "绑定端到端验证项目",
+                        "description": "pytest 绑定端到端验证",
+                        "tech_stack": ["Python"],
+                        "architecture": "monolith",
+                    },
+                    "tags": ["测试"],
+                    "work_dir": "/tmp/e2e-bind-project",
+                },
+            },
+        )
 
     # admin 建 system 并把项目挂入归属清单
     async with Client(

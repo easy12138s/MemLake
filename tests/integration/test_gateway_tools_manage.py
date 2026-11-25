@@ -97,9 +97,11 @@ async def test_manage_project_profile_explicit_id_returns_same(admin_app):
 async def test_create_access_key_rotate(admin_app):
     """rotate_access_key 返回新明文，且 key_id 不变。"""
     async with Client(admin_app) as client:
+        pid = str(uuid.uuid4())
+        await _create_profile(client, pid)
         created = await client.call_tool(
             "create_access_key",
-            {"role": "dev", "project_scope": [str(uuid.uuid4())]},
+            {"role": "dev", "project_scope": [pid]},
         )
         created_data = _parse(created)
         key_id = created_data["key_id"]
@@ -140,9 +142,11 @@ def _assert_onboarding(output: dict, plaintext: str, role: str) -> None:
 async def test_create_access_key_onboarding(admin_app):
     """create_access_key 返回 mcp_config（JSON 给用户）与 user_hint（给用户，不含 Key）。"""
     async with Client(admin_app) as client:
+        pid = str(uuid.uuid4())
+        await _create_profile(client, pid)
         created = await client.call_tool(
             "create_access_key",
-            {"role": "pm", "project_scope": [str(uuid.uuid4())]},
+            {"role": "pm", "project_scope": [pid]},
         )
         data = _parse(created)
         _assert_onboarding(data, data["plaintext"], "pm")
@@ -152,6 +156,7 @@ async def test_update_access_key_scope_by_role(admin_app):
     """update_access_key_scope 按 role_filter 批量更新该角色 Key 的 project_scope。"""
     async with Client(admin_app) as client:
         pid = uuid.uuid4()
+        await _create_profile(client, str(pid))
         # 创建两个 dev Key
         c1 = _parse(
             await client.call_tool(
@@ -181,8 +186,10 @@ async def test_update_access_key_scope_by_role(admin_app):
 async def test_update_access_key_scope_requires_target(admin_app):
     """update_access_key_scope 未指定任何定位方式时返回空列表。"""
     async with Client(admin_app) as client:
+        pid = str(uuid.uuid4())
+        await _create_profile(client, pid)
         updated = await client.call_tool(
-            "update_access_key_scope", {"project_scope": [str(uuid.uuid4())]}
+            "update_access_key_scope", {"project_scope": [pid]}
         )
         updated_data = _parse(updated).get("items", [])
         assert updated_data == []
@@ -196,6 +203,7 @@ async def test_update_access_key_scope_key_ids_as_string(admin_app):
     """
     async with Client(admin_app) as client:
         pid = uuid.uuid4()
+        await _create_profile(client, str(pid))
         c1 = _parse(
             await client.call_tool(
                 "create_access_key", {"role": "dev", "project_scope": []}
@@ -311,6 +319,35 @@ async def _create_system(client) -> str:
     return _parse(r)["system_id"]
 
 
+async def _create_profile(client, project_id: str, name: str = "测试项目") -> None:
+    """为指定 project_id 建画像（工具层要求项目先有画像才可挂载/授权）。"""
+    await client.call_tool(
+        "manage_project_profile",
+        {
+            "action": "create",
+            "project_id": project_id,
+            "profile": {
+                "title": name,
+                "content": f"{name} 的项目画像",
+                "properties": {
+                    "name": name,
+                    "description": f"{name} 描述",
+                    "tech_stack": ["Python"],
+                    "architecture": "monolith",
+                },
+                "tags": [],
+                "work_dir": "/tmp/test-project",
+            },
+        },
+    )
+
+
+async def _create_profiles(client, *project_ids: str) -> None:
+    """批量为多个 project_id 建画像。"""
+    for pid in project_ids:
+        await _create_profile(client, pid, f"项目-{pid[:8]}")
+
+
 async def _bound_project_ids(db_session, system_id: str) -> set[str]:
     """直查 system_project 表返回关联 project_id 集合（断言真相源）。"""
     from sqlalchemy import select as sa_select
@@ -346,6 +383,7 @@ async def test_manage_system_set_projects_is_full_reset(admin_app, db_session):
         sid = await _create_system(client)
         try:
             p1, p2, p3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            await _create_profiles(client, p1, p2, p3)
             await client.call_tool("manage_system", {
                 "action": "set_projects", "system_id": sid, "project_ids": [p1, p2],
             })
@@ -363,6 +401,7 @@ async def test_manage_system_add_projects_incremental(admin_app, db_session):
         sid = await _create_system(client)
         try:
             p1, p2, p3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            await _create_profiles(client, p1, p2, p3)
             await client.call_tool("manage_system", {
                 "action": "set_projects", "system_id": sid, "project_ids": [p1, p2],
             })
@@ -382,6 +421,7 @@ async def test_manage_system_add_projects_idempotent(admin_app, db_session):
         sid = await _create_system(client)
         try:
             p1 = str(uuid.uuid4())
+            await _create_profile(client, p1)
             await client.call_tool("manage_system", {
                 "action": "add_projects", "system_id": sid, "project_ids": [p1],
             })
@@ -400,6 +440,7 @@ async def test_manage_system_remove_projects_precise(admin_app, db_session):
         sid = await _create_system(client)
         try:
             p1, p2, p3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            await _create_profiles(client, p1, p2, p3)
             await client.call_tool("manage_system", {
                 "action": "set_projects", "system_id": sid, "project_ids": [p1, p2, p3],
             })
@@ -418,6 +459,7 @@ async def test_manage_system_list_returns_project_ids(admin_app, db_session):
         sid = await _create_system(client)
         try:
             p1, p2 = str(uuid.uuid4()), str(uuid.uuid4())
+            await _create_profiles(client, p1, p2)
             await client.call_tool("manage_system", {
                 "action": "set_projects", "system_id": sid, "project_ids": [p1, p2],
             })
@@ -501,12 +543,14 @@ async def test_create_access_key_with_name_owner(admin_app):
     created = None
     try:
         async with Client(admin_app) as client:
+            pid = str(uuid.uuid4())
+            await _create_profile(client, pid)
             created = _parse(
                 await client.call_tool(
                     "create_access_key",
                     {
                         "role": "dev",
-                        "project_scope": [str(uuid.uuid4())],
+                        "project_scope": [pid],
                         "name": "示例系统-Dev-Agent",
                         "owner": "张三",
                     },
