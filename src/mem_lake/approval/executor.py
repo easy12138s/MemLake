@@ -34,6 +34,7 @@ from mem_lake.knowledge.repository import (
     add_edge,
     create_node,
     get_node,
+    regenerate_node_vectors_batch,
     set_node_project,
     update_node,
 )
@@ -103,6 +104,7 @@ async def review_approve(
 
     # 1. 遍历 items 执行写入
     all_conflict_hints: list[dict[str, Any]] = []
+    dirty_nodes: list[Any] = []
 
     # 冲突检测批量向量化：所有新建节点的查询文本一次性 embed（prompt_name="query"，
     # 与 VectorSearcher.search 语义一致），避免每节点各 embed 一次（2N → 2）。
@@ -152,7 +154,7 @@ async def review_approve(
             )
 
         elif item.item_type == "node" and item.action == "update":
-            node = await _execute_node_update(
+            node, vector_dirty = await _execute_node_update(
                 session,
                 graph_store=graph_store,
                 embedding_client=embedding_client,
@@ -160,6 +162,8 @@ async def review_approve(
                 actor=reviewed_by,
             )
             item.target_id = node.id
+            if vector_dirty:
+                dirty_nodes.append(node)
 
         elif item.item_type == "edge" and item.action == "create":
             await _execute_edge_create(
@@ -174,6 +178,11 @@ async def review_approve(
     # 2. 新建节点向量化延迟到后台异步执行（node_embedding 暂缺，缺向量节点
     # 检索时自动排除）：由调用方经 start_embed_nodes_task 入队，复用 reindex
     # worker 补向量，避免大批次审批阻塞 MCP 调用超时。
+    # update 则为「一次 embed 覆盖整批」：语义是覆盖已有向量，必须在事务内完成。
+    if dirty_nodes:
+        await regenerate_node_vectors_batch(
+            session, nodes=dirty_nodes, embedding_client=embedding_client
+        )
 
     # 3. 合并 conflict_hint
     merged_conflict_hint = _merge_conflict_hints(all_conflict_hints)
@@ -292,20 +301,26 @@ async def _execute_node_update(
 ) -> Any:
     """执行 node + update：payload 含 project_id 时走归属变更（set_node_project），
     否则走内容更新（update_node，版本递增）。
+
+    返回 `(node, vector_dirty)`：vector_dirty 表示 title/content/properties 实际变更，
+    由调用方在批次循环结束后统一批量重算向量（避免每节点一次 embedding HTTP）。
     """
     payload = item.payload
     node_id = _to_uuid(payload["node_id"])
     # node+update 的 node_id 为必填项（提交时已校验），解析必成功
     assert node_id is not None
     if "project_id" in payload:
-        return await set_node_project(
+        node = await set_node_project(
             session,
             graph_store=graph_store,
             node_id=node_id,
             project_id=_to_uuid(payload["project_id"]),
             actor=actor,
         )
-    return await update_node(
+        return node, False
+
+    before = await get_node(session, node_id)
+    node = await update_node(
         session,
         graph_store=graph_store,
         embedding_client=embedding_client,
@@ -320,8 +335,14 @@ async def _execute_node_update(
         properties_patch=payload.get("properties_patch"),
         expected_version=payload.get("base_version"),
         actor=actor,
-        regenerate_vector=True,
+        regenerate_vector=False,
     )
+    vector_dirty = (
+        node.title != before.title
+        or node.content != before.content
+        or (node.properties or {}) != (before.properties or {})
+    )
+    return node, vector_dirty
 
 
 async def _execute_edge_create(

@@ -418,6 +418,29 @@ def merge_update_values(
     return merged_properties, merged_tags
 
 
+async def regenerate_node_vectors_batch(
+    session: AsyncSession,
+    *,
+    nodes: list[KnowledgeNode],
+    embedding_client: EmbeddingClient,
+) -> int:
+    """批量重算节点 facet 向量（一次 embed，审批批量 update 用）。
+
+    与 create 路径（后台入队补向量）不同：审批事务内直接写回，避免审批返回后
+    出现向量窗口；50 个节点也只产生 1 次 embedding HTTP。不 commit。
+    """
+    if not nodes:
+        return 0
+    return await _write_facets_batch(
+        session,
+        node_meta=[
+            (node.id, node.type, node.title, node.content, node.properties or {})
+            for node in nodes
+        ],
+        embedding_client=embedding_client,
+    )
+
+
 async def update_node(
     session: AsyncSession,
     *,
