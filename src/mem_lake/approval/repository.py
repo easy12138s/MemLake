@@ -8,9 +8,10 @@ submit_batch 内的幂等重放 + SAVEPOINT 并发处理逻辑随提交一并收
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -220,35 +221,76 @@ async def list_pending_batches(
     *,
     project_id: uuid.UUID | None = None,
     submission_id: uuid.UUID | None = None,
+    batch_ids: list[uuid.UUID] | None = None,
+    order_asc: bool = False,
+    after_submitted_at: datetime | None = None,
+    after_batch_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[ApprovalBatch]:
     """查询待审批批次列表。
 
-    可选 project_id / submission_id 过滤。返回 status=pending_review 的批次，
-    按 submitted_at 降序。不预加载 items（列表场景只需批次元数据）。
+    可选 project_id / submission_id / batch_ids 过滤。返回 status=pending_review
+    的批次；默认按 submitted_at 降序，order_asc=True 时按 (submitted_at, id) 升序
+    （配合 after_* 做 keyset 分页，避免处理中集合收缩导致跳批）。
+    不预加载 items（列表场景只需批次元数据）。
     """
-    stmt = (
-        select(ApprovalBatch)
-        .where(ApprovalBatch.status == STATUS_PENDING_REVIEW)
-        .order_by(ApprovalBatch.submitted_at.desc())
-        .limit(limit)
-        .offset(offset)
+    stmt = select(ApprovalBatch).where(
+        ApprovalBatch.status == STATUS_PENDING_REVIEW
     )
+    if order_asc:
+        stmt = stmt.order_by(
+            ApprovalBatch.submitted_at.asc(), ApprovalBatch.id.asc()
+        )
+        if after_submitted_at is not None and after_batch_id is not None:
+            stmt = stmt.where(
+                or_(
+                    ApprovalBatch.submitted_at > after_submitted_at,
+                    and_(
+                        ApprovalBatch.submitted_at == after_submitted_at,
+                        ApprovalBatch.id > after_batch_id,
+                    ),
+                )
+            )
+    else:
+        stmt = stmt.order_by(ApprovalBatch.submitted_at.desc())
+    stmt = stmt.limit(limit).offset(offset)
     if project_id is not None:
         stmt = stmt.where(ApprovalBatch.project_id == project_id)
     if submission_id is not None:
         stmt = stmt.where(ApprovalBatch.submission_id == submission_id)
+    if batch_ids:
+        stmt = stmt.where(ApprovalBatch.id.in_(batch_ids))
 
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_pending_batches(
+    session: AsyncSession,
+    *,
+    submission_id: uuid.UUID | None = None,
+    batch_ids: list[uuid.UUID] | None = None,
+) -> int:
+    """待审批批次总数（可选 submission/batch_ids 过滤）。"""
+    stmt = select(func.count()).select_from(ApprovalBatch).where(
+        ApprovalBatch.status == STATUS_PENDING_REVIEW
+    )
+    if submission_id is not None:
+        stmt = stmt.where(ApprovalBatch.submission_id == submission_id)
+    if batch_ids:
+        stmt = stmt.where(ApprovalBatch.id.in_(batch_ids))
+    result = await session.execute(stmt)
+    return int(result.scalar() or 0)
 
 
 async def list_batches_by_submission(
     session: AsyncSession,
     *,
     submission_id: uuid.UUID,
+    submitted_by: str | None = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> list[ApprovalBatch]:
     """按 submission_id 查询全部批次（含已审批），按提交时间升序。"""
     stmt = (
@@ -257,9 +299,30 @@ async def list_batches_by_submission(
         .order_by(ApprovalBatch.submitted_at.asc(), ApprovalBatch.id.asc())
         .options(selectinload(ApprovalBatch.items))
         .limit(limit)
+        .offset(offset)
     )
+    if submitted_by is not None:
+        stmt = stmt.where(ApprovalBatch.submitted_by == submitted_by)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_batches_by_submission(
+    session: AsyncSession,
+    *,
+    submission_id: uuid.UUID,
+    submitted_by: str | None = None,
+) -> int:
+    """按 submission_id 统计批次总数（可选提交者过滤）。"""
+    stmt = (
+        select(func.count())
+        .select_from(ApprovalBatch)
+        .where(ApprovalBatch.submission_id == submission_id)
+    )
+    if submitted_by is not None:
+        stmt = stmt.where(ApprovalBatch.submitted_by == submitted_by)
+    result = await session.execute(stmt)
+    return int(result.scalar() or 0)
 
 
 async def get_batch_detail(
@@ -303,16 +366,6 @@ async def get_pending_batch(
             f"批次状态不允许{verb}: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
         )
     return batch
-
-
-async def count_pending_batches(session: AsyncSession) -> int:
-    """待审批批次总数（可视化总览用，只读）。"""
-    result = await session.execute(
-        select(func.count())
-        .select_from(ApprovalBatch)
-        .where(ApprovalBatch.status == STATUS_PENDING_REVIEW)
-    )
-    return int(result.scalar() or 0)
 
 
 async def _find_by_idempotency_key(

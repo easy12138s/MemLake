@@ -24,17 +24,22 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from mem_lake.approval.models import (
+    ApprovalBatch,
     build_created_nodes_payload,
     collect_created_node_ids,
     count_created_edges,
+)
+from mem_lake.approval.repository import (
+    count_batches_by_submission,
+    count_pending_batches,
+    list_batches_by_submission,
+    list_pending_batches,
 )
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
     auto_process_batch,
     get_batch_detail,
-    list_batches_by_submission,
-    list_pending_batches,
 )
 from mem_lake.approval.service import (
     review_approve as approval_review_approve,
@@ -121,6 +126,8 @@ class ReviewSubmissionOutput(BaseModel):  # type: ignore[misc]
     action: str
     processed: int
     items: list[SubmissionItemResult]
+    has_more: bool = False
+    remaining: int = 0
 
 
 class SubmissionBatchItem(BaseModel):  # type: ignore[misc]
@@ -143,6 +150,7 @@ class SubmissionDetailOutput(BaseModel):  # type: ignore[misc]
 
     submission_id: uuid.UUID
     total: int
+    returned: int = 0
     batches: list[SubmissionBatchItem]
 
 
@@ -234,6 +242,8 @@ async def _review_submission_core(
     graph_store: Any,
     embedding_client: Any,
     vector_searcher: Any,
+    after_batch_id: uuid.UUID | None = None,
+    limit: int = 200,
 ) -> ReviewSubmissionOutput:
     """按 submission_id 批量处理待审批批次（逐批次独立事务）。
 
@@ -246,13 +256,28 @@ async def _review_submission_core(
     if action == "reject" and (not review_comment or not review_comment.strip()):
         raise ValueError("action=reject 时 review_comment 不能为空")
 
+    after_submitted_at = None
+    if after_batch_id is not None:
+        async with readonly_session() as session:
+            ref_batch = await session.get(ApprovalBatch, after_batch_id)
+        if ref_batch is not None:
+            after_submitted_at = ref_batch.submitted_at
+
     async with readonly_session() as session:
         batches = await list_pending_batches(
-            session, submission_id=submission_id, limit=200
+            session,
+            submission_id=submission_id,
+            batch_ids=batch_ids,
+            order_asc=True,
+            after_submitted_at=after_submitted_at,
+            after_batch_id=after_batch_id,
+            limit=limit + 1,
         )
-    if batch_ids:
-        wanted = set(batch_ids)
-        batches = [b for b in batches if b.id in wanted]
+        remaining = await count_pending_batches(
+            session, submission_id=submission_id, batch_ids=batch_ids
+        )
+    has_more = len(batches) > limit
+    batches = batches[:limit]
 
     results: list[SubmissionItemResult] = []
     created_by_project: dict[uuid.UUID | None, list[uuid.UUID]] = {}
@@ -337,6 +362,8 @@ async def _review_submission_core(
         action=action,
         processed=len(results),
         items=results,
+        has_more=has_more,
+        remaining=remaining,
     )
 
 
@@ -548,6 +575,11 @@ def register_review_tools(mcp: FastMCP) -> None:
         batch_ids: list[uuid.UUID] | None = Field(
             default=None, description="可选：只处理指定批次（默认整个 submission）"
         ),
+        after_batch_id: uuid.UUID | None = Field(
+            default=None,
+            description="keyset 分页游标：只处理该批次之后的待审批批次（上次返回的最后一个 batch_id）",
+        ),
+        limit: int = Field(default=200, description="单次最多处理批次数"),
     ) -> ReviewSubmissionOutput:
         """按 submission_id 批量处理待审批批次（逐批次独立事务）。
 
@@ -568,6 +600,8 @@ def register_review_tools(mcp: FastMCP) -> None:
                 graph_store=lifespan_ctx.graph_store,
                 embedding_client=lifespan_ctx.embedding_client,
                 vector_searcher=lifespan_ctx.vector_searcher,
+                after_batch_id=after_batch_id,
+                limit=limit,
             )
         except (BatchNotFoundError, BatchStatusError, ValueError) as e:
             raise to_tool_error(e) from e
@@ -575,6 +609,8 @@ def register_review_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ_TOOL_ANNOTATIONS)  # type: ignore[untyped-decorator]
     async def get_submission(
         submission_id: uuid.UUID = Field(description="批量提交分组 ID"),
+        limit: int = Field(default=200, description="返回批次上限"),
+        offset: int = Field(default=0, description="分页偏移"),
     ) -> SubmissionDetailOutput:
         """查询一个 submission 下全部批次的时间线（状态/审批人/时间/冲突提示）。
 
@@ -584,12 +620,18 @@ def register_review_tools(mcp: FastMCP) -> None:
         try:
             role = get_current_role()
             key_id = get_current_key_id()
+            submitted_by = None if role == "admin" else key_id
             async with readonly_session() as session:
                 batches = await list_batches_by_submission(
-                    session, submission_id=submission_id
+                    session,
+                    submission_id=submission_id,
+                    submitted_by=submitted_by,
+                    limit=limit,
+                    offset=offset,
                 )
-            if role != "admin":
-                batches = [b for b in batches if b.submitted_by == key_id]
+                total = await count_batches_by_submission(
+                    session, submission_id=submission_id, submitted_by=submitted_by
+                )
             items = [
                 SubmissionBatchItem(
                     batch_id=b.id,
@@ -606,7 +648,10 @@ def register_review_tools(mcp: FastMCP) -> None:
                 for b in batches
             ]
             return SubmissionDetailOutput(
-                submission_id=submission_id, total=len(items), batches=items
+                submission_id=submission_id,
+                total=total,
+                returned=len(items),
+                batches=items,
             )
         except (BatchNotFoundError, BatchStatusError, ValueError) as e:
             raise to_tool_error(e) from e
