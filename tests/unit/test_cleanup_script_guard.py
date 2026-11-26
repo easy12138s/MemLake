@@ -119,3 +119,23 @@ def test_batch_delete_cond_excludes_pending_floating_and_kept_refs() -> None:
     assert "approval_batch.project_id IS NOT NULL" in sql
     assert "approval_item.payload ->> 'from_ref'" in sql
     assert "approval_item.payload ->> 'to_ref'" in sql
+
+
+def test_keep_node_ids_includes_protected_projects() -> None:
+    """保留域快照/任务保护口径 = system ∪ 受保护项目。"""
+    from sqlalchemy.dialects import postgresql
+
+    from scripts.cleanup_test_leftovers import _keep_node_ids_stmt
+
+    stmt = _keep_node_ids_stmt(
+        {_u("01276605-8670-4f6f-82bd-fbe0b03a9358"): "中方诊药云系统"},
+        SYS_PROJECTS,
+    )
+    sql = str(
+        stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "knowledge_node.system_id IN" in sql
+    assert "knowledge_node.project_id IN" in sql

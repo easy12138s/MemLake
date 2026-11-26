@@ -204,11 +204,17 @@ async def _resolve_system_projects(
 
 
 async def _keep_snapshot(
-    session: AsyncSession, keep_system_ids: dict[uuid.UUID, str]
+    session: AsyncSession,
+    keep_system_ids: dict[uuid.UUID, str],
+    protected_project_ids: set[uuid.UUID] | None = None,
 ) -> dict[str, int]:
-    """保留域快照：各 system 的节点/向量/审计数 + 图顶点总数（前后须一致）。"""
+    """保留域快照：各 system 的节点/向量/审计数 + 受保护项目资产 + 图顶点总数。
+
+    前后须一致；受保护项目（system_project 映射默认保护）也必须纳入，
+    否则本次守卫兜住的资产被删时快照看不出来。
+    """
     snapshot: dict[str, int] = {}
-    keep_node_ids = _keep_node_ids_stmt(keep_system_ids)
+    keep_node_ids = _keep_node_ids_stmt(keep_system_ids, protected_project_ids)
     for sid, name in keep_system_ids.items():
         nodes = await session.scalar(
             select(func.count())
@@ -228,11 +234,25 @@ async def _keep_snapshot(
         snapshot[f"{name}:nodes"] = nodes or 0
         snapshot[f"{name}:embeddings"] = embeddings or 0
         snapshot[f"{name}:audits"] = audits or 0
+    if protected_project_ids:
+        snapshot["protected_project_nodes"] = (
+            await session.scalar(
+                select(func.count())
+                .select_from(KnowledgeNode)
+                .where(KnowledgeNode.project_id.in_(protected_project_ids))
+            )
+            or 0
+        )
     graph_store = get_graph_store()
     rows = await graph_store._exec_cypher(
         session,
-        "MATCH (n) WHERE n.system_id IN $sids RETURN n.id",
-        {"sids": [str(s) for s in keep_system_ids]},
+        "MATCH (n) "
+        "WHERE n.system_id IN $sids OR n.project_id IN $pids "
+        "RETURN n.id",
+        {
+            "sids": [str(s) for s in keep_system_ids],
+            "pids": [str(p) for p in (protected_project_ids or set())],
+        },
     )
     snapshot["graph_vertices"] = len(rows)
     return snapshot
@@ -328,7 +348,9 @@ async def _plan(
     # 重索引任务：不引用任何受保护节点/项目的行才删
     protected_ids = set(
         (
-            await session.execute(_keep_node_ids_stmt(keep_system_ids))
+            await session.execute(
+                _keep_node_ids_stmt(keep_system_ids, protected_project_ids)
+            )
         ).scalars().all()
     )
     del_tasks: list[ReindexTask] = []
@@ -426,7 +448,6 @@ async def main() -> None:
             f"{sorted(str(p) for p in keep_project_ids) or '无'}"
         )
 
-        before = await _keep_snapshot(session, keep_system_ids)
         (
             del_nodes,
             del_systems,
@@ -441,6 +462,9 @@ async def main() -> None:
             keep_system_ids,
             keep_project_ids,
             drop_project_ids,
+        )
+        before = await _keep_snapshot(
+            session, keep_system_ids, protected_project_ids
         )
 
         implicit = sorted(str(p) for p in system_projects - keep_project_ids)
@@ -464,6 +488,9 @@ async def main() -> None:
             )
 
         by_type = Counter(n.type for n in del_nodes)
+        pending_batches = sum(
+            1 for b in del_batches if b.status == "pending_review"
+        )
         orphan_embeddings = await session.scalar(
             select(func.count())
             .select_from(NodeEmbedding)
@@ -478,6 +505,11 @@ async def main() -> None:
             f"重索引任务 {len(del_tasks)}"
         )
         print("audit_log 与 access_key 不动。")
+        if pending_batches:
+            print(
+                f"警告: 待删批次中含 {pending_batches} 个 pending_review —— "
+                "不应发生，请先停止并核对批次保护逻辑"
+            )
 
         if not args.execute:
             print("\n[dry-run] 未执行。确认清单后加 --execute。")
@@ -529,7 +561,9 @@ async def main() -> None:
         await session.commit()
 
         # 4. 复核：保留域四项计数一致 + 无新增悬空
-        after = await _keep_snapshot(session, keep_system_ids)
+        after = await _keep_snapshot(
+            session, keep_system_ids, protected_project_ids
+        )
         dangling_nodes = await session.scalar(
             select(func.count())
             .select_from(KnowledgeNode)
