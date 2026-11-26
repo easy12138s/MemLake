@@ -123,6 +123,7 @@ class TestContext:
         self.url = url
         self.admin_key = admin_key
         self.project_id: str = str(uuid.uuid4())
+        self.system_id: str | None = None
         self.pm_key: str | None = None
         self.dev_key: str | None = None
         self.batch_id_1: str | None = None  # PM 首次发布需求
@@ -145,14 +146,18 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
 
     async with make_client(ctx.url, ctx.admin_key) as admin:
         # 1.1 获取 admin skills
-        r, err = await call_tool_safe(admin, "get_role_skills", {"role": "admin"})
-        if result.check(err is None, "1.1 get_role_skills(admin)"):
+        r, err = await call_tool_safe(
+            admin, "get_skill", {"role": "admin", "file": "SKILL"}
+        )
+        if result.check(err is None, "1.1 get_skill(admin)"):
             version = r.get("version", "")
-            has_md = bool(r.get("skills_markdown"))
+            has_md = bool(r.get("content")) and bool(r.get("uri")) and bool(
+                r.get("sha256")
+            )
             # version 由 skills frontmatter 动态取 max，不硬编码具体值，避免 stale 断言
             result.check(
                 bool(version) and "." in version and has_md,
-                "1.1 验证 version 非空(形如 x.y.z) + markdown 非空",
+                "1.1 验证 version/uri/sha256 非空 + content 非空",
                 f"version={version}",
             )
         else:
@@ -197,6 +202,38 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
         else:
             result.fail("1.2 创建 ProjectProfile", err or "未知错误")
 
+        # 1.2a 创建 System 域并挂载项目（PM 需求按 system 隔离；写权限按此校验）
+        r, err = await call_tool_safe(
+            admin,
+            "manage_system",
+            {
+                "action": "create",
+                "name": f"e2e-system-{uuid.uuid4().hex[:8]}",
+                "description": "端到端测试用 system",
+            },
+        )
+        if result.check(err is None, "1.2a 创建 System"):
+            ctx.system_id = r.get("system_id")
+            result.check(bool(ctx.system_id), "1.2a 验证返回 system_id")
+        else:
+            result.fail("1.2a 创建 System", err or "未知错误")
+
+        if ctx.system_id:
+            r, err = await call_tool_safe(
+                admin,
+                "manage_system",
+                {
+                    "action": "add_projects",
+                    "system_id": ctx.system_id,
+                    "project_ids": [ctx.project_id],
+                },
+            )
+            result.check(
+                err is None,
+                "1.2b 挂载项目到 System",
+                f"error={err[:80] if err else 'N/A'}",
+            )
+
         # 1.3 创建 PM key
         r, err = await call_tool_safe(
             admin,
@@ -218,9 +255,10 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
             )
             result.check(
                 bool(hint)
-                and "get_role_skills" in hint
+                and "get_skill" in hint
+                and "memlake://skills/" in hint
                 and ctx.pm_key not in hint,
-                "1.3 验证返回 user_hint(指向技能安装, 不含 Key)",
+                "1.3 验证返回 user_hint(指向 MCP Resource, 不含 Key)",
             )
         else:
             result.fail("1.3 创建 PM Key", err or "未知错误")
@@ -246,9 +284,10 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
             )
             result.check(
                 bool(hint)
-                and "get_role_skills" in hint
+                and "get_skill" in hint
+                and "memlake://skills/" in hint
                 and ctx.dev_key not in hint,
-                "1.4 验证返回 user_hint(指向技能安装, 不含 Key)",
+                "1.4 验证返回 user_hint(指向 MCP Resource, 不含 Key)",
             )
         else:
             result.fail("1.4 创建 Dev Key", err or "未知错误")
@@ -265,16 +304,23 @@ async def scenario_1_bootstrap(ctx: TestContext) -> ScenarioResult:
 
         # 1.6 查询 ProjectProfile
         r, err = await call_tool_safe(
-            admin, "get_project_profile", {"project_id": ctx.project_id}
+            admin,
+            "get_project_info",
+            {
+                "action": "get",
+                "project_id": ctx.project_id,
+                "include_profile": True,
+            },
         )
-        if result.check(err is None, "1.6 查询 ProjectProfile"):
-            profile = r.get("profile")
-            title = profile.get("title", "N/A") if profile else "None"
+        if result.check(err is None, "1.6 查询项目画像"):
+            project = r.get("project")
             result.check(
-                profile is not None, "1.6 验证 profile 非空", f"title={title}"
+                project is not None and bool(project.get("name")),
+                "1.6 验证项目画像非空",
+                f"project={project}",
             )
         else:
-            result.fail("1.6 查询 ProjectProfile", err or "未知错误")
+            result.fail("1.6 查询项目画像", err or "未知错误")
 
     return result
 
@@ -292,21 +338,22 @@ async def scenario_2_pm_publish(ctx: TestContext) -> ScenarioResult:
 
     async with make_client(ctx.url, ctx.pm_key) as pm:
         # 2.1 获取 PM skills
-        r, err = await call_tool_safe(pm, "get_role_skills", {})
-        if result.check(err is None, "2.1 get_role_skills(pm)"):
+        r, err = await call_tool_safe(pm, "get_skill", {"file": "SKILL"})
+        if result.check(err is None, "2.1 get_skill(pm)"):
             result.check(
-                bool(r.get("skills_markdown")),
-                "2.1 验证 markdown 非空",
+                bool(r.get("content")),
+                "2.1 验证 content 非空",
                 f"version={r.get('version', 'N/A')}",
             )
         else:
-            result.fail("2.1 get_role_skills", err or "未知错误")
+            result.fail("2.1 get_skill", err or "未知错误")
 
         # 2.2 发布需求
         r, err = await call_tool_safe(
             pm,
             "publish_requirement",
             {
+                "system_id": ctx.system_id,
                 "project_id": ctx.project_id,
                 "requirement": {
                     "title": "用户登录功能",
@@ -464,6 +511,7 @@ async def scenario_4_conflict_detection(ctx: TestContext) -> ScenarioResult:
             pm,
             "publish_requirement",
             {
+                "system_id": ctx.system_id,
                 "project_id": ctx.project_id,
                 "requirement": {
                     "title": "用户登录认证模块",
@@ -574,15 +622,15 @@ async def scenario_5_dev_submit(ctx: TestContext) -> ScenarioResult:
 
     async with make_client(ctx.url, ctx.dev_key) as dev:
         # 5.1 获取 Dev skills
-        r, err = await call_tool_safe(dev, "get_role_skills", {})
-        if result.check(err is None, "5.1 get_role_skills(dev)"):
+        r, err = await call_tool_safe(dev, "get_skill", {"file": "SKILL"})
+        if result.check(err is None, "5.1 get_skill(dev)"):
             result.check(
-                bool(r.get("skills_markdown")),
-                "5.1 验证 markdown 非空",
+                bool(r.get("content")),
+                "5.1 验证 content 非空",
                 f"version={r.get('version', 'N/A')}",
             )
         else:
-            result.fail("5.1 get_role_skills", err or "未知错误")
+            result.fail("5.1 get_skill", err or "未知错误")
 
         # 5.2 提交开发产物
         r, err = await call_tool_safe(
@@ -858,7 +906,7 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
     # 8.1 无 X-MCP-Key header
     try:
         async with make_client(ctx.url) as no_auth:
-            r, err = await call_tool_safe(no_auth, "get_role_skills", {})
+            r, err = await call_tool_safe(no_auth, "get_skill", {})
             result.check(
                 err is not None,
                 "8.1 无 header 认证失败",
@@ -870,7 +918,7 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
     # 8.2 无效 Access Key
     try:
         async with make_client(ctx.url, "ak_invalid.invalid") as bad_auth:
-            r, err = await call_tool_safe(bad_auth, "get_role_skills", {})
+            r, err = await call_tool_safe(bad_auth, "get_skill", {})
             result.check(
                 err is not None,
                 "8.2 无效 Key 认证失败",
@@ -905,6 +953,7 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
             pm,
             "publish_requirement",
             {
+                "system_id": ctx.system_id,
                 "project_id": ctx.project_id,
                 "requirement": {
                     "title": "测试需求",
@@ -928,6 +977,7 @@ async def scenario_8_error_handling(ctx: TestContext) -> ScenarioResult:
             pm,
             "publish_requirement",
             {
+                "system_id": ctx.system_id,
                 "project_id": ctx.project_id,
                 "requirement": {
                     "title": "用户登录功能",
