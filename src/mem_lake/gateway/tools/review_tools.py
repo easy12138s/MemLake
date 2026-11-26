@@ -273,10 +273,6 @@ async def _review_submission_core(
             after_batch_id=after_batch_id,
             limit=limit + 1,
         )
-        remaining = await count_pending_batches(
-            session, submission_id=submission_id, batch_ids=batch_ids
-        )
-    has_more = len(batches) > limit
     batches = batches[:limit]
 
     results: list[SubmissionItemResult] = []
@@ -357,12 +353,17 @@ async def _review_submission_core(
     for batch_project_id, node_ids in created_by_project.items():
         await _safe_enqueue_embed(batch_project_id, node_ids)
 
+    async with readonly_session() as session:
+        remaining = await count_pending_batches(
+            session, submission_id=submission_id, batch_ids=batch_ids
+        )
+
     return ReviewSubmissionOutput(
         submission_id=submission_id,
         action=action,
         processed=len(results),
         items=results,
-        has_more=has_more,
+        has_more=remaining > 0,
         remaining=remaining,
     )
 
