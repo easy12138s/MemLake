@@ -99,7 +99,24 @@ def _keep_node_ids_stmt(
     return select(KnowledgeNode.id).where(or_(*conditions))
 
 
-def _batch_delete_cond(protected_projects, protected_node_ids):
+def _assert_drop_project_safe(
+    system_projects: set[uuid.UUID], drop_project_ids: set[uuid.UUID]
+) -> None:
+    """--drop-project 不得指向保留 system 的关联项目（含其 system_id=NULL 的画像）。
+
+    用户的硬约束是「两个生产 system 域零损伤」；即使显式点名，也不允许通过
+    本脚本删除这些项目下的任何节点/边。需要清理时先人工确认并从保留域移除。
+    """
+    overlap = sorted(str(pid) for pid in (system_projects & drop_project_ids))
+    if overlap:
+        raise SystemExit(
+            "错误: --drop-project 不能指定「保留 system 的关联项目」，"
+            f"已拒绝: {overlap}。这些项目默认受保护；如确需删除，"
+            "请先人工核对并从 --keep-system 范围外单独处置"
+        )
+
+
+def _batch_delete_cond(protected_projects, protected_node_ids, keep_system_ids=None):
     """批次删除判定（保守口径）。
 
     保护规则（任一命中即保留）：
@@ -115,13 +132,24 @@ def _batch_delete_cond(protected_projects, protected_node_ids):
     touching_target = select(ApprovalItem.batch_id).where(
         ApprovalItem.target_id.in_(protected_node_ids)
     )
-    touching_payload = select(ApprovalItem.batch_id).where(
-        or_(
-            ApprovalItem.payload["node_id"].astext.in_(kept_node_ids_text),
-            ApprovalItem.payload["from_ref"].astext.in_(kept_node_ids_text),
-            ApprovalItem.payload["to_ref"].astext.in_(kept_node_ids_text),
+    payload_conditions = [
+        ApprovalItem.payload["node_id"].astext.in_(kept_node_ids_text),
+        ApprovalItem.payload["from_ref"].astext.in_(kept_node_ids_text),
+        ApprovalItem.payload["to_ref"].astext.in_(kept_node_ids_text),
+    ]
+    if keep_system_ids:
+        payload_conditions.append(
+            ApprovalItem.payload["system_id"].astext.in_(
+                [str(sid) for sid in keep_system_ids]
+            )
         )
-    )
+    if protected_projects:
+        payload_conditions.append(
+            ApprovalItem.payload["project_id"].astext.in_(
+                [str(pid) for pid in protected_projects]
+            )
+        )
+    touching_payload = select(ApprovalItem.batch_id).where(or_(*payload_conditions))
     return and_(
         _not_in(ApprovalBatch.project_id, protected_projects),
         ApprovalBatch.status != "pending_review",
@@ -273,6 +301,7 @@ async def _plan(
     """
     drop_project_ids = drop_project_ids or set()
     system_projects = await _resolve_system_projects(session, keep_system_ids)
+    _assert_drop_project_safe(system_projects, drop_project_ids)
     protected_project_ids = _effective_protected_projects(
         keep_project_ids, system_projects, drop_project_ids
     )
@@ -338,7 +367,9 @@ async def _plan(
         (
             await session.execute(
                 select(ApprovalBatch).where(
-                    _batch_delete_cond(protected_projects, protected_node_ids)
+                    _batch_delete_cond(
+                        protected_projects, protected_node_ids, keep_system_ids
+                    )
                 )
             )
         )

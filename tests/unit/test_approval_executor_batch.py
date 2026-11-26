@@ -91,6 +91,7 @@ async def _run_review(monkeypatch, item, before, after):
         embedding_client=object(),
         vector_searcher=object(),
     )
+    calls["batch"] = batch
     return calls
 
 
@@ -105,6 +106,7 @@ async def test_content_update_regenerates_vectors_once(monkeypatch):
     assert calls["update"]["regenerate_vector"] is False
     assert calls["update"]["expected_version"] == 1
     assert calls["regen"] == [after]
+    assert calls["batch"].conflict_hint["conflict_checked"] is False
 
 
 @pytest.mark.asyncio
@@ -117,6 +119,7 @@ async def test_tags_only_update_skips_vector_regeneration(monkeypatch):
     calls = await _run_review(monkeypatch, item, before, after)
 
     assert "regen" not in calls
+    assert calls["batch"].conflict_hint["conflict_checked"] is True
 
 
 @pytest.mark.asyncio
@@ -152,3 +155,51 @@ async def test_missing_update_target_fails_before_any_write(monkeypatch):
             vector_searcher=object(),
         )
     assert calls["update"] == 0
+
+
+@pytest.mark.asyncio
+async def test_same_orm_instance_still_marks_vector_dirty(monkeypatch):
+    """回归：get_node 与 update_node 命中 identity map 返回同一实例时，
+    必须用标量快照比较，否则向量永远不会重算。"""
+    node = _node()
+    item = _update_item(node.id, {"title": "新标题"})
+    batch = _batch([item])
+    calls: dict = {}
+
+    async def fake_pending(session, batch_id, *, verb):
+        return batch
+
+    async def fake_nodes(session, **kwargs):
+        return [node]
+
+    async def fake_get_node(session, node_id):
+        return node
+
+    async def fake_update(session, **kwargs):
+        node.title = kwargs["title"]
+        return node
+
+    async def fake_regen(session, *, nodes, embedding_client):
+        calls["regen"] = nodes
+        return len(nodes)
+
+    async def fake_audit(session, **kwargs):
+        return None
+
+    monkeypatch.setattr(executor, "get_pending_batch", fake_pending)
+    monkeypatch.setattr(executor, "get_nodes_by_ids", fake_nodes)
+    monkeypatch.setattr(executor, "get_node", fake_get_node)
+    monkeypatch.setattr(executor, "update_node", fake_update)
+    monkeypatch.setattr(executor, "regenerate_node_vectors_batch", fake_regen)
+    monkeypatch.setattr(executor, "write_audit_log", fake_audit)
+
+    await executor.review_approve(
+        _Session(),
+        batch_id=batch.id,
+        reviewed_by="ak_admin",
+        graph_store=object(),
+        embedding_client=object(),
+        vector_searcher=object(),
+    )
+
+    assert calls["regen"] == [node]

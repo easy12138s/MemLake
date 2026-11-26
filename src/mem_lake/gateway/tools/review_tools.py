@@ -38,6 +38,7 @@ from mem_lake.approval.repository import (
 from mem_lake.approval.service import (
     BatchNotFoundError,
     BatchStatusError,
+    PayloadValidationError,
     auto_process_batch,
     get_batch_detail,
 )
@@ -63,7 +64,7 @@ from mem_lake.gateway.tools._shared import (
     get_lifespan_context,
     to_tool_error,
 )
-from mem_lake.knowledge.repository import NodeNotFoundError
+from mem_lake.knowledge.repository import NodeNotFoundError, VersionConflictError
 from mem_lake.knowledge.schema import SchemaValidationError
 
 if TYPE_CHECKING:
@@ -466,6 +467,8 @@ def register_review_tools(mcp: FastMCP) -> None:
             BatchStatusError,
             NodeNotFoundError,
             SchemaValidationError,
+            PayloadValidationError,
+            VersionConflictError,
         ) as e:
             raise to_tool_error(e) from e
 
@@ -560,6 +563,8 @@ def register_review_tools(mcp: FastMCP) -> None:
             BatchStatusError,
             NodeNotFoundError,
             SchemaValidationError,
+            PayloadValidationError,
+            VersionConflictError,
         ) as e:
             raise to_tool_error(e) from e
 

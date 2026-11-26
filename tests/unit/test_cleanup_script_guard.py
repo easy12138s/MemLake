@@ -107,7 +107,11 @@ def test_batch_delete_cond_excludes_pending_floating_and_kept_refs() -> None:
         KnowledgeNode.system_id.in_([_u("01276605-8670-4f6f-82bd-fbe0b03a9358")])
     )
     stmt = select(ApprovalBatch).where(
-        _batch_delete_cond(SYS_PROJECTS, kept_node_ids)
+        _batch_delete_cond(
+            SYS_PROJECTS,
+            kept_node_ids,
+            {_u("01276605-8670-4f6f-82bd-fbe0b03a9358")},
+        )
     )
     sql = str(
         stmt.compile(
@@ -139,3 +143,19 @@ def test_keep_node_ids_includes_protected_projects() -> None:
 
     assert "knowledge_node.system_id IN" in sql
     assert "knowledge_node.project_id IN" in sql
+
+
+def test_drop_project_rejects_keep_system_projects() -> None:
+    """--drop-project 指向保留 system 关联项目时直接拒绝（含画像等 system_id=NULL 节点）。"""
+    import pytest
+
+    from scripts.cleanup_test_leftovers import _assert_drop_project_safe
+
+    with pytest.raises(SystemExit, match="保留 system 的关联项目"):
+        _assert_drop_project_safe(SYS_PROJECTS, {next(iter(SYS_PROJECTS))})
+
+
+def test_drop_project_allows_unrelated_project() -> None:
+    from scripts.cleanup_test_leftovers import _assert_drop_project_safe
+
+    _assert_drop_project_safe(SYS_PROJECTS, {_u("99999999-9999-9999-9999-999999999999")})

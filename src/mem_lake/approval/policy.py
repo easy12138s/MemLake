@@ -251,6 +251,7 @@ async def auto_process_batch(
             "decision": "auto_approved",
             "conflict_hint": {
                 "has_conflict": False,
+                "conflict_checked": True,
                 "checked_nodes": checked_nodes,
                 "checked_updates": checked_updates,
                 "candidates_examined": candidates_total,

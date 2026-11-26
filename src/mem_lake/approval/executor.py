@@ -209,6 +209,19 @@ async def review_approve(
 
     # 3. 合并 conflict_hint
     merged_conflict_hint = _merge_conflict_hints(all_conflict_hints)
+    # review_approve 只对新建节点做冲突检测；内容型 update 未检测，必须显式标注，
+    # 避免回执 has_conflict=false 被误读为「已查过」。
+    has_content_update = any(
+        item.item_type == "node"
+        and item.action == "update"
+        and any(
+            key in (item.payload or {})
+            for key in ("title", "content", "properties", "properties_patch")
+        )
+        for item in batch.items
+    )
+    merged_conflict_hint["conflict_checked"] = not has_content_update
+    merged_conflict_hint["checked_updates"] = 0
     batch.conflict_hint = merged_conflict_hint
 
     # 4. 更新批次状态
@@ -343,6 +356,11 @@ async def _execute_node_update(
         return node, False
 
     before = await get_node(session, node_id)
+    # 注意：update_node 内部 get_node 与这里命中同一 identity map，返回同一 ORM
+    # 实例；必须在调用前拷贝标量快照，否则更新后比较恒为相等（向量永不重算）。
+    before_title = before.title
+    before_content = before.content
+    before_properties = dict(before.properties or {})
     node = await update_node(
         session,
         graph_store=graph_store,
@@ -361,9 +379,9 @@ async def _execute_node_update(
         regenerate_vector=False,
     )
     vector_dirty = (
-        node.title != before.title
-        or node.content != before.content
-        or (node.properties or {}) != (before.properties or {})
+        node.title != before_title
+        or node.content != before_content
+        or (node.properties or {}) != before_properties
     )
     return node, vector_dirty
 

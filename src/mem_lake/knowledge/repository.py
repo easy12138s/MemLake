@@ -299,15 +299,20 @@ async def get_node(
     session: AsyncSession,
     node_id: uuid.UUID,
     include_deleted: bool = False,
+    *,
+    for_update: bool = False,
 ) -> KnowledgeNode:
     """按 id 查询节点。
 
     默认排除软删除节点（is_deleted=False）。include_deleted=True 返回含已删除。
+    for_update=True 时加行锁（乐观版本校验/读改写场景，防并发静默覆盖）。
     不存在或已删除（且 include_deleted=False）抛 NodeNotFoundError。
     """
     stmt = select(KnowledgeNode).where(KnowledgeNode.id == node_id)
     if not include_deleted:
         stmt = stmt.where(KnowledgeNode.is_deleted == False)  # noqa: E712
+    if for_update:
+        stmt = stmt.with_for_update()
     result = await session.execute(stmt)
     node = result.scalar_one_or_none()
     if node is None:
@@ -494,7 +499,9 @@ async def update_node(
 
     不存在抛 NodeNotFoundError。不 commit。
     """
-    node = await get_node(session, node_id)
+    node = await get_node(
+        session, node_id, for_update=expected_version is not None
+    )
     if expected_version is not None and node.version != expected_version:
         raise VersionConflictError(
             f"节点 {node_id} 版本冲突：期望 {expected_version}，当前 {node.version}，"

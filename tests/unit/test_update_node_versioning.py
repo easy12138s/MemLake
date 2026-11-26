@@ -61,7 +61,7 @@ def test_merge_update_values_rejects_properties_and_patch_together():
 async def test_update_node_rejects_stale_expected_version(monkeypatch):
     node = _node()
 
-    async def fake_get_node(session, node_id):
+    async def fake_get_node(session, node_id, **kwargs):
         return node
 
     monkeypatch.setattr(repository, "get_node", fake_get_node)
@@ -82,7 +82,7 @@ async def test_update_node_rejects_stale_expected_version(monkeypatch):
 async def test_update_node_noop_patch_does_not_bump_version(monkeypatch):
     node = _node()
 
-    async def fake_get_node(session, node_id):
+    async def fake_get_node(session, node_id, **kwargs):
         return node
 
     monkeypatch.setattr(repository, "get_node", fake_get_node)
@@ -106,7 +106,7 @@ async def test_update_node_patch_bumps_version_and_merges(monkeypatch):
     node = _node()
     audits: list[dict] = []
 
-    async def fake_get_node(session, node_id):
+    async def fake_get_node(session, node_id, **kwargs):
         return node
 
     async def fake_audit(session, **kwargs):
@@ -178,3 +178,61 @@ def test_validate_item_payload_rejects_bad_base_version():
             _update_item({"node_id": str(uuid.uuid4()), "title": "x", "base_version": 0}),
             0,
         )
+
+
+@pytest.mark.asyncio
+async def test_get_node_for_update_sets_row_lock():
+    node = _node()
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return node
+
+    class _LockSession:
+        def __init__(self):
+            self.stmt = None
+
+        async def execute(self, stmt):
+            self.stmt = stmt
+            return _Result()
+
+    session = _LockSession()
+    await repository.get_node(session, node.id, for_update=True)
+    assert session.stmt._for_update_arg is not None
+
+    session2 = _LockSession()
+    await repository.get_node(session2, node.id)
+    assert session2.stmt._for_update_arg is None
+
+
+@pytest.mark.asyncio
+async def test_update_node_locks_row_when_expected_version_given(monkeypatch):
+    node = _node()
+    seen: dict = {}
+
+    async def fake_get_node(session, node_id, **kwargs):
+        seen.update(kwargs)
+        return node
+
+    async def fake_audit(session, **kwargs):
+        return None
+
+    monkeypatch.setattr(repository, "get_node", fake_get_node)
+    monkeypatch.setattr(repository, "write_audit_log", fake_audit)
+
+    class _Graph:
+        async def sync_node_title(self, session, node_id, title):
+            return None
+
+    await repository.update_node(
+        _Session(),
+        graph_store=_Graph(),
+        embedding_client=None,
+        node_id=node.id,
+        title="新标题",
+        expected_version=3,
+        regenerate_vector=False,
+        actor="ak_pm",
+    )
+
+    assert seen.get("for_update") is True
