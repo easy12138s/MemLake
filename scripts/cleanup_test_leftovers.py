@@ -57,7 +57,7 @@ import asyncio
 import uuid
 from collections import Counter
 
-from sqlalchemy import and_, delete, func, or_, select, true
+from sqlalchemy import String, and_, cast, delete, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mem_lake.approval.models import ApprovalBatch, ApprovalItem
@@ -88,10 +88,46 @@ def _not_in(col, ids: set[uuid.UUID]):
     return or_(col.is_(None), col.notin_(ids))
 
 
-def _keep_node_ids_stmt(keep_system_ids: dict[uuid.UUID, str]):
-    """保留 system 下的全部节点 id 子查询（快照与保护集共用同一口径）。"""
-    return select(KnowledgeNode.id).where(
-        KnowledgeNode.system_id.in_(list(keep_system_ids))
+def _keep_node_ids_stmt(
+    keep_system_ids: dict[uuid.UUID, str],
+    protected_project_ids: set[uuid.UUID] | None = None,
+):
+    """保留域节点 id 子查询（system ∪ 受保护项目；快照与保护集共用同一口径）。"""
+    conditions = [KnowledgeNode.system_id.in_(list(keep_system_ids))]
+    if protected_project_ids:
+        conditions.append(KnowledgeNode.project_id.in_(protected_project_ids))
+    return select(KnowledgeNode.id).where(or_(*conditions))
+
+
+def _batch_delete_cond(protected_projects, protected_node_ids):
+    """批次删除判定（保守口径）。
+
+    保护规则（任一命中即保留）：
+    - project_id 属于保留项目（NULL 视为不保留，但下面第二条兜住悬浮批次）
+    - status=pending_review：待审批批次一律不删（target_id 尚未回填）
+    - project_id IS NULL：悬浮批次一律不删（宁留勿删）
+    - 审批项 target_id 命中保留域节点
+    - 审批项 payload 的 node_id/from_ref/to_ref 命中保留域节点（边批次无 target_id）
+    """
+    kept_node_ids_text = select(cast(KnowledgeNode.id, String)).where(
+        KnowledgeNode.id.in_(protected_node_ids)
+    )
+    touching_target = select(ApprovalItem.batch_id).where(
+        ApprovalItem.target_id.in_(protected_node_ids)
+    )
+    touching_payload = select(ApprovalItem.batch_id).where(
+        or_(
+            ApprovalItem.payload["node_id"].astext.in_(kept_node_ids_text),
+            ApprovalItem.payload["from_ref"].astext.in_(kept_node_ids_text),
+            ApprovalItem.payload["to_ref"].astext.in_(kept_node_ids_text),
+        )
+    )
+    return and_(
+        _not_in(ApprovalBatch.project_id, protected_projects),
+        ApprovalBatch.status != "pending_review",
+        ApprovalBatch.project_id.is_not(None),
+        ~ApprovalBatch.id.in_(touching_target),
+        ~ApprovalBatch.id.in_(touching_payload),
     )
 
 
@@ -278,15 +314,11 @@ async def _plan(
             KnowledgeNode.project_id.in_(list(protected_project_ids)),
         )
     )
-    batches_touching_kept_nodes = select(ApprovalItem.batch_id).where(
-        ApprovalItem.target_id.in_(protected_node_ids)
-    )
     del_batches = list(
         (
             await session.execute(
                 select(ApprovalBatch).where(
-                    _not_in(ApprovalBatch.project_id, protected_projects),
-                    ~ApprovalBatch.id.in_(batches_touching_kept_nodes),
+                    _batch_delete_cond(protected_projects, protected_node_ids)
                 )
             )
         )

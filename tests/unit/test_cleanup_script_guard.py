@@ -92,3 +92,30 @@ def test_delete_condition_excludes_protected_projects() -> None:
     for pid in protected:
         assert str(pid) in sql
     assert "knowledge_node.project_id NOT IN" in sql
+
+
+def test_batch_delete_cond_excludes_pending_floating_and_kept_refs() -> None:
+    """批次保护：待审批、悬浮、payload 命中保留节点的批次都不进入删除谓词。"""
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+
+    from mem_lake.approval.models import ApprovalBatch
+    from mem_lake.knowledge.models import KnowledgeNode
+    from scripts.cleanup_test_leftovers import _batch_delete_cond
+
+    kept_node_ids = select(KnowledgeNode.id).where(
+        KnowledgeNode.system_id.in_([_u("01276605-8670-4f6f-82bd-fbe0b03a9358")])
+    )
+    stmt = select(ApprovalBatch).where(
+        _batch_delete_cond(SYS_PROJECTS, kept_node_ids)
+    )
+    sql = str(
+        stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "approval_batch.status !=" in sql
+    assert "approval_batch.project_id IS NOT NULL" in sql
+    assert "approval_item.payload ->> 'from_ref'" in sql
+    assert "approval_item.payload ->> 'to_ref'" in sql
