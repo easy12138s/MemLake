@@ -9,10 +9,25 @@
 - audit_log：一律保留（append-only 契约；操作历史有溯源价值）
 - access_key：一律不动（无凭据判断依据，宁留勿删）
 - embedding_state / EmbeddingState：模型签名单例，不动
+- 批次保护：project_id 维度 + **节点归属维度**（审批项命中保留域节点的批次保留，
+  避免真实悬浮需求批次被误删——2026-11-26 加固）
 
 保留白名单（CLI 指定，至少一个 system）：
 - --keep-system <名称或UUID>：可多次；name 优先（存量 system 常无 code）
 - --keep-project <UUID>：可多次（项目域保留；项目无名称字段，仅支持 UUID）
+- --drop-project <UUID>：可多次；**显式声明要删除**的项目（仅对「保留 system
+  关联项目」有意义，见下方守卫）
+
+守卫（2026-11-26 加固，源于 11-20 误删事故）：
+- **保留 system 的关联项目默认受保护**。system↔project 映射（system_project 表）
+  是「该项目属于该系统域」的权威口径：其下节点一律不删，除非用 --drop-project
+  显式点名。事故复盘：11-20 的清理只列了 --keep-project 7e81667e/0abd0149，
+  而「中方诊药云系统」关联的 01276605/6d50c0c9/70e9a3e0 未列 → 删除谓词
+  （system∉保留 AND project∉保留）把这三个真实项目的全部 project-scoped
+  节点（真实研发资产 64 个 / 111 条边）连锅端，需求（system-owned）存活、
+  研发资产全灭。本守卫使该类事故在执行前即失效。
+- --drop-project 只放宽「system 关联项目」这一层保护，不放宽 batch/node
+  维度之外的任何判定；误点名仍需人工复核 dry-run 清单。
 
 用法（宿主机 venv 或任意能连 DB+AGE 的环境）：
     # dry-run：只清点（默认）
@@ -23,6 +38,9 @@
     python -m scripts.cleanup_test_leftovers \\
         --keep-system <系统名称或UUID> --keep-system <另一系统> \\
         --keep-project <project-uuid> --execute
+    # 显式删除某个 system 关联项目（如测试项目）
+    python -m scripts.cleanup_test_leftovers \\
+        --keep-system <系统名称或UUID> --drop-project <project-uuid> --execute
 
 安全护栏：
 - --keep-system 未指定或解析不到 → 直接报错退出（宁拒勿误删）
@@ -42,7 +60,7 @@ from collections import Counter
 from sqlalchemy import and_, delete, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mem_lake.approval.models import ApprovalBatch
+from mem_lake.approval.models import ApprovalBatch, ApprovalItem
 from mem_lake.audit.models import AuditLog
 from mem_lake.db.session import AsyncSessionLocal
 from mem_lake.gateway.models import ReindexTask
@@ -115,6 +133,40 @@ async def _resolve_keep_systems(
     return resolved
 
 
+def _effective_protected_projects(
+    keep_project_ids: set[uuid.UUID],
+    system_projects: set[uuid.UUID],
+    drop_project_ids: set[uuid.UUID],
+) -> set[uuid.UUID]:
+    """算出受保护项目集合（节点与批次共用同一口径）。
+
+    - keep_project_ids：--keep-project 显式保留，**优先级最高**（即便同时出现在
+      --drop-project 也仍然保护——矛盾输入取安全侧）
+    - system_projects：保留 system 的关联项目，默认保护（守卫，2026-11-26）
+    - drop_project_ids：--drop-project 显式点名删除，只放开 system_projects 层
+    """
+    return keep_project_ids | (system_projects - drop_project_ids)
+
+
+async def _resolve_system_projects(
+    session: AsyncSession, keep_system_ids: dict[uuid.UUID, str]
+) -> set[uuid.UUID]:
+    """保留 system 关联的全部项目（system_project 映射 = 项目归属的权威口径）。
+
+    2026-11-26 加固（源于 11-20 误删事故）：这些项目未列入 --keep-project 时，
+    其 project-scoped 节点（真实研发资产）会被删除谓词连锅端。默认纳入保护集，
+    只有 --drop-project 显式点名才放开。
+    """
+    rows = (
+        await session.execute(
+            select(SystemProject.project_id).where(
+                SystemProject.system_id.in_(list(keep_system_ids))
+            )
+        )
+    ).all()
+    return {pid for (pid,) in rows if pid is not None}
+
+
 async def _keep_snapshot(
     session: AsyncSession, keep_system_ids: dict[uuid.UUID, str]
 ) -> dict[str, int]:
@@ -154,9 +206,21 @@ async def _plan(
     session: AsyncSession,
     keep_system_ids: dict[uuid.UUID, str],
     keep_project_ids: set[uuid.UUID],
+    drop_project_ids: set[uuid.UUID] | None = None,
 ):
-    """清点待删对象。节点判定：system 不保留 且 项目不保留（NULL 按不保留处理）。"""
-    node_cond = _node_delete_cond(keep_system_ids, keep_project_ids)
+    """清点待删对象。节点判定：system 不保留 且 项目不保留（NULL 按不保留处理）。
+
+    保护集（节点与批次共用同一口径）：
+    - keep_project_ids：--keep-project 显式保留
+    - system_projects：**保留 system 的关联项目默认保护**（守卫，2026-11-26）
+    - drop_project_ids：--drop-project 显式点名删除，从上述两层保护中扣除
+    """
+    drop_project_ids = drop_project_ids or set()
+    system_projects = await _resolve_system_projects(session, keep_system_ids)
+    protected_project_ids = _effective_protected_projects(
+        keep_project_ids, system_projects, drop_project_ids
+    )
+    node_cond = _node_delete_cond(keep_system_ids, protected_project_ids)
     del_nodes = list(
         (await session.execute(select(KnowledgeNode).where(node_cond)))
         .scalars()
@@ -203,12 +267,26 @@ async def _plan(
         ).all()
         if pid is not None
     }
-    protected_projects = keep_project_ids | surviving_projects
+    protected_projects = protected_project_ids | surviving_projects
+    # 批次保护补强（2026-11-26 加固）：project_id 为空的批次（悬浮需求批次）按
+    # project 维度无法判定归属，原口径会把「审批项指向保留域节点」的真实悬浮批次
+    # 一并删掉（实测 55 个真实批次 / 68 个审批项）。补一条按节点归属的保护：
+    # 审批项 target_id 命中保留域节点（system ∈ 保留 或 project ∈ 保留）的批次保留。
+    protected_node_ids = select(KnowledgeNode.id).where(
+        or_(
+            KnowledgeNode.system_id.in_(list(keep_system_ids)),
+            KnowledgeNode.project_id.in_(list(protected_project_ids)),
+        )
+    )
+    batches_touching_kept_nodes = select(ApprovalItem.batch_id).where(
+        ApprovalItem.target_id.in_(protected_node_ids)
+    )
     del_batches = list(
         (
             await session.execute(
                 select(ApprovalBatch).where(
-                    _not_in(ApprovalBatch.project_id, protected_projects)
+                    _not_in(ApprovalBatch.project_id, protected_projects),
+                    ~ApprovalBatch.id.in_(batches_touching_kept_nodes),
                 )
             )
         )
@@ -235,6 +313,8 @@ async def _plan(
         del_counters,
         del_batches,
         del_tasks,
+        system_projects,
+        protected_project_ids,
     )
 
 
@@ -272,6 +352,16 @@ async def main() -> None:
         metavar="UUID",
         help="额外保留的项目域（UUID，可多次）",
     )
+    parser.add_argument(
+        "--drop-project",
+        action="append",
+        default=[],
+        metavar="UUID",
+        help=(
+            "显式声明要删除的项目（UUID，可多次）；仅用于放开「保留 system 关联"
+            "项目」的默认保护，不影响其它判定"
+        ),
+    )
     parser.add_argument("--execute", action="store_true", help="实际执行删除（默认只清点）")
     args = parser.parse_args()
 
@@ -289,6 +379,13 @@ async def main() -> None:
         except ValueError:
             raise SystemExit(f"错误: --keep-project 不是合法 UUID: {spec!r}") from None
 
+    drop_project_ids: set[uuid.UUID] = set()
+    for spec in args.drop_project:
+        try:
+            drop_project_ids.add(uuid.UUID(spec))
+        except ValueError:
+            raise SystemExit(f"错误: --drop-project 不是合法 UUID: {spec!r}") from None
+
     graph_store = get_graph_store()
     async with AsyncSessionLocal() as session:
         keep_system_ids = await _resolve_keep_systems(session, args.keep_system)
@@ -305,7 +402,34 @@ async def main() -> None:
             del_counters,
             del_batches,
             del_tasks,
-        ) = await _plan(session, keep_system_ids, keep_project_ids)
+            system_projects,
+            protected_project_ids,
+        ) = await _plan(
+            session,
+            keep_system_ids,
+            keep_project_ids,
+            drop_project_ids,
+        )
+
+        implicit = sorted(str(p) for p in system_projects - keep_project_ids)
+        dropped = sorted(str(p) for p in drop_project_ids)
+        print(
+            "守卫：保留 system 的关联项目默认受保护 —— "
+            f"受保护项目 {len(protected_project_ids)} 个；"
+            f"其中未显式 --keep-project（靠守卫兜住）{implicit or '无'}；"
+            f"--drop-project 显式删除 {dropped or '无'}"
+        )
+        if dropped and not (set(dropped) & {str(p) for p in system_projects}):
+            print(
+                "警告: --drop-project 指定的项目不属于任何保留 system（可能拼错或已删），"
+                "本次不产生额外影响"
+            )
+        conflict = sorted(str(p) for p in keep_project_ids & drop_project_ids)
+        if conflict:
+            print(
+                f"警告: 项目同时出现在 --keep-project 与 --drop-project：{conflict}；"
+                "按安全侧处理（仍然保留）"
+            )
 
         by_type = Counter(n.type for n in del_nodes)
         orphan_embeddings = await session.scalar(
