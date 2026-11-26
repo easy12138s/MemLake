@@ -95,7 +95,13 @@ curl -X POST http://localhost:8000/mcp \
 docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 ```
 
-明文 Key 仅显示一次，丢失只能重新创建。admin 接入后通过 `create_access_key` 工具为 PM 和 Dev 创建 Access Key。
+明文 Key 仅显示一次，丢失只能重新创建。admin 接入后**按顺序**完成：
+
+1. `manage_project_profile`（`action=create`）为项目建画像（`work_dir` 必填）；
+2. `manage_system`（`action=create`）建 System 域，再用 `action=add_projects` 挂载项目；
+3. `create_access_key` 为 PM / Dev 创建 Access Key（项目须已有画像）。
+
+> 顺序不能颠倒：`create_access_key` / `update_access_key_scope` / `manage_system add|set_projects` 都会校验项目已建画像。
 
 ### 5. 配置 MCP 客户端
 
@@ -116,7 +122,7 @@ docker exec -it deploy-mem-lake-1 memlake-bootstrap-admin
 |------|------|------|
 | postgres | 5432 | PostgreSQL 17 + AGE + pgvector + zhparser，数据持久化在 `pg_data` 卷 |
 | embedding | 8001 | Qwen3-Embedding-0.6B 向量化服务，mem-lake 通过 HTTP 调用 |
-| mem-lake | 8000 | MCP 网关，33 个工具 + RBAC + 限流 |
+| mem-lake | 8000 | MCP 网关，40 个工具 + RBAC + 限流 |
 | mem-lake（可视化控制台） | 8090（默认不映射） | 只读观测台；需 `VISUAL_ENABLED=true` 且非空 `VISUAL_PASSWORD` |
 
 启动顺序：postgres healthy → embedding healthy → mem-lake。默认 compose 会发布 5432/8001 端口，生产环境请通过防火墙限制或移除对应 `ports` 映射，仅对外放行 8000。
@@ -186,8 +192,16 @@ Schema 说明：业务表 schema 变更由 Alembic 迁移管理（`alembic/versi
 git pull
 docker compose build mem-lake
 docker compose run --rm mem-lake alembic stamp 0001_initial   # 登记基线（不改动 schema）
-docker compose up -d                                           # 启动：容器 CMD 先 upgrade head（含 0002 向量索引 opclass 修复、0003 content_vector 列删除、0004 access_key name/owner），应用再校验版本一致
+docker compose up -d                                           # 启动：容器 CMD 先 upgrade head（含 0002 向量索引 opclass 修复、0003 content_vector 列删除、0004 access_key name/owner、0005 approval_batch submission_id、0006 external_id 表达式索引、0007 索引名对齐），应用再校验版本一致
 ```
+
+**升级行为变更（v1.1，请先阅读）**：
+
+- **admin 不再持有 PM/Dev 内容写入工具**：`publish_requirement`、`publish_requirements`、`validate_requirements`、`update_requirement_relations`、`update_requirements`、`update_node`、`bind_requirement_to_project`、`submit_dev_artifacts` 仅 PM/Dev 可用；admin 仍保留 `manage_system` / `manage_project_profile` / 密钥管理 / `reindex_project_vectors` 等管理写操作。存量脚本若用 admin Key 调内容写入，需换 PM/Dev Key。
+- **项目画像前置**：`create_access_key` / `update_access_key_scope` / `manage_system` 的 `add_projects|set_projects` 要求项目已建画像。存量项目升级后先补建：`manage_project_profile(action=create, work_dir=...)`。
+- **`manage_project_profile.work_dir` 必填**：create 与 update 共用同一输入模型，存量画像即使只改描述也需重填 `work_dir`。
+- **鉴权收紧（兼容模式）**：`publish_requirement(s)` / `validate_requirements` 会校验 `system_id` 在 Key 的允许集内（`system_scope ∪ project_scope 所隶属 system`）且 `project_id` 已挂载到该系统。只绑定项目的存量 Key 在其项目所属 system 内行为不变；写入未挂载 system 会收到可执行的授权错误。
+- **迁移只涉及索引**：0006/0007 无列变更、无数据回写；「中方诊药云系统」「MemLake」等保留域数据不受影响。
 
 早于 v1.0.0 的历史部署仍走备份迁移：`deploy/backup.sh` 备份 → 全新重建（`docker compose down -v` → `up -d --build`）→ `deploy/restore.sh` 恢复；恢复的旧数据须符合 v1.0.0 契约（节点 properties 不得含 `requirement_id` 等白名单外字段、`project_scope` 须为 `{systems,projects}` 字典结构），恢复完成后按上方存量升级流程登记 Alembic 基线。
 

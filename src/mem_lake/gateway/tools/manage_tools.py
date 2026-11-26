@@ -369,6 +369,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
         """创建 Access Key，返回明文（仅此一次，调用方负责安全保存）。
 
         Admin 工具。role 决定工具集，project_scope 限定 pm/dev 可访问项目
+        （**前置**：project_scope 中每个项目必须已建 ProjectProfile，
+        否则直接拒绝——先调用 manage_project_profile create）
         （admin 为空列表表示不受限）。同时返回两部分初始化产物，请按需分发给对应接收方：
           · mcp_config：拼装好的 MCP 客户端配置 JSON，交【用户】粘贴到其
             MCP 客户端（Claude Desktop / Cursor / Codex 等），Agent 不自行安装 MCP；
@@ -475,6 +477,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
         """动态修改 Key 的项目范围，支持三种定位（优先级 key_ids > role_filter > grant_all_projects）。
 
         Admin 工具。三者均省略时为空操作（返回空列表，不改任何 Key）。
+        **前置**：project_scope 中每个项目必须已建 ProjectProfile。
         """
         try:
             key_id_actor = get_current_key_id()
@@ -605,6 +608,7 @@ def register_manage_tools(mcp: FastMCP) -> None:
         """管理 system 域（admin 专属）：建立/枚举系统域、维护系统↔项目归属、绑定 Key 的 system 授权。
 
         PM 需求按 system 隔离；System 由 admin 统一建并签发。行为：
+        （**前置**：add_projects / set_projects 中的项目必须已建画像）
         - create：建一个 System 域，返回 system_id
         - list：枚举所有 System（含其下项目数）
         - set_projects：**全量重置**该系统的归属清单（覆盖语义，传入完整列表；
