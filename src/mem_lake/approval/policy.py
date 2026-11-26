@@ -22,9 +22,38 @@ from mem_lake.approval.models import (
     iter_created_node_items,
 )
 from mem_lake.embedding.client import EmbeddingClient
+from mem_lake.knowledge.embed import build_embed_text
 from mem_lake.knowledge.graph_store import GraphStore
+from mem_lake.knowledge.repository import get_nodes_by_ids
 from mem_lake.observability.metrics import APPROVAL_BATCHES
 from mem_lake.search.vector import VectorSearcher
+
+
+def _is_content_update(item: Any) -> bool:
+    """update item 是否改变向量相关字段（纯 tags/归属变更不算）。"""
+    if item.item_type != "node" or item.action != "update":
+        return False
+    payload = item.payload or {}
+    return any(
+        key in payload
+        for key in ("title", "content", "properties", "properties_patch")
+    )
+
+
+def _prospective_update(
+    payload: dict[str, Any], node: Any
+) -> tuple[str, str, dict[str, Any]]:
+    """计算 update item 执行后的预期 title/content/properties（只读）。"""
+    title = payload["title"] if payload.get("title") is not None else node.title
+    content = (
+        payload["content"] if payload.get("content") is not None else node.content
+    )
+    properties = dict(node.properties or {})
+    if payload.get("properties") is not None:
+        properties = dict(payload["properties"])
+    elif payload.get("properties_patch"):
+        properties.update(payload["properties_patch"])
+    return title, content, properties
 
 
 async def auto_process_batch(
@@ -86,6 +115,7 @@ async def auto_process_batch(
     all_conflicts: list[dict[str, Any]] = []
     candidates_total = 0
     checked_nodes = 0
+    checked_updates = 0
     qv_index = 0
 
     for item in batch.items:
@@ -153,6 +183,54 @@ async def auto_process_batch(
 
     has_conflict = bool(all_conflicts)
 
+    # 2b. node+update 内容变更同样做冲突检测（纯 tags 更新不查；归属变更不查）。
+    update_items = [item for item in batch.items if _is_content_update(item)]
+    if update_items:
+        node_ids = [
+            nid
+            for nid in (_to_uuid(item.payload.get("node_id")) for item in update_items)
+            if nid is not None
+        ]
+        nodes = await get_nodes_by_ids(session, node_ids=node_ids, status="approved")
+        node_map = {node.id: node for node in nodes}
+        checkable: list[tuple[Any, Any, str, str, dict[str, Any]]] = []
+        query_texts: list[str] = []
+        for item in update_items:
+            node = node_map.get(_to_uuid(item.payload.get("node_id")))
+            if node is None:
+                continue
+            title, content, properties = _prospective_update(item.payload, node)
+            checkable.append((item, node, title, content, properties))
+            query_texts.append(
+                build_embed_text(node.type, title, content, properties)
+            )
+        update_vectors = (
+            await embedding_client.embed(query_texts, prompt_name="query")
+            if query_texts
+            else []
+        )
+        for idx, (_item, node, title, content, properties) in enumerate(checkable):
+            checked_updates += 1
+            conflict_result = await _svc.detect_conflicts(
+                session,
+                vector_searcher=vector_searcher,
+                project_id=node.project_id,
+                system_id=node.system_id,
+                node_type=node.type,
+                title=title,
+                content=content,
+                properties=properties,
+                tags=list((_item.payload or {}).get("tags") or node.tags or []),
+                exclude_node_id=node.id,
+                query_vector=update_vectors[idx],
+            )
+            candidates_total += conflict_result.get("candidates_examined", 0)
+            if conflict_result.get("has_conflict"):
+                all_conflicts.extend(
+                    conflict_result.get("conflicting_nodes", [])
+                )
+        has_conflict = bool(all_conflicts)
+
     # 3. 无冲突 → 自动审批通过
     if not has_conflict:
         approved_batch = await _svc.review_approve(
@@ -174,6 +252,7 @@ async def auto_process_batch(
             "conflict_hint": {
                 "has_conflict": False,
                 "checked_nodes": checked_nodes,
+                "checked_updates": checked_updates,
                 "candidates_examined": candidates_total,
             },
             "batch": approved_batch,
@@ -187,6 +266,7 @@ async def auto_process_batch(
         "conflict_hint": {
             "has_conflict": True,
             "checked_nodes": checked_nodes,
+            "checked_updates": checked_updates,
             "candidates_examined": candidates_total,
             "conflicting_nodes": all_conflicts,
             "suggestion": "review",

@@ -689,3 +689,111 @@ class TestConflictConstants:
     def test_code_snippet_key_fields_are_name_and_file_path(self):
         """CodeSnippet 的关键标识字段为 name + file_path。"""
         assert KEY_IDENTITY_FIELDS["CodeSnippet"] == ["name", "file_path"]
+
+
+def _make_update_item(payload: dict) -> MagicMock:
+    item = MagicMock()
+    item.item_type = "node"
+    item.action = "update"
+    item.entity_type = "Requirement"
+    item.payload = payload
+    return item
+
+
+def _make_update_node():
+    node = MagicMock()
+    node.id = uuid.uuid4()
+    node.type = "Requirement"
+    node.title = "旧标题"
+    node.content = "旧内容"
+    node.properties = {"priority": "P1", "module": "auth"}
+    node.tags = []
+    node.project_id = uuid.uuid4()
+    node.system_id = uuid.uuid4()
+    return node
+
+
+class TestAutoProcessUpdateItems:
+    @pytest.mark.asyncio
+    async def test_content_update_conflict_needs_human_review(self):
+        session = AsyncMock()
+        node = _make_update_node()
+        item = _make_update_item({"node_id": str(node.id), "title": "新标题"})
+        batch = MagicMock()
+        batch.id = uuid.uuid4()
+        batch.status = "pending_review"
+        batch.items = [item]
+
+        conflict_result = {
+            "has_conflict": True,
+            "conflicting_nodes": [{"existing_node_id": str(uuid.uuid4()), "similarity": 0.95}],
+            "candidates_examined": 2,
+            "suggestion": "review",
+        }
+
+        with patch(
+            "mem_lake.approval.repository.get_batch_detail",
+            new=AsyncMock(return_value=batch),
+        ), patch(
+            "mem_lake.approval.policy.get_nodes_by_ids",
+            new=AsyncMock(return_value=[node]),
+        ), patch(
+            "mem_lake.approval.service.detect_conflicts",
+            new=AsyncMock(return_value=conflict_result),
+        ), patch(
+            "mem_lake.approval.service.review_approve",
+            new=AsyncMock(),
+        ) as mock_approve:
+            result = await auto_process_batch(
+                session,
+                batch_id=batch.id,
+                reviewed_by="admin-key",
+                graph_store=MagicMock(),
+                embedding_client=_mock_embedding_client(),
+                vector_searcher=MagicMock(),
+            )
+
+        assert result["decision"] == "needs_human_review"
+        assert result["conflict_hint"]["checked_updates"] == 1
+        mock_approve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tags_only_update_skips_conflict_check(self):
+        session = AsyncMock()
+        node = _make_update_node()
+        item = _make_update_item({"node_id": str(node.id), "tags_add": ["已确认"]})
+        batch = MagicMock()
+        batch.id = uuid.uuid4()
+        batch.status = "pending_review"
+        batch.items = [item]
+
+        approved_batch = MagicMock()
+        approved_batch.id = batch.id
+        approved_batch.status = "approved"
+        approved_batch.items = []
+
+        with patch(
+            "mem_lake.approval.repository.get_batch_detail",
+            new=AsyncMock(return_value=batch),
+        ), patch(
+            "mem_lake.approval.policy.get_nodes_by_ids",
+            new=AsyncMock(return_value=[node]),
+        ), patch(
+            "mem_lake.approval.service.detect_conflicts",
+            new=AsyncMock(),
+        ) as mock_detect, patch(
+            "mem_lake.approval.service.review_approve",
+            new=AsyncMock(return_value=approved_batch),
+        ):
+            result = await auto_process_batch(
+                session,
+                batch_id=batch.id,
+                reviewed_by="admin-key",
+                graph_store=MagicMock(),
+                embedding_client=_mock_embedding_client(),
+                vector_searcher=MagicMock(),
+            )
+
+        assert result["decision"] == "auto_approved"
+        assert result["conflict_hint"]["checked_updates"] == 0
+        mock_detect.assert_not_called()
