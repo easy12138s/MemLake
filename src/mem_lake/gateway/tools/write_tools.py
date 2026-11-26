@@ -42,6 +42,7 @@ from mem_lake.gateway.dependencies import (
     validate_project_in_system,
     validate_system_write_access,
 )
+from mem_lake.gateway.tools._batch_dedupe import DedupeEntry, find_duplicates
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
     WRITE_TOOL_ANNOTATIONS,
@@ -153,7 +154,7 @@ class RequirementInput(StrictInputModel):
         description=(
             "需求属性。**必填字段**：priority（P0/P1/P2/P3）、module（模块）。"
             "**可选字段**：acceptance_criteria（验收标准）、source_doc、version、"
-            "external_id（如 Jira/ADO 原始需求号，仅作记录，不参与判重）。"
+            "external_id（如 Jira/ADO 原始需求号；非空时参与批内 exact 判重）。"
             "需求主键（如 HIS-0001）由服务端按 system 域自动分配并存储于节点，"
             "经 list_requirements（requirement_key 直查）或 get_requirement_context 获取；"
             "调用方无需、也不应传入 requirement_id。"
@@ -240,6 +241,7 @@ class PublishRequirementsOutput(BaseModel):  # type: ignore[misc]
 
     submission_id: uuid.UUID
     items: list[BatchPublishItemOutput]
+    warnings: list[str] = Field(default=[], description="非阻断性提示（如查重降级）")
 
 
 class ValidateRequirementItemOutput(BaseModel):  # type: ignore[misc]
@@ -369,6 +371,20 @@ class ArtifactsInput(StrictInputModel):
 # ============================================================================
 
 
+def _dedupe_entries(requirements: list["BatchRequirementInput"]) -> list[DedupeEntry]:
+    """把批量输入映射为查重比较单元（external_id 取 properties 内的字符串）。"""
+    return [
+        DedupeEntry(
+            client_ref=it.client_ref,
+            project_id=it.project_id,
+            title=it.requirement.title,
+            content=it.requirement.content,
+            external_id=(it.requirement.properties or {}).get("external_id"),
+        )
+        for it in requirements
+    ]
+
+
 async def _publish_requirements_batch(
     *,
     system_id: uuid.UUID,
@@ -395,6 +411,26 @@ async def _publish_requirements_batch(
         raise PayloadValidationError("client_ref 在同一批提交内必须唯一")
 
     await validate_system_write_access(system_id)
+
+    embedding_client = None
+    try:
+        embedding_client = get_lifespan_context().embedding_client
+    except Exception:  # noqa: BLE001 - 无 lifespan（离线/单测）时仅 exact 查重
+        pass
+    dedupe = await find_duplicates(
+        _dedupe_entries(requirements), embedding_client=embedding_client
+    )
+    if dedupe.duplicates:
+        details = "；".join(
+            f"{ref}: {', '.join(reasons)}"
+            for ref, reasons in sorted(dedupe.duplicates.items())
+        )
+        raise PayloadValidationError(f"批内存在重复/高度相似需求：{details}")
+    warnings = (
+        ["embedding 服务不可用，本次仅执行 exact 查重（未做语义近重复检测）"]
+        if dedupe.degraded
+        else []
+    )
 
     key_id = get_current_key_id()
     for it in requirements:
@@ -455,6 +491,7 @@ async def _publish_requirements_batch(
     return PublishRequirementsOutput(
         submission_id=effective_submission_id,
         items=results,
+        warnings=warnings,
     )
 
 
@@ -584,6 +621,10 @@ async def _validate_requirements_core(
     except Exception as e:  # noqa: BLE001 - 预检收集全部错误
         system_error = str(e)
 
+    dedupe = await find_duplicates(
+        _dedupe_entries(requirements), embedding_client=embedding_client
+    )
+
     if threshold is None:
         threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
     suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
@@ -593,6 +634,7 @@ async def _validate_requirements_core(
         errors: list[str] = []
         if system_error is not None:
             errors.append(system_error)
+        errors.extend(dedupe.duplicates.get(it.client_ref, []))
         if it.project_id is not None:
             try:
                 validate_project_access(it.project_id)
@@ -669,7 +711,14 @@ async def _validate_requirements_core(
                 client_ref=it.client_ref,
                 ok=not errors,
                 errors=errors,
-                warnings=_requirement_lint_warnings(it.requirement),
+                warnings=(
+                    _requirement_lint_warnings(it.requirement)
+                    + (
+                        ["embedding 服务不可用，本次仅执行 exact 查重（未做语义近重复检测）"]
+                        if dedupe.degraded
+                        else []
+                    )
+                ),
                 conflicts=conflicts,
                 suggestion=suggestion,
             )
@@ -856,7 +905,9 @@ def register_write_tools(mcp: FastMCP) -> None:
             default=True, description="是否执行语义冲突预检（false 只做字段/引用校验）"
         ),
     ) -> ValidateRequirementsOutput:
-        """发布前 dry-run：字段/引用/重复预检 + 冲突预览，不写库、不建批次。
+        """发布前 dry-run：字段/引用/批内重复预检 + 冲突预览，不写库、不建批次。
+
+        批内查重为 exact/近重复（embedding 不可用时降级为仅 exact）。
 
         PM 工具。逐条返回 ok/errors/conflicts/suggestion；有 errors 的条目
         不会执行冲突检索。用于批量录入前先修正问题，减少无效审批批次。

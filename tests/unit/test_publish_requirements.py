@@ -126,3 +126,20 @@ async def test_batch_publish_prevalidates_all_before_submit(monkeypatch):
             operation_id=None,
         )
     assert submitted == []
+
+
+@pytest.mark.asyncio
+async def test_batch_publish_rejects_intra_batch_duplicates(monkeypatch):
+    async def fake_submit(**kwargs):  # pragma: no cover - 不应被调用
+        raise AssertionError("重复预检失败时不应提交")
+
+    monkeypatch.setattr(write_tools, "get_current_key_id", lambda: "ak_pm")
+    monkeypatch.setattr(write_tools, "submit_write_batch", fake_submit)
+
+    with pytest.raises(PayloadValidationError, match="批内存在重复"):
+        await _publish_requirements_batch(
+            system_id=uuid.uuid4(),
+            requirements=[_item("A", "同一需求"), _item("B", "同一需求")],
+            submission_id=None,
+            operation_id=None,
+        )

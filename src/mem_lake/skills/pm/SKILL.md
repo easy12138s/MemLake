@@ -67,7 +67,7 @@ version: 1.20.0
 ### 写入类
 - **publish_requirement** — 发布单条需求（system_id 必填，requirement 嵌套结构）
 - **publish_requirements** — 批量发布：一个 submission_id 下每条需求一个批次，返回逐条 client_ref/batch_id/decision/conflict_hint
-- **validate_requirements** — 发布前 dry-run：字段/引用/重复预检 + 冲突预览，不写库
+- **validate_requirements** — 发布前 dry-run：字段/引用/批内重复预检（exact/近重复）+ 冲突预览，不写库
 - **update_requirement_relations** — 更新需求间关系（批量；端点支持 UUID 或 requirement_key/external_id）
 - **update_node** — 修正已审批节点（PM/Dev 共享；`project_id` 留空 = 更新悬浮需求）
 - **update_requirements** — 批量追加/移除标签、增量改属性（显式 node_ids，一个批次）

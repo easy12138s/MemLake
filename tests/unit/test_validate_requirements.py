@@ -166,3 +166,33 @@ def test_requirement_lint_warnings_detect_impl_details():
     assert any("acceptance_criteria" in w for w in warnings)
     assert any("待确认" in w for w in warnings)
     assert any("实现细节" in w for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_validate_requirements_flags_intra_batch_duplicates(monkeypatch):
+    async def fake_hybrid(**kwargs):  # pragma: no cover - 不应被调用
+        raise AssertionError("重复条目不执行冲突检索")
+
+    monkeypatch.setattr(write_tools, "hybrid_search", fake_hybrid)
+
+    def _same(ref: str) -> BatchRequirementInput:
+        return BatchRequirementInput(
+            client_ref=ref,
+            requirement=RequirementInput(
+                title="同一需求",
+                content="内容",
+                properties={"priority": "P1", "module": "医保"},
+            ),
+        )
+
+    out = await _validate_requirements_core(
+        system_id=uuid.uuid4(),
+        requirements=[_same("A"), _same("B")],
+        threshold=None,
+        include_conflicts=True,
+        embedding_client=None,
+        graph_store=None,
+    )
+
+    assert out.items[0].ok is False and out.items[1].ok is False
+    assert any("重复" in e for e in out.items[0].errors)
