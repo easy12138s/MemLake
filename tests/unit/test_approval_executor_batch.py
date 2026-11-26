@@ -62,6 +62,9 @@ async def _run_review(monkeypatch, item, before, after):
     async def fake_get_node(session, node_id):
         return before
 
+    async def fake_nodes(session, **kwargs):
+        return [before]
+
     async def fake_update_node(session, **kwargs):
         calls["update"] = kwargs
         return after
@@ -75,6 +78,7 @@ async def _run_review(monkeypatch, item, before, after):
 
     monkeypatch.setattr(executor, "get_pending_batch", fake_pending)
     monkeypatch.setattr(executor, "get_node", fake_get_node)
+    monkeypatch.setattr(executor, "get_nodes_by_ids", fake_nodes)
     monkeypatch.setattr(executor, "update_node", fake_update_node)
     monkeypatch.setattr(executor, "regenerate_node_vectors_batch", fake_regen)
     monkeypatch.setattr(executor, "write_audit_log", fake_audit)
@@ -113,3 +117,38 @@ async def test_tags_only_update_skips_vector_regeneration(monkeypatch):
     calls = await _run_review(monkeypatch, item, before, after)
 
     assert "regen" not in calls
+
+
+@pytest.mark.asyncio
+async def test_missing_update_target_fails_before_any_write(monkeypatch):
+    from mem_lake.approval.validation import PayloadValidationError
+
+    before = _node()
+    item = _update_item(before.id, {"title": "新标题"})
+    batch = _batch([item])
+    calls = {"update": 0}
+
+    async def fake_pending(session, batch_id, *, verb):
+        return batch
+
+    async def fake_nodes(session, **kwargs):
+        return []
+
+    async def fake_update(session, **kwargs):  # pragma: no cover - 不应被调用
+        calls["update"] += 1
+        return before
+
+    monkeypatch.setattr(executor, "get_pending_batch", fake_pending)
+    monkeypatch.setattr(executor, "get_nodes_by_ids", fake_nodes)
+    monkeypatch.setattr(executor, "update_node", fake_update)
+
+    with pytest.raises(PayloadValidationError, match="不存在或已删除"):
+        await executor.review_approve(
+            _Session(),
+            batch_id=batch.id,
+            reviewed_by="ak_admin",
+            graph_store=object(),
+            embedding_client=object(),
+            vector_searcher=object(),
+        )
+    assert calls["update"] == 0

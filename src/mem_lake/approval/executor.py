@@ -34,6 +34,7 @@ from mem_lake.knowledge.repository import (
     add_edge,
     create_node,
     get_node,
+    get_nodes_by_ids,
     regenerate_node_vectors_batch,
     set_node_project,
     update_node,
@@ -101,6 +102,28 @@ async def review_approve(
     （与内部构造顺序一致），非 None 时跳过内部重新 embed，消除重复计算。
     """
     batch = await get_pending_batch(session, batch_id, verb="审批通过")
+
+    # 0. 写入前预检 update 目标：任一节点缺失/已删除则整批拒绝（避免 50 项里
+    # 最后一项失败导致全部回滚，且回执能指明具体 node_id）。
+    update_ids = [
+        nid
+        for nid in (
+            _to_uuid(item.payload.get("node_id"))
+            for item in batch.items
+            if item.item_type == "node" and item.action == "update"
+        )
+        if nid is not None
+    ]
+    if update_ids:
+        existing = await get_nodes_by_ids(
+            session, node_ids=update_ids, status=None, include_deleted=False
+        )
+        existing_ids = {node.id for node in existing}
+        missing = [str(nid) for nid in update_ids if nid not in existing_ids]
+        if missing:
+            raise PayloadValidationError(
+                f"审批目标节点不存在或已删除: {missing}"
+            )
 
     # 1. 遍历 items 执行写入
     all_conflict_hints: list[dict[str, Any]] = []
