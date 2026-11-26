@@ -40,7 +40,6 @@ class ApprovalBatch(Base):
     submission_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         nullable=True,
-        index=True,
         comment="批量提交分组 ID（publish_requirements 同一批共享；单条工具为 NULL）",
     )
     batch_type: Mapped[str] = mapped_column(
@@ -84,6 +83,8 @@ class ApprovalBatch(Base):
     __table_args__ = (
         # PDD 4.5 索引：(project_id, status, submitted_at)
         Index("idx_approval_batch_status", "project_id", "status", "submitted_at"),
+        # 批量提交分组索引：显式命名与 0005 迁移一致（避免 ORM/迁移索引名漂移）
+        Index("idx_approval_batch_submission", "submission_id"),
         # 幂等键联合唯一约束：(submitted_by, batch_type, operation_id)
         # PostgreSQL NULL 语义：operation_id=NULL 不参与唯一性比较
         UniqueConstraint(

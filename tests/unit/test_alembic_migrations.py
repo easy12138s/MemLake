@@ -12,3 +12,13 @@ def test_migration_script_has_single_head():
     cfg = Config()
     cfg.set_main_option("script_location", "alembic")
     assert len(ScriptDirectory.from_config(cfg).get_heads()) == 1
+
+
+def test_approval_batch_submission_index_name_matches_migration():
+    """ORM 索引名必须与 0005/0007 迁移一致，避免 autogenerate 漂移。"""
+    from mem_lake.approval.models import ApprovalBatch
+
+    names = {idx.name for idx in ApprovalBatch.__table__.indexes}
+
+    assert "idx_approval_batch_submission" in names
+    assert "ix_approval_batch_submission_id" not in names
