@@ -63,6 +63,7 @@ from mem_lake.knowledge.models import KnowledgeNode
 from mem_lake.knowledge.repository import (
     NodeNotFoundError,
     find_requirements_by_ref,
+    find_requirements_by_refs,
     get_node,
     get_node_ids_with_vectors,
     get_nodes_by_ids,
@@ -806,8 +807,43 @@ async def _validate_requirements_core(
     return ValidateRequirementsOutput(items=results)
 
 
+async def _resolve_requirement_refs(refs: list[str]) -> dict[str, uuid.UUID]:
+    """批量把 requirement_key / external_id / UUID 解析为节点 UUID（单 session）。"""
+    resolved: dict[str, uuid.UUID] = {}
+    pending: list[str] = []
+    for ref in refs:
+        try:
+            resolved[ref] = uuid.UUID(ref)
+        except (ValueError, TypeError, AttributeError):
+            if ref not in pending:
+                pending.append(ref)
+    if not pending:
+        return resolved
+
+    async with readonly_session() as session:
+        rows = await find_requirements_by_refs(session, pending)
+
+    for ref in pending:
+        matches = [
+            row
+            for row in rows
+            if row.requirement_key == ref
+            or str((row.properties or {}).get("external_id")) == ref
+        ]
+        if not matches:
+            raise PayloadValidationError(
+                f"需求引用不存在: {ref}（requirement_key 或 external_id）"
+            )
+        if len(matches) > 1:
+            raise PayloadValidationError(
+                f"需求引用不唯一: {ref}，命中 {len(matches)} 条，请改用节点 UUID"
+            )
+        resolved[ref] = matches[0].id
+    return resolved
+
+
 async def _resolve_requirement_ref(ref: str) -> uuid.UUID:
-    """把 requirement_key / external_id / UUID 字符串解析为节点 UUID。"""
+    """把单条 requirement_key / external_id / UUID 解析为节点 UUID。"""
     try:
         return uuid.UUID(ref)
     except (ValueError, TypeError, AttributeError):
@@ -842,17 +878,19 @@ async def _submit_requirement_relations(
         raise PayloadValidationError("relations 不能为空")
 
     resolved: list[tuple[uuid.UUID, uuid.UUID, RelationInput]] = []
+    pending_refs = [
+        ref
+        for r in relations
+        for ref in (
+            (r.from_ref or "") if r.from_id is None else "",
+            (r.to_ref or "") if r.to_id is None else "",
+        )
+        if ref
+    ]
+    ref_map = await _resolve_requirement_refs(pending_refs) if pending_refs else {}
     for r in relations:
-        from_id = (
-            r.from_id
-            if r.from_id is not None
-            else await _resolve_requirement_ref(r.from_ref or "")
-        )
-        to_id = (
-            r.to_id
-            if r.to_id is not None
-            else await _resolve_requirement_ref(r.to_ref or "")
-        )
+        from_id = r.from_id if r.from_id is not None else ref_map[r.from_ref or ""]
+        to_id = r.to_id if r.to_id is not None else ref_map[r.to_ref or ""]
         resolved.append((from_id, to_id, r))
 
     ref_ids = [

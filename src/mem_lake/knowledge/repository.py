@@ -335,6 +335,26 @@ async def get_node_ids_with_vectors(
     return set(result.scalars().all())
 
 
+async def find_requirements_by_refs(
+    session: AsyncSession,
+    refs: list[str],
+) -> list[KnowledgeNode]:
+    """批量按 requirement_key 或 properties.external_id 查 Requirement。"""
+    if not refs:
+        return []
+    stmt = select(KnowledgeNode).where(
+        KnowledgeNode.type == "Requirement",
+        KnowledgeNode.status == "approved",
+        KnowledgeNode.is_deleted == False,  # noqa: E712
+        or_(
+            KnowledgeNode.requirement_key.in_(refs),
+            KnowledgeNode.properties["external_id"].astext.in_(refs),
+        ),
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def find_requirements_by_ref(
     session: AsyncSession,
     ref: str,

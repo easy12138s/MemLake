@@ -5,6 +5,7 @@
 """
 
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -119,8 +120,8 @@ async def test_relations_by_requirement_key_and_external_id(monkeypatch):
     calls: dict = {}
     resolved = {"SYS-0001": uuid.uuid4(), "ADO-2": uuid.uuid4()}
 
-    async def fake_resolve(ref):
-        return resolved[ref]
+    async def fake_resolve(refs):
+        return {ref: resolved[ref] for ref in refs}
 
     async def fake_validate_refs(project_id, ref_ids, label):
         calls["refs"] = ref_ids
@@ -130,7 +131,7 @@ async def test_relations_by_requirement_key_and_external_id(monkeypatch):
         return "ok"
 
     monkeypatch.setattr(
-        write_tools, "_resolve_requirement_ref", fake_resolve
+        write_tools, "_resolve_requirement_refs", fake_resolve
     )
     monkeypatch.setattr(
         write_tools, "_validate_requirement_refs", fake_validate_refs
@@ -173,3 +174,34 @@ async def test_resolve_requirement_ref_rejects_ambiguous(monkeypatch):
 
     with pytest.raises(PayloadValidationError, match="不唯一"):
         await write_tools._resolve_requirement_ref("DUP-1")
+
+
+@pytest.mark.asyncio
+async def test_resolve_requirement_refs_uses_single_query(monkeypatch):
+    from types import SimpleNamespace
+
+    from mem_lake.gateway.tools import write_tools as wt
+
+    node_a = SimpleNamespace(
+        id=uuid.uuid4(), requirement_key="A-1", properties={"external_id": None}
+    )
+    node_b = SimpleNamespace(
+        id=uuid.uuid4(), requirement_key="B-1", properties={"external_id": "EXT-9"}
+    )
+    seen: list[list[str]] = []
+
+    @asynccontextmanager
+    async def fake_session():
+        yield None
+
+    async def fake_find(session, refs):
+        seen.append(list(refs))
+        return [node_a, node_b]
+
+    monkeypatch.setattr(wt, "readonly_session", fake_session)
+    monkeypatch.setattr(wt, "find_requirements_by_refs", fake_find)
+
+    resolved = await wt._resolve_requirement_refs(["A-1", "EXT-9"])
+
+    assert seen == [["A-1", "EXT-9"]]
+    assert resolved == {"A-1": node_a.id, "EXT-9": node_b.id}
