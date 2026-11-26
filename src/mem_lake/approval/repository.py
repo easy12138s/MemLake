@@ -265,8 +265,14 @@ async def list_batches_by_submission(
 async def get_batch_detail(
     session: AsyncSession,
     batch_id: uuid.UUID,
+    *,
+    for_update: bool = False,
 ) -> ApprovalBatch:
     """查询批次详情（含 items，预加载避免 N+1 查询）。
+
+    for_update=True 时对批次主行加 `FOR UPDATE` 行锁（items 由 selectinload 单独
+    查询，不加锁）。审批/拒绝/自动处理等状态机写入口必须走加锁路径，避免并发
+    双审批重复写入。
 
     不存在抛 BatchNotFoundError。
     """
@@ -275,6 +281,8 @@ async def get_batch_detail(
         .options(selectinload(ApprovalBatch.items))
         .where(ApprovalBatch.id == batch_id)
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     result = await session.execute(stmt)
     batch = result.scalar_one_or_none()
     if batch is None:
@@ -289,7 +297,7 @@ async def get_pending_batch(
 
     verb 用于错误文案（如「审批通过」「自动处理」）。
     """
-    batch = await get_batch_detail(session, batch_id)
+    batch = await get_batch_detail(session, batch_id, for_update=True)
     if batch.status != STATUS_PENDING_REVIEW:
         raise BatchStatusError(
             f"批次状态不允许{verb}: 当前={batch.status}, 期望={STATUS_PENDING_REVIEW}"
