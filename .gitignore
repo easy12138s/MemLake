@@ -47,9 +47,10 @@ Thumbs.db
 # 工作区 Agent 记忆/配置（本地私有，不入库）
 .workbuddy/
 
-# docs 白名单：仅 wiki 入库，其余（plan 等会话临时文档）本地保留
+# docs 白名单：仅 wiki 与 superpowers 设计/计划入库，其余（plan 等会话临时文档）本地保留
 docs/*
 !docs/wiki/
+!docs/superpowers/
 
 # scripts 白名单：仅项目工具脚本入库，一次性运维脚本本地保留
 scripts/*
