@@ -320,7 +320,7 @@ async def _review_submission_core(
         except Exception as e:  # noqa: BLE001 - 单批失败不阻断其余批次
             results.append(
                 SubmissionItemResult(
-                    batch_id=pending.id, status="error", error=str(e)
+                    batch_id=pending.id, status="error", error=str(to_tool_error(e))
                 )
             )
 

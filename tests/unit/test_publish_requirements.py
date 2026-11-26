@@ -143,3 +143,21 @@ async def test_batch_publish_rejects_intra_batch_duplicates(monkeypatch):
             submission_id=None,
             operation_id=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_batch_publish_sanitizes_item_errors(monkeypatch):
+    async def boom(**kwargs):
+        raise RuntimeError("secret dsn")
+
+    monkeypatch.setattr(write_tools, "get_current_key_id", lambda: "ak_pm")
+    monkeypatch.setattr(write_tools, "submit_write_batch", boom)
+
+    out = await _publish_requirements_batch(
+        system_id=uuid.uuid4(),
+        requirements=[_item("A", "需求A")],
+        submission_id=None,
+        operation_id=None,
+    )
+
+    assert out.items[0].error == "工具调用失败: RuntimeError"

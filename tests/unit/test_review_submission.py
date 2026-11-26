@@ -128,3 +128,41 @@ async def test_review_submission_filters_batch_ids(monkeypatch):
 
     assert seen == [b2.id]
     assert out.processed == 1
+
+
+@pytest.mark.asyncio
+async def test_review_submission_sanitizes_internal_errors(monkeypatch):
+    batch = _batch()
+
+    @asynccontextmanager
+    async def fake_session():
+        yield None
+
+    async def fake_list(session, **kwargs):
+        return [batch]
+
+    async def boom(session, **kwargs):
+        raise RuntimeError("secret dsn")
+
+    async def fake_enqueue(project_id, node_ids):
+        return None
+
+    monkeypatch.setattr(review_tools, "readonly_session", fake_session)
+    monkeypatch.setattr(review_tools, "transactional_session", fake_session)
+    monkeypatch.setattr(review_tools, "list_pending_batches", fake_list)
+    monkeypatch.setattr(review_tools, "approval_review_approve", boom)
+    monkeypatch.setattr(review_tools, "_safe_enqueue_embed", fake_enqueue)
+
+    out = await _review_submission_core(
+        submission_id=uuid.uuid4(),
+        action="approve",
+        review_comment=None,
+        batch_ids=None,
+        reviewed_by="ak_admin",
+        graph_store=object(),
+        embedding_client=object(),
+        vector_searcher=object(),
+    )
+
+    assert out.items[0].status == "error"
+    assert out.items[0].error == "工具调用失败: RuntimeError"

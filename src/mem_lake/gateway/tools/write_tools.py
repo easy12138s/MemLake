@@ -24,8 +24,10 @@ from typing import Any, cast
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mem_lake.approval.models import ApprovalBatch
 from mem_lake.approval.service import (
     PayloadValidationError,
 )
@@ -371,6 +373,23 @@ class ArtifactsInput(StrictInputModel):
 # ============================================================================
 
 
+async def _assert_submission_ownership(
+    submission_id: uuid.UUID, key_id: str
+) -> None:
+    """同一 submission_id 只能由首次提交者继续使用，防止挂进他人提交。"""
+    async with readonly_session() as session:
+        result = await session.execute(
+            select(ApprovalBatch.submitted_by)
+            .where(ApprovalBatch.submission_id == submission_id)
+            .limit(1)
+        )
+        owner = result.scalar_one_or_none()
+    if owner is not None and owner != key_id:
+        raise PayloadValidationError(
+            f"submission_id {submission_id} 已被其他提交者使用，禁止复用"
+        )
+
+
 def _dedupe_entries(requirements: list["BatchRequirementInput"]) -> list[DedupeEntry]:
     """把批量输入映射为查重比较单元（external_id 取 properties 内的字符串）。"""
     return [
@@ -433,6 +452,8 @@ async def _publish_requirements_batch(
     )
 
     key_id = get_current_key_id()
+    if submission_id is not None:
+        await _assert_submission_ownership(submission_id, key_id)
     for it in requirements:
         if it.project_id is not None:
             validate_project_access(it.project_id)
@@ -485,7 +506,9 @@ async def _publish_requirements_batch(
             )
         except Exception as e:  # noqa: BLE001 - 单条失败不阻断其余条目
             results.append(
-                BatchPublishItemOutput(client_ref=it.client_ref, error=str(e))
+                BatchPublishItemOutput(
+                    client_ref=it.client_ref, error=str(to_tool_error(e))
+                )
             )
 
     return PublishRequirementsOutput(
