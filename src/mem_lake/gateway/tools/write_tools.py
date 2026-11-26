@@ -758,7 +758,8 @@ async def _validate_requirements_core(
         raw = [
             r
             for r in result.get("fused", [])
-            if r.score is not None and r.score >= threshold
+            if r.score is not None
+            and (r.score_kind == "fulltext" or r.score >= threshold)
         ]
         candidates[idx] = raw
         candidate_ids.extend(r.node_id for r in raw)
@@ -776,6 +777,7 @@ async def _validate_requirements_core(
                 "node_id": str(r.node_id),
                 "title": r.title,
                 "score": r.score,
+                "score_kind": r.score_kind,
                 "vector_ready": r.node_id in ready_ids,
             }
             for r in raw

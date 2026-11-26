@@ -566,7 +566,7 @@ async def _check_requirement_conflicts_core(
         for r in result.get("fused", [])
         if r.node_id != requirement_id
         and r.score is not None
-        and r.score >= threshold
+        and (r.score_kind == "fulltext" or r.score >= threshold)
     ]
     ready_ids: set[uuid.UUID] = set()
     if raw_conflicts:

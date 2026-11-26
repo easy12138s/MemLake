@@ -71,6 +71,8 @@ class SearchResult:
     version: int | None = None  # 节点版本号
     vector_generated_at: str | None = None  # 向量生成时间（ISO 8601）
     data_age_hours: float | None = None  # 数据年龄（小时）
+    # 分数口径：vector=向量余弦（可用阈值比较）；fulltext=仅全文命中（RRF 分，无余弦）
+    score_kind: str | None = None
 
     # 注意：fused 结果的 score 为向量余弦分（0~1，来自 vector 引擎），便于判相关性；
     # 排序仍由 RRF 排名决定。RRF 原始分数仅用于融合排序，不直接透出。
@@ -99,12 +101,10 @@ def _apply_vector_scores(
     vector_score_map = {
         r.node_id: r.score for r in vector_results if r.score is not None
     }
-    if not vector_score_map:
-        return fused
     return [
-        replace(r, score=vector_score_map[r.node_id])
+        replace(r, score=vector_score_map[r.node_id], score_kind="vector")
         if r.node_id in vector_score_map
-        else r
+        else replace(r, score_kind="fulltext")
         for r in fused
     ]
 

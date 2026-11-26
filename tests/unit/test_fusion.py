@@ -52,3 +52,15 @@ def test_rrf_fuse_still_assigns_rrf_scores():
     )
     assert res[0].score == 1 / (60 + 1)
     assert res[0].source == "fused"
+
+
+def test_apply_vector_scores_marks_score_kind():
+    a, b = uuid.uuid4(), uuid.uuid4()
+    vector_results = [_make(a, 0.83)]
+    fused = [_make(a, 0.016, "fused"), _make(b, 0.0159, "fused")]
+
+    out = _apply_vector_scores(fused, vector_results)
+
+    by_id = {r.node_id: r for r in out}
+    assert by_id[a].score_kind == "vector"
+    assert by_id[b].score_kind == "fulltext"

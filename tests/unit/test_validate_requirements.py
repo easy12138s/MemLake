@@ -236,3 +236,44 @@ async def test_validate_requirements_batches_embeddings_and_ready_query(monkeypa
     assert len(hybrid_vectors) == 3
     assert all(v is not None for v in hybrid_vectors)
     assert ready_calls == []
+
+
+@pytest.mark.asyncio
+async def test_validate_requirements_keeps_fulltext_only_hits(monkeypatch):
+    existing_id = uuid.uuid4()
+
+    async def fake_hybrid(**kwargs):
+        return {
+            "fused": [
+                SearchResult(
+                    node_id=existing_id,
+                    title="全文精确命中",
+                    content="内容",
+                    node_type="Requirement",
+                    score=0.016,
+                    score_kind="fulltext",
+                    source="fused",
+                    properties={},
+                    tags=[],
+                )
+            ]
+        }
+
+    monkeypatch.setattr(write_tools, "hybrid_search", fake_hybrid)
+    monkeypatch.setattr(write_tools, "readonly_session", _fake_session)
+    async def fake_ready(session, ids):
+        return set()
+
+    monkeypatch.setattr(write_tools, "get_node_ids_with_vectors", fake_ready)
+
+    out = await _validate_requirements_core(
+        system_id=uuid.uuid4(),
+        requirements=[_item("ft")],
+        threshold=0.85,
+        include_conflicts=True,
+        embedding_client=None,
+        graph_store=None,
+    )
+
+    assert len(out.items[0].conflicts) == 1
+    assert out.items[0].conflicts[0]["score_kind"] == "fulltext"
