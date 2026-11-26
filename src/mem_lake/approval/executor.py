@@ -315,6 +315,10 @@ async def _execute_node_update(
         properties=payload.get("properties"),
         tags=payload.get("tags"),
         source=payload.get("source"),
+        tags_add=payload.get("tags_add"),
+        tags_remove=payload.get("tags_remove"),
+        properties_patch=payload.get("properties_patch"),
+        expected_version=payload.get("base_version"),
         actor=actor,
         regenerate_vector=True,
     )

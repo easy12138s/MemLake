@@ -51,6 +51,10 @@ class NodeNotFoundError(Exception):
     """节点不存在或已软删除时抛出。"""
 
 
+class VersionConflictError(Exception):
+    """乐观版本校验失败：提交时版本与执行时版本不一致。"""
+
+
 def _graph_props(node: KnowledgeNode) -> dict[str, Any]:
     """构造 AGE 图节点属性：id/title 必带，project_id/system_id 非空才带。
 
@@ -375,6 +379,45 @@ async def get_nodes_by_ids(
     return list(result.scalars().all())
 
 
+def merge_update_values(
+    node: KnowledgeNode,
+    *,
+    properties: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    tags_add: list[str] | None = None,
+    tags_remove: list[str] | None = None,
+    properties_patch: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, list[str] | None]:
+    """把全量/增量更新参数合并为 (properties, tags)；None 表示不更新该字段。
+
+    `properties`（整体替换）与 `properties_patch`（基于当前值合并）互斥。
+    tags_add/tags_remove 以当前 tags 为基线做增删，幂等。
+    """
+    if properties is not None and properties_patch is not None:
+        raise ValueError("properties 与 properties_patch 互斥，请只提供一种")
+
+    merged_properties: dict[str, Any] | None = None
+    if properties_patch is not None:
+        merged_properties = dict(node.properties or {})
+        merged_properties.update(properties_patch)
+    elif properties is not None:
+        merged_properties = properties
+
+    merged_tags: list[str] | None = None
+    if tags is not None:
+        merged_tags = list(tags)
+    elif tags_add is not None or tags_remove is not None:
+        merged_tags = list(node.tags or [])
+        for tag in tags_add or []:
+            if tag not in merged_tags:
+                merged_tags.append(tag)
+        remove = set(tags_remove or [])
+        if remove:
+            merged_tags = [tag for tag in merged_tags if tag not in remove]
+
+    return merged_properties, merged_tags
+
+
 async def update_node(
     session: AsyncSession,
     *,
@@ -386,6 +429,10 @@ async def update_node(
     properties: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     source: dict[str, Any] | None = None,
+    tags_add: list[str] | None = None,
+    tags_remove: list[str] | None = None,
+    properties_patch: dict[str, Any] | None = None,
+    expected_version: int | None = None,
     actor: str,
     regenerate_vector: bool = True,
 ) -> KnowledgeNode:
@@ -395,13 +442,30 @@ async def update_node(
     - 不允许修改 type 字段（节点类型不可变更），调用方需重新创建新节点
     - title/content/properties 任一更新且 regenerate_vector=True：重新生成 facet
       向量（facet 文本含属性段，属性变更同样影响向量）
-    - properties 整体替换（不深度合并，调用方负责合并逻辑）
+    - properties 为整体替换；properties_patch 基于执行时节点值合并；tags_add/tags_remove
+      以执行时 tags 为基线增删。两者互斥
+    - 合并结果与当前值相同视为 no-op：不写 changes、不递增版本、不重算向量
+    - 提供 expected_version 时做乐观并发校验，不一致抛 VersionConflictError
     - 版本号 +1
     - 审计日志记录变更前后关键字段
 
     不存在抛 NodeNotFoundError。不 commit。
     """
     node = await get_node(session, node_id)
+    if expected_version is not None and node.version != expected_version:
+        raise VersionConflictError(
+            f"节点 {node_id} 版本冲突：期望 {expected_version}，当前 {node.version}，"
+            "请重新读取后重试"
+        )
+
+    merged_properties, merged_tags = merge_update_values(
+        node,
+        properties=properties,
+        tags=tags,
+        tags_add=tags_add,
+        tags_remove=tags_remove,
+        properties_patch=properties_patch,
+    )
 
     changes: dict[str, Any] = {}
     if title is not None and title != node.title:
@@ -410,14 +474,14 @@ async def update_node(
     if content is not None and content != node.content:
         changes["content"] = {"from": node.content[:200], "to": content[:200]}
         node.content = content
-    if properties is not None:
+    if merged_properties is not None and merged_properties != node.properties:
         # 更新前重新校验必填字段（防止 properties 缺失关键字段）
-        validate_node(node.type, properties)
+        validate_node(node.type, merged_properties)
         changes["properties"] = "updated"
-        node.properties = properties
-    if tags is not None:
-        changes["tags"] = {"from": node.tags, "to": tags}
-        node.tags = tags
+        node.properties = merged_properties
+    if merged_tags is not None and merged_tags != node.tags:
+        changes["tags"] = {"from": node.tags, "to": merged_tags}
+        node.tags = merged_tags
     if source is not None:
         changes["source"] = "updated"
         node.source = source

@@ -36,7 +36,7 @@ from mem_lake.gateway.dependencies import (
     validate_project_access,
     validate_system_access,
 )
-from mem_lake.knowledge.repository import NodeNotFoundError
+from mem_lake.knowledge.repository import NodeNotFoundError, VersionConflictError
 from mem_lake.knowledge.schema import SchemaValidationError, validate_attribution
 
 logger = logging.getLogger("mem_lake.gateway.tools.shared")
@@ -244,6 +244,8 @@ def to_tool_error(exc: Exception) -> ToolError:
         return ToolError(f"批次状态错误: {exc}")
     if isinstance(exc, NodeNotFoundError):
         return ToolError(f"节点不存在: {exc}")
+    if isinstance(exc, VersionConflictError):
+        return ToolError(f"版本冲突: {exc}")
 
     # 未识别的异常，记录详细日志后返回通用错误信息（不暴露内部细节给 Agent）
     logger.exception("未处理的工具调用异常")
@@ -337,22 +339,45 @@ def build_update_node_item(
     properties: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     source: dict[str, Any] | None = None,
+    tags_add: list[str] | None = None,
+    tags_remove: list[str] | None = None,
+    properties_patch: dict[str, Any] | None = None,
+    base_version: int | None = None,
 ) -> dict[str, Any]:
     """构造 node + update 审批项（走审批流修改已通过节点的内容）。
 
     与 build_node_item（create）生成 action="update" 的 item。payload 契约对齐
     approval.models.ApprovalItem：{"node_id", "title", "content", "properties",
-    "tags", "source"}，审批通过时由 approval/executor._execute_node_update 调用
-    repository.update_node 落地（版本递增 + title 同步 AGE + 向量重算 + 审计）。
+    "tags", "source", "tags_add", "tags_remove", "properties_patch", "base_version"}，
+    审批通过时由 approval/executor._execute_node_update 调用 repository.update_node
+    落地（版本递增 + title 同步 AGE + 向量重算 + 审计）。
 
-    字段语义与 repository.update_node 一致：None 表示不更新，properties 整体替换
-    （不深度合并，调用方负责合并）。至少须提供一个变更字段；节点 type 不可变更，
-    不由本工具提供（不写入 payload）。
+    字段语义与 repository.update_node 一致：None 表示不更新；`properties` 整体替换；
+    `properties_patch` 基于执行时节点值合并；`tags_add`/`tags_remove` 以执行时 tags
+    为基线增删；`base_version` 为提交时读到的版本，用于乐观并发校验。旧快照 payload
+    （只带 properties/tags 全量）继续按原语义执行。
     """
-    if all(v is None for v in (title, content, properties, tags, source)):
-        raise PayloadValidationError(
-            "update 节点至少提供一个要变更的字段: title/content/properties/tags/source"
+    if (
+        all(
+            v is None
+            for v in (
+                title,
+                content,
+                properties,
+                tags,
+                source,
+                tags_add,
+                tags_remove,
+                properties_patch,
+            )
         )
+    ):
+        raise PayloadValidationError(
+            "update 节点至少提供一个要变更的字段: "
+            "title/content/properties/tags/source/tags_add/tags_remove/properties_patch"
+        )
+    if properties is not None and properties_patch is not None:
+        raise PayloadValidationError("properties 与 properties_patch 互斥")
     payload: dict[str, Any] = {"node_id": str(node_id)}
     if title is not None:
         payload["title"] = title
@@ -364,6 +389,14 @@ def build_update_node_item(
         payload["tags"] = tags
     if source is not None:
         payload["source"] = source
+    if tags_add is not None:
+        payload["tags_add"] = tags_add
+    if tags_remove is not None:
+        payload["tags_remove"] = tags_remove
+    if properties_patch is not None:
+        payload["properties_patch"] = properties_patch
+    if base_version is not None:
+        payload["base_version"] = base_version
     return {
         "item_type": "node",
         "action": "update",

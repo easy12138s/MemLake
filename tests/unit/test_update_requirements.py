@@ -15,6 +15,9 @@ def _node(*, tags=None, properties=None) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
         type="Requirement",
+        version=1,
+        project_id=None,
+        system_id=None,
         tags=tags or [],
         properties=properties or {"priority": "P2", "module": "药库"},
     )
@@ -65,9 +68,12 @@ async def test_update_requirements_merges_tags_and_properties(monkeypatch):
     assert result == "ok"
     items = calls["submit"]["items"]
     assert len(items) == 2
-    assert items[0]["payload"]["tags"] == ["已确认"]
-    assert items[0]["payload"]["properties"] == {"priority": "P1", "module": "药库"}
-    assert items[1]["payload"]["tags"] == ["old", "已确认"]
+    assert items[0]["payload"]["tags_add"] == ["已确认"]
+    assert items[0]["payload"]["tags_remove"] == ["待确认"]
+    assert items[0]["payload"]["properties_patch"] == {"priority": "P1"}
+    assert items[0]["payload"]["base_version"] == 1
+    assert items[1]["payload"]["tags_add"] == ["已确认"]
+    assert items[1]["payload"]["tags_remove"] == ["待确认"]
     assert calls["submit"]["batch_type"] == "update_node"
     assert calls["submit"]["submitter_role"] == "pm"
 

@@ -94,4 +94,46 @@ def _validate_item_payload(item: dict[str, Any], idx: int) -> None:
                 f"item[{idx}] edge+create payload 缺 from_ref/to_ref"
             )
 
+    elif item_type == "node" and action == "update":
+        if not payload.get("node_id"):
+            raise PayloadValidationError(f"item[{idx}] node+update payload 缺 node_id")
+        change_keys = (
+            "title",
+            "content",
+            "properties",
+            "tags",
+            "source",
+            "tags_add",
+            "tags_remove",
+            "properties_patch",
+        )
+        has_change = any(payload.get(key) is not None for key in change_keys)
+        if "project_id" in payload:
+            # 归属变更/解绑（bind_requirement）：project_id 允许为 None
+            has_change = True
+        if not has_change:
+            raise PayloadValidationError(
+                f"item[{idx}] node+update 至少提供一个变更字段"
+            )
+        if "properties" in payload and "properties_patch" in payload:
+            raise PayloadValidationError(
+                f"item[{idx}] properties 与 properties_patch 互斥"
+            )
+        base_version = payload.get("base_version")
+        if base_version is not None and (
+            not isinstance(base_version, int) or base_version < 1
+        ):
+            raise PayloadValidationError(
+                f"item[{idx}] base_version 必须为正整数"
+            )
+        for key in ("tags_add", "tags_remove"):
+            if key in payload and not isinstance(payload[key], list):
+                raise PayloadValidationError(f"item[{idx}] {key} 必须为数组")
+        if "properties_patch" in payload and not isinstance(
+            payload["properties_patch"], dict
+        ):
+            raise PayloadValidationError(
+                f"item[{idx}] properties_patch 必须为对象"
+            )
+
     # node + update / edge + update / delete：提交时不强校验，留待审批通过时校验

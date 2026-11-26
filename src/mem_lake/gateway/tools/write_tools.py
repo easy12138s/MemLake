@@ -535,28 +535,33 @@ async def _update_requirements_batch(
     items: list[dict[str, Any]] = []
     for node in nodes:
         original_tags = list(node.tags or [])
-        new_tags = list(original_tags)
+        prospective_tags = list(original_tags)
         for tag in tags_add or []:
-            if tag not in new_tags:
-                new_tags.append(tag)
+            if tag not in prospective_tags:
+                prospective_tags.append(tag)
         if remove_set:
-            new_tags = [t for t in new_tags if t not in remove_set]
+            prospective_tags = [t for t in prospective_tags if t not in remove_set]
 
-        new_props = None
+        prospective_props = None
         if properties_patch is not None:
-            new_props = dict(node.properties or {})
-            new_props.update(properties_patch)
-            validate_node("Requirement", new_props)
+            prospective_props = dict(node.properties or {})
+            prospective_props.update(properties_patch)
+            validate_node("Requirement", prospective_props)
 
-        tags_arg = new_tags if new_tags != original_tags else None
-        if tags_arg is None and new_props is None:
+        tags_changed = prospective_tags != original_tags
+        props_changed = prospective_props is not None and prospective_props != dict(
+            node.properties or {}
+        )
+        if not tags_changed and not props_changed:
             continue
         items.append(
             build_update_node_item(
                 node_id=node.id,
                 node_type=node.type,
-                properties=new_props,
-                tags=tags_arg,
+                tags_add=list(tags_add) if tags_changed and tags_add else None,
+                tags_remove=list(tags_remove) if tags_changed and tags_remove else None,
+                properties_patch=properties_patch if props_changed else None,
+                base_version=node.version,
             )
         )
 
