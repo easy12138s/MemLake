@@ -585,6 +585,7 @@ async def submit_write_batch(
     operation_id: str | None,
     affected: list[dict[str, Any]] | None = None,
     submission_id: uuid.UUID | None = None,
+    enqueue_embed: bool = True,
 ) -> WriteToolOutput:
     """写工具统一提交流程：开事务 → 按模式提交批次 → 宽松模式收尾入队补向量。
 
@@ -618,7 +619,7 @@ async def submit_write_batch(
     # 宽松模式提交后收尾：已自动审批时异步入队补向量，并构造出参。
     # strict 模式（lax=False）不触发入队，仅构造包含 decision=None 的出参。
     created = collect_created_node_ids(batch)
-    if lax and decision == "auto_approved" and created:
+    if enqueue_embed and lax and decision == "auto_approved" and created:
         # 悬浮需求（project_id=None）同样需要补向量：start_embed_nodes_task
         # 支持按 node_ids 定位，不依赖项目过滤。
         await _safe_enqueue_embed(project_id, created)

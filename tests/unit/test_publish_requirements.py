@@ -161,3 +161,38 @@ async def test_batch_publish_sanitizes_item_errors(monkeypatch):
     )
 
     assert out.items[0].error == "工具调用失败: RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_batch_publish_aggregates_embed_enqueue(monkeypatch):
+    enqueues: list = []
+
+    async def fake_submit(**kwargs):
+        return SimpleNamespace(
+            batch_id=uuid.uuid4(),
+            status="approved",
+            mode="lax",
+            decision="auto_approved",
+            conflict_hint=None,
+            created=[{"node_id": str(uuid.uuid4())}],
+            edges_created=0,
+            submission_id=kwargs["submission_id"],
+        )
+
+    async def fake_enqueue(project_id, node_ids):
+        enqueues.append((project_id, node_ids))
+
+    monkeypatch.setattr(write_tools, "get_current_key_id", lambda: "ak_pm")
+    monkeypatch.setattr(write_tools, "submit_write_batch", fake_submit)
+    monkeypatch.setattr(write_tools, "_safe_enqueue_embed", fake_enqueue)
+
+    out = await _publish_requirements_batch(
+        system_id=uuid.uuid4(),
+        requirements=[_item("A", "需求A"), _item("B", "需求B")],
+        submission_id=None,
+        operation_id=None,
+    )
+
+    assert all(item.error is None for item in out.items)
+    assert len(enqueues) == 1
+    assert len(enqueues[0][1]) == 2

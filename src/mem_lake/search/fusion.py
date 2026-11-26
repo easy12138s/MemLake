@@ -205,6 +205,7 @@ async def hybrid_search(
     graph_node_id: uuid.UUID | None = None,
     graph_depth: int = 3,
     fulltext_query: str | None = None,
+    query_vector: list[float] | None = None,
 ) -> dict[str, Any]:
     """并行三引擎混合检索。
 
@@ -257,7 +258,13 @@ async def hybrid_search(
         finally:
             SEARCH_PHASE_DURATION.labels(phase="embed").observe(time.time() - t_embed)
 
-    query_vector_task = asyncio.ensure_future(_embed_task())
+    if query_vector is None:
+        query_vector_task = asyncio.ensure_future(_embed_task())
+    else:
+        async def _resolved_vector() -> list[float]:
+            return query_vector
+
+        query_vector_task = asyncio.ensure_future(_resolved_vector())
 
     async def _vector_task() -> list[SearchResult]:
         query_vector = await query_vector_task

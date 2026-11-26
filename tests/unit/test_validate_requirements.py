@@ -196,3 +196,43 @@ async def test_validate_requirements_flags_intra_batch_duplicates(monkeypatch):
 
     assert out.items[0].ok is False and out.items[1].ok is False
     assert any("重复" in e for e in out.items[0].errors)
+
+
+@pytest.mark.asyncio
+async def test_validate_requirements_batches_embeddings_and_ready_query(monkeypatch):
+    hybrid_vectors: list = []
+    ready_calls: list = []
+
+    class _Embedding:
+        def __init__(self):
+            self.calls = 0
+
+        async def embed(self, texts, prompt=None, prompt_name=None):
+            self.calls += 1
+            return [[0.1, 0.2] for _ in texts]
+
+    async def fake_hybrid(**kwargs):
+        hybrid_vectors.append(kwargs.get("query_vector"))
+        return {"fused": []}
+
+    async def fake_ready(session, node_ids):
+        ready_calls.append(node_ids)
+        return set()
+
+    monkeypatch.setattr(write_tools, "hybrid_search", fake_hybrid)
+    monkeypatch.setattr(write_tools, "readonly_session", _fake_session)
+    monkeypatch.setattr(write_tools, "get_node_ids_with_vectors", fake_ready)
+
+    out = await _validate_requirements_core(
+        system_id=uuid.uuid4(),
+        requirements=[_item("a"), _item("b"), _item("c")],
+        threshold=None,
+        include_conflicts=True,
+        embedding_client=_Embedding(),
+        graph_store=object(),
+    )
+
+    assert len(out.items) == 3
+    assert len(hybrid_vectors) == 3
+    assert all(v is not None for v in hybrid_vectors)
+    assert ready_calls == []

@@ -255,6 +255,7 @@ async def _review_submission_core(
         batches = [b for b in batches if b.id in wanted]
 
     results: list[SubmissionItemResult] = []
+    created_by_project: dict[uuid.UUID | None, list[uuid.UUID]] = {}
     for pending in batches:
         try:
             if action == "auto":
@@ -270,7 +271,9 @@ async def _review_submission_core(
                 batch = result["batch"]
                 created_ids = result.get("created_node_ids") or []
                 if created_ids:
-                    await _safe_enqueue_embed(batch.project_id, created_ids)
+                    created_by_project.setdefault(batch.project_id, []).extend(
+                        created_ids
+                    )
                 approved = result["decision"] == "auto_approved"
                 results.append(
                     SubmissionItemResult(
@@ -295,7 +298,9 @@ async def _review_submission_core(
                     )
                 created_ids = collect_created_node_ids(batch)
                 if created_ids:
-                    await _safe_enqueue_embed(batch.project_id, created_ids)
+                    created_by_project.setdefault(batch.project_id, []).extend(
+                        created_ids
+                    )
                 results.append(
                     SubmissionItemResult(
                         batch_id=batch.id,
@@ -323,6 +328,9 @@ async def _review_submission_core(
                     batch_id=pending.id, status="error", error=str(to_tool_error(e))
                 )
             )
+
+    for batch_project_id, node_ids in created_by_project.items():
+        await _safe_enqueue_embed(batch_project_id, node_ids)
 
     return ReviewSubmissionOutput(
         submission_id=submission_id,

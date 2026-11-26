@@ -50,6 +50,7 @@ from mem_lake.gateway.tools._shared import (
     WRITE_TOOL_ANNOTATIONS,
     StrictInputModel,
     WriteToolOutput,
+    _safe_enqueue_embed,
     build_edge_item,
     build_node_item,
     build_update_node_item,
@@ -474,6 +475,7 @@ async def _publish_requirements_batch(
 
     effective_submission_id = submission_id or uuid.uuid4()
     results: list[BatchPublishItemOutput] = []
+    created_by_project: dict[uuid.UUID | None, list[uuid.UUID]] = {}
     for it in requirements:
         item_operation_id = (
             f"{operation_id}:{it.client_ref}" if operation_id is not None else None
@@ -489,9 +491,16 @@ async def _publish_requirements_batch(
                 items=items,
                 operation_id=item_operation_id,
                 submission_id=effective_submission_id,
+                enqueue_embed=False,
             )
             if out.submission_id is not None:
                 effective_submission_id = out.submission_id
+            for created in out.created or []:
+                raw_node_id = created.get("node_id")
+                if raw_node_id:
+                    created_by_project.setdefault(it.project_id, []).append(
+                        uuid.UUID(str(raw_node_id))
+                    )
             results.append(
                 BatchPublishItemOutput(
                     client_ref=it.client_ref,
@@ -510,6 +519,10 @@ async def _publish_requirements_batch(
                     client_ref=it.client_ref, error=str(to_tool_error(e))
                 )
             )
+
+    # 同一 submission 的新建节点按项目聚合后一次性入队（避免 50 个后台 worker）。
+    for batch_project_id, node_ids in created_by_project.items():
+        await _safe_enqueue_embed(batch_project_id, node_ids)
 
     return PublishRequirementsOutput(
         submission_id=effective_submission_id,
@@ -670,7 +683,7 @@ async def _validate_requirements_core(
         threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
     suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
 
-    results: list[ValidateRequirementItemOutput] = []
+    prepared: list[tuple[BatchRequirementInput, list[str]]] = []
     for it in requirements:
         errors: list[str] = []
         if system_error is not None:
@@ -700,53 +713,78 @@ async def _validate_requirements_core(
                 )
             except Exception as e:  # noqa: BLE001
                 errors.append(str(e))
+        prepared.append((it, errors))
 
-        conflicts: list[dict[str, Any]] = []
+    # 冲突检索批量向量化：所有可检索条目一次性 embed，再逐条传 query_vector，
+    # 避免每条各建 3 个 session + 各 embed 一次；候选 vector_ready 也一次 IN 查询。
+    searchable = [
+        idx
+        for idx, (_it, errors) in enumerate(prepared)
+        if include_conflicts and not errors
+    ]
+    query_texts = [
+        build_embed_text(
+            "Requirement",
+            prepared[idx][0].requirement.title,
+            prepared[idx][0].requirement.content,
+            prepared[idx][0].requirement.properties,
+        )
+        for idx in searchable
+    ]
+    vectors: list[list[float]] = []
+    try:
+        if query_texts and embedding_client is not None:
+            vectors = await embedding_client.embed(query_texts, prompt_name="query")
+    except Exception:  # noqa: BLE001 - 批量 embed 失败回退逐条（hybrid 内部 embed）
+        vectors = []
+
+    candidates: dict[int, list[Any]] = {}
+    candidate_ids: list[uuid.UUID] = []
+    for pos, idx in enumerate(searchable):
+        it = prepared[idx][0]
+        result = await hybrid_search(
+            query=query_texts[pos],
+            embedding_client=embedding_client,
+            graph_store=graph_store,
+            top_n=10,
+            filters=FilterSpec(
+                project_id=it.project_id,
+                system_id=system_id,
+                node_types=("Requirement",),
+            ),
+            query_vector=vectors[pos] if vectors else None,
+        )
+        raw = [
+            r
+            for r in result.get("fused", [])
+            if r.score is not None and r.score >= threshold
+        ]
+        candidates[idx] = raw
+        candidate_ids.extend(r.node_id for r in raw)
+
+    ready_ids: set[uuid.UUID] = set()
+    if candidate_ids:
+        async with readonly_session() as session:
+            ready_ids = await get_node_ids_with_vectors(session, candidate_ids)
+
+    results: list[ValidateRequirementItemOutput] = []
+    for idx, (it, errors) in enumerate(prepared):
+        raw = candidates.get(idx, [])
+        conflicts = [
+            {
+                "node_id": str(r.node_id),
+                "title": r.title,
+                "score": r.score,
+                "vector_ready": r.node_id in ready_ids,
+            }
+            for r in raw
+        ]
         suggestion = None
-        if include_conflicts and not errors:
-            query_text = build_embed_text(
-                "Requirement",
-                it.requirement.title,
-                it.requirement.content,
-                it.requirement.properties,
+        if conflicts:
+            max_score = max(float(c["score"]) for c in conflicts)
+            suggestion = (
+                "manual_merge" if max_score >= suggest_threshold else "review"
             )
-            result = await hybrid_search(
-                query=query_text,
-                embedding_client=embedding_client,
-                graph_store=graph_store,
-                top_n=10,
-                filters=FilterSpec(
-                    project_id=it.project_id,
-                    system_id=system_id,
-                    node_types=("Requirement",),
-                ),
-            )
-            raw = [
-                r
-                for r in result.get("fused", [])
-                if r.score is not None and r.score >= threshold
-            ]
-            ready_ids: set[uuid.UUID] = set()
-            if raw:
-                async with readonly_session() as session:
-                    ready_ids = await get_node_ids_with_vectors(
-                        session, [r.node_id for r in raw]
-                    )
-            conflicts = [
-                {
-                    "node_id": str(r.node_id),
-                    "title": r.title,
-                    "score": r.score,
-                    "vector_ready": r.node_id in ready_ids,
-                }
-                for r in raw
-            ]
-            if conflicts:
-                max_score = max(float(c["score"]) for c in conflicts)
-                suggestion = (
-                    "manual_merge" if max_score >= suggest_threshold else "review"
-                )
-
         results.append(
             ValidateRequirementItemOutput(
                 client_ref=it.client_ref,
@@ -755,7 +793,7 @@ async def _validate_requirements_core(
                 warnings=(
                     _requirement_lint_warnings(it.requirement)
                     + (
-                        ["embedding 服务不可用，本次仅执行 exact 查重（未做语义近重复检测）"]
+                        ["embedding 服务不可用，本次仅执行 exact 查重（未做近重复检测）"]
                         if dedupe.degraded
                         else []
                     )
