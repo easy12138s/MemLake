@@ -1063,6 +1063,23 @@ async def get_system_ids_by_projects(
     return set(result.scalars().all())
 
 
+async def get_system_projects_map(
+    session: AsyncSession, *, system_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """一次查询多个 system 的项目映射（管理列表用，替代逐 system N+1）。"""
+    if not system_ids:
+        return {}
+    result = await session.execute(
+        select(SystemProject.system_id, SystemProject.project_id).where(
+            SystemProject.system_id.in_(system_ids)
+        )
+    )
+    mapping: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for system_id, project_id in result.all():
+        mapping.setdefault(system_id, []).append(project_id)
+    return mapping
+
+
 async def count_nodes_by_status(session: AsyncSession) -> dict[str, int]:
     """知识节点按状态计数（排除软删除；可视化总览用，只读）。"""
     result = await session.execute(

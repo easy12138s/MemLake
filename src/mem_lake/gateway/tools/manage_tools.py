@@ -73,7 +73,7 @@ from mem_lake.knowledge.repository import (
     create_node,
     create_system,
     get_system,
-    get_system_project_ids,
+    get_system_projects_map,
     list_project_ids_with_profile,
     list_systems,
     remove_system_projects,
@@ -628,9 +628,12 @@ def register_manage_tools(mcp: FastMCP) -> None:
                     )
                 if action == "list":
                     rows = await list_systems(session)
+                    project_map = await get_system_projects_map(
+                        session, system_ids=[row.id for row in rows]
+                    )
                     result = []
                     for row in rows:
-                        pids = await get_system_project_ids(session, system_id=row.id)
+                        pids = project_map.get(row.id, [])
                         result.append(
                             {
                                 "system_id": str(row.id),
