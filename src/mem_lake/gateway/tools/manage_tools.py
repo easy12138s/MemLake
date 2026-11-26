@@ -150,7 +150,8 @@ class CreateAccessKeyOutput(BaseModel):
         default=None,
         description=(
             "给用户的接入提示（一句话，不含 Key）：MCP 配置完成后转述给其 Agent，"
-            "引导 Agent 按其中的 GitHub URL 安装角色技能文档"
+            "引导 Agent 读取 MCP Resource `memlake://skills/{role}/SKILL`"
+            "（或调用 get_skill），无需安装文件"
         ),
     )
 
@@ -165,7 +166,7 @@ def _build_mcp_config(mcp_url: str, plaintext: str) -> str:
 
     目标 Agent 通常无法自行给自己安装 MCP，因此这部分交由用户处理：
     用户把返回的 JSON 写入自己的 MCP 客户端（Claude Desktop / Cursor / Codex 等）。
-    技能安装由目标 Agent 接通 MCP 后自助完成（见 _build_user_hint），无需 admin 转接。
+    技能读取由目标 Agent 接通 MCP 后自助完成（见 _build_user_hint），无需 admin 转接。
     """
     import json
 
@@ -372,7 +373,8 @@ def register_manage_tools(mcp: FastMCP) -> None:
           · mcp_config：拼装好的 MCP 客户端配置 JSON，交【用户】粘贴到其
             MCP 客户端（Claude Desktop / Cursor / Codex 等），Agent 不自行安装 MCP；
           · user_hint：给【用户】的一句话接入提示（不含 Key），转述给其 Agent 后，
-            Agent 按 hint 中的 GitHub URL 安装角色技能文档（一次安装，后续会话生效）。
+            Agent 读取 MCP Resource `memlake://skills/{role}/SKILL`（或调用 get_skill），
+            无需从 GitHub 下载或落盘安装。
         """
         try:
             key_id_actor = get_current_key_id()

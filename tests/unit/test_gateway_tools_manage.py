@@ -237,3 +237,13 @@ class TestProjectMustHaveProfile:
 
         await manage_tools._assert_projects_have_profile(None, [uuid.uuid4()])
 
+
+
+def test_user_hint_schema_points_to_mcp_resource():
+    from mem_lake.gateway.tools.manage_tools import CreateAccessKeyOutput
+
+    description = CreateAccessKeyOutput.model_fields["user_hint"].description
+
+    assert "memlake://skills/" in description
+    assert "get_skill" in description
+    assert "GitHub" not in description
