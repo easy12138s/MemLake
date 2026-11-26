@@ -531,6 +531,19 @@ async def _update_requirements_batch(
         missing = [str(nid) for nid in node_ids if nid not in found]
         raise PayloadValidationError(f"批量更新目标不存在或未审批: {missing}")
 
+    project_ids = {node.project_id for node in nodes}
+    if len(project_ids) != 1:
+        raise PayloadValidationError(
+            "批量更新目标分属多个项目（含悬浮/跨项目），请按项目拆分后分别提交"
+        )
+    batch_project_id = next(iter(project_ids))
+
+    system_ids = {node.system_id for node in nodes}
+    if len(system_ids) != 1 or None in system_ids:
+        raise PayloadValidationError(
+            "批量更新目标必须属于同一 system；请按 system 拆分后分别提交"
+        )
+
     remove_set = set(tags_remove or [])
     items: list[dict[str, Any]] = []
     for node in nodes:
@@ -569,7 +582,7 @@ async def _update_requirements_batch(
         raise PayloadValidationError("没有实际发生变更的节点")
 
     return await submit_write_batch(
-        project_id=None,
+        project_id=batch_project_id,
         batch_type="update_node",
         submitter_role=get_current_role(),
         items=items,

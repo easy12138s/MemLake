@@ -10,14 +10,17 @@ from mem_lake.approval.service import PayloadValidationError
 from mem_lake.gateway.tools import write_tools
 from mem_lake.gateway.tools.write_tools import _update_requirements_batch
 
+PROJECT_ID = uuid.UUID("55555555-5555-5555-5555-555555555555")
+SYSTEM_ID = uuid.UUID("66666666-6666-6666-6666-666666666666")
 
-def _node(*, tags=None, properties=None) -> SimpleNamespace:
+
+def _node(*, tags=None, properties=None, project_id=PROJECT_ID, system_id=SYSTEM_ID) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
         type="Requirement",
         version=1,
-        project_id=None,
-        system_id=None,
+        project_id=project_id,
+        system_id=system_id,
         tags=tags or [],
         properties=properties or {"priority": "P2", "module": "药库"},
     )
@@ -115,3 +118,63 @@ async def test_update_requirements_skips_noop_nodes(monkeypatch):
             properties_patch=None,
             operation_id=None,
         )
+
+
+async def _run_submit(monkeypatch, nodes):
+    calls: dict = {}
+
+    async def fake_validate_refs(project_id, ref_ids, label):
+        return None
+
+    async def fake_get_nodes(session, **kwargs):
+        return nodes
+
+    async def fake_submit(**kwargs):
+        calls["submit"] = kwargs
+        return "ok"
+
+    monkeypatch.setattr(write_tools, "readonly_session", _fake_session)
+    monkeypatch.setattr(write_tools, "_validate_requirement_refs", fake_validate_refs)
+    monkeypatch.setattr(write_tools, "get_nodes_by_ids", fake_get_nodes)
+    monkeypatch.setattr(write_tools, "submit_write_batch", fake_submit)
+    monkeypatch.setattr(write_tools, "get_current_role", lambda: "pm")
+    monkeypatch.setattr(
+        write_tools,
+        "get_settings",
+        lambda: type("S", (), {"MAX_ITEMS_PER_BATCH": 50})(),
+    )
+
+    await _update_requirements_batch(
+        node_ids=[n.id for n in nodes],
+        tags_add=["新标签"],
+        tags_remove=None,
+        properties_patch=None,
+        operation_id=None,
+    )
+    return calls["submit"]
+
+
+@pytest.mark.asyncio
+async def test_update_requirements_uses_single_project_id(monkeypatch):
+    nodes = [_node(), _node()]
+
+    submit = await _run_submit(monkeypatch, nodes)
+
+    assert submit["project_id"] == PROJECT_ID
+
+
+@pytest.mark.asyncio
+async def test_update_requirements_rejects_cross_project_batch(monkeypatch):
+    other = uuid.uuid4()
+    nodes = [_node(), _node(project_id=other)]
+
+    with pytest.raises(PayloadValidationError, match="按项目拆分"):
+        await _run_submit(monkeypatch, nodes)
+
+
+@pytest.mark.asyncio
+async def test_update_requirements_rejects_cross_system_batch(monkeypatch):
+    nodes = [_node(), _node(system_id=uuid.uuid4())]
+
+    with pytest.raises(PayloadValidationError, match="同一 system"):
+        await _run_submit(monkeypatch, nodes)
