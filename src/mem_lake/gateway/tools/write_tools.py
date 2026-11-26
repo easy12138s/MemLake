@@ -39,6 +39,8 @@ from mem_lake.gateway.dependencies import (
     get_current_system_scope,
     readonly_session,
     validate_project_access,
+    validate_project_in_system,
+    validate_system_write_access,
 )
 from mem_lake.gateway.tools._shared import (
     READ_TOOL_ANNOTATIONS,
@@ -392,10 +394,13 @@ async def _publish_requirements_batch(
     if len(set(refs)) != len(refs):
         raise PayloadValidationError("client_ref 在同一批提交内必须唯一")
 
+    await validate_system_write_access(system_id)
+
     key_id = get_current_key_id()
     for it in requirements:
         if it.project_id is not None:
             validate_project_access(it.project_id)
+            await validate_project_in_system(system_id, it.project_id)
         _check_content_length(
             it.requirement.content, f"Requirement.content[{it.client_ref}]"
         )
@@ -573,6 +578,12 @@ async def _validate_requirements_core(
     if len(set(refs)) != len(refs):
         raise PayloadValidationError("client_ref 在同一批预检内必须唯一")
 
+    system_error: str | None = None
+    try:
+        await validate_system_write_access(system_id)
+    except Exception as e:  # noqa: BLE001 - 预检收集全部错误
+        system_error = str(e)
+
     if threshold is None:
         threshold = get_settings().CONFLICT_SIMILARITY_THRESHOLD
     suggest_threshold = get_settings().CONFLICT_SUGGEST_PENDING
@@ -580,9 +591,12 @@ async def _validate_requirements_core(
     results: list[ValidateRequirementItemOutput] = []
     for it in requirements:
         errors: list[str] = []
+        if system_error is not None:
+            errors.append(system_error)
         if it.project_id is not None:
             try:
                 validate_project_access(it.project_id)
+                await validate_project_in_system(system_id, it.project_id)
             except Exception as e:  # noqa: BLE001 - 预检收集全部错误
                 errors.append(str(e))
         try:
@@ -768,8 +782,10 @@ def register_write_tools(mcp: FastMCP) -> None:
         related.supersedes/relates_to 中的 requirement_id 必须为已有 Requirement 节点的 UUID。
         """
         try:
+            await validate_system_write_access(system_id)
             if project_id is not None:
                 validate_project_access(project_id)
+                await validate_project_in_system(system_id, project_id)
             _check_content_length(requirement.content, "Requirement.content")
             key_id = get_current_key_id()
             # 提交前校验引用存在且类型为 Requirement，避免错误引用延迟到审批通过才失败

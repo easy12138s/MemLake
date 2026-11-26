@@ -32,7 +32,7 @@
 
 ## PR-A：授权与数据正确性
 
-### Task A1: system 写鉴权 + project∈system 一致性
+### Task 1: system 写鉴权 + project∈system 一致性
 
 **Files:**
 - Modify: `src/mem_lake/gateway/dependencies.py`
@@ -53,7 +53,7 @@
 - [ ] **Step 4: 运行通过**：本文件 + `pytest tests/unit/test_publish_requirements.py tests/unit/test_validate_requirements.py -q`。
 - [ ] **Step 5: Commit**：`fix(auth): enforce system write scope and project-system membership`
 
-### Task A2: 批内确定性查重
+### Task 2: 批内确定性查重
 
 **Files:**
 - Create: `src/mem_lake/gateway/tools/_batch_dedupe.py`
@@ -76,7 +76,7 @@
 - [ ] **Step 5: 改文案**：三处「重复预检」改为「批内 exact/近重复查重（embedding 不可用时仅 exact）」。
 - [ ] **Step 6: 测试通过 + Commit**：`feat(publish): detect intra-batch duplicate requirements`
 
-### Task A3: 增量更新 + 版本校验 + no-op 语义
+### Task 3: 增量更新 + 版本校验 + no-op 语义
 
 **Files:**
 - Modify: `src/mem_lake/knowledge/repository.py`（`update_node` 约 `:380`；新增 `VersionConflictError`）
@@ -98,7 +98,7 @@
 - [ ] **Step 4: 扩展 item 契约与执行器**：payload 允许新键；`_execute_node_update` 透传；`update_requirements` 提交时只读合并用于 no-op 跳过，item 带增量 + `base_version=node.version`；保留「没有实际发生变更的节点」错误。
 - [ ] **Step 5: 测试通过 + Commit**：`feat(update): incremental patches with optimistic version check`
 
-### Task A4: update_requirements 批次归属
+### Task 4: update_requirements 批次归属
 
 **Files:** `write_tools.py`（`_update_requirements_batch:456`）、`tests/unit/test_update_requirements.py`
 
@@ -108,7 +108,7 @@
 - [ ] **Step 2: 运行确认失败** → **Step 3: 实现** → **Step 4: 通过**。
 - [ ] **Step 5: Commit**：`fix(update): attribute update batches to their single project`
 
-### Task A5: 错误脱敏 + submission 归属
+### Task 5: 错误脱敏 + submission 归属
 
 **Files:** `write_tools.py:445`、`review_tools.py:320`、`tests/unit/test_publish_requirements.py`、`tests/unit/test_review_submission.py`
 
@@ -119,7 +119,7 @@
 - [ ] **Step 2: 确认失败** → **Step 3: `str(to_tool_error(e))` + 归属校验** → **Step 4: 通过**。
 - [ ] **Step 5: Commit**：`fix(gateway): sanitize batch errors and verify submission ownership`
 
-### Task A6: auto_process 对 update 的冲突检测
+### Task 6: auto_process 对 update 的冲突检测
 
 **Files:** `src/mem_lake/approval/policy.py`（`auto_process_batch:30`）、`tests/unit/test_auto_approval.py`
 
@@ -133,7 +133,7 @@
 
 ## PR-B：事务、并发与性能
 
-### Task B1: 审批期批量向量重算
+### Task 7: 审批期批量向量重算
 
 **Files:** `approval/executor.py`、`knowledge/repository.py`（新增 `regenerate_node_vectors_batch`）、`review_tools.py`（两个 approve 路径）、`tests/unit/test_approval_state_machine.py`、`tests/unit/test_review_submission.py`
 
@@ -145,7 +145,7 @@
 - [ ] **Step 2: 确认失败** → **Step 3: 实现**（执行前后比较 title/content/properties；循环后一次批量重算）→ **Step 4: 通过**。
 - [ ] **Step 5: Commit**：`perf(approval): batch facet regeneration for update batches`
 
-### Task B2: 审批前节点存在性预检
+### Task 8: 审批前节点存在性预检
 
 **Files:** `approval/executor.py`、`tests/unit/test_approval_state_machine.py`
 
@@ -153,7 +153,7 @@
 - [ ] **Step 2–4: 实现 + 通过**（写入前一次 `IN` 查询，`is_deleted=False`）。
 - [ ] **Step 5: Commit**：`fix(approval): preflight update targets before writing`
 
-### Task B3: 审批行锁
+### Task 9: 审批行锁
 
 **Files:** `approval/repository.py`（`get_batch_detail`、`get_pending_batch`）、`tests/unit/test_approval_state_machine.py`
 
@@ -163,7 +163,7 @@
 - [ ] **Step 2–4: 实现 + 通过**（`with_for_update()` 只锁主行）。
 - [ ] **Step 5: Commit**：`fix(approval): lock batch row during state transitions`
 
-### Task B4: dry-run 批量 embed + 入队聚合
+### Task 10: dry-run 批量 embed + 入队聚合
 
 **Files:** `search/fusion.py:198`、`write_tools.py:555`、`_shared.py:submit_write_batch`、`review_tools.py`、`tests/unit/test_fusion.py`、`tests/unit/test_validate_requirements.py`、`tests/unit/test_publish_requirements.py`
 
@@ -175,7 +175,7 @@
 - [ ] **Step 2–4: 实现 + 通过**（一次批量 embed → 逐条 `hybrid_search(query_vector=...)`；created ids 按 project 聚合后入队）。
 - [ ] **Step 5: Commit**：`perf(gateway): batch embeddings for validation and enqueue`
 
-### Task B5: 批量 ref 解析 + external_id 索引（0006）
+### Task 11: 批量 ref 解析 + external_id 索引（0006）
 
 **Files:** `knowledge/repository.py`（新增 `find_requirements_by_refs`）、`write_tools.py:667-737`、`alembic/versions/0006_node_external_id_index.py`（新建）、`tests/unit/test_requirement_relations.py`、`tests/unit/test_alembic_migrations.py`
 
@@ -187,7 +187,7 @@
 - [ ] **Step 2–4: 实现 + 通过**（UUID 直接解析；其余 `requirement_key IN` + `properties->>'external_id' IN`）。
 - [ ] **Step 5: Commit**：`perf(relations): batch requirement ref resolution with external_id index`
 
-### Task B6: review_submission keyset 分页 + get_submission 总数
+### Task 12: review_submission keyset 分页 + get_submission 总数
 
 **Files:** `review_tools.py:227`、`approval/repository.py`（`list_pending_batches` 增 `batch_ids`、`order_asc`）、`tests/unit/test_review_submission.py`
 
@@ -200,7 +200,7 @@
 - [ ] **Step 2–4: 实现 + 通过**（SQL 层 `id.in_(batch_ids)`；keyset `(submitted_at, id)`）。
 - [ ] **Step 5: Commit**：`fix(review): stable pagination for submissions`
 
-### Task B7: 分数口径 `score_kind`
+### Task 13: 分数口径 `score_kind`
 
 **Files:** `search/fusion.py:42/99`、`write_tools.py:627`、`tests/unit/test_fusion.py`、`tests/unit/test_validate_requirements.py`
 
@@ -210,7 +210,7 @@
 - [ ] **Step 2–4: 实现 + 通过**（`_apply_vector_scores` 标记；filter 按 kind 分支）。
 - [ ] **Step 5: Commit**：`fix(search): distinguish vector and fulltext scores`
 
-### Task B8: manage_system list 批量化
+### Task 14: manage_system list 批量化
 
 **Files:** `gateway/tools/manage_tools.py:632`、`tests/unit/test_gateway_tools_manage.py`
 
@@ -222,7 +222,7 @@
 
 ## PR-C：运维脚本安全
 
-### Task C1: 批次删除保护
+### Task 15: 批次删除保护
 
 **Files:** `scripts/cleanup_test_leftovers.py:270-295`、`tests/unit/test_cleanup_script_guard.py`
 
@@ -230,14 +230,14 @@
 - [ ] **Step 2–4: 实现 + 通过**（`status != pending_review` + `project_id IS NOT NULL` + payload 级 `from_ref/to_ref/node_id` 文本比对）。
 - [ ] **Step 5: Commit**：`fix(cleanup): never delete pending or floating approval batches`
 
-### Task C2: 快照覆盖受保护项目 + dry-run 告警
+### Task 16: 快照覆盖受保护项目 + dry-run 告警
 
 **Files:** `scripts/cleanup_test_leftovers.py:171-200/391-420`、`tests/unit/test_cleanup_script_guard.py`
 
 - [ ] **Step 1: 失败测试**：`protected_project_ids` 的节点/向量/审计/图顶点计入快照；dry-run 在 pending 待删数 >0 时输出告警行。
 - [ ] **Step 2–4: 实现 + 通过** → **Step 5: Commit**：`fix(cleanup): snapshot protected projects and warn on pending batches`
 
-### Task C3: 重索引任务保护复用 protected_node_ids
+### Task 17: 重索引任务保护复用 protected_node_ids
 
 **Files:** `scripts/cleanup_test_leftovers.py:296-308`、`tests/unit/test_cleanup_script_guard.py`
 
@@ -248,21 +248,21 @@
 
 ## PR-D：文档、测试与迁移
 
-### Task D1: approval_batch 索引名对齐（0007）
+### Task 18: approval_batch 索引名对齐（0007）
 
 **Files:** `approval/models.py:40-45/84-96`、`alembic/versions/0007_rename_approval_batch_submission_index.py`（新建）、`tests/unit/test_alembic_migrations.py`
 
 - [ ] **Step 1: 失败测试**：元数据索引名为 `idx_approval_batch_submission`；0007 upgrade/downgrade 幂等（存在 `ix_` 则 rename）。
 - [ ] **Step 2–4: 实现 + 通过** → **Step 5: Commit**：`chore(db): align approval_batch submission index name`
 
-### Task D2: user_hint 文案
+### Task 19: user_hint 文案
 
 **Files:** `gateway/tools/manage_tools.py:151-155/373-377`、`tests/unit/test_gateway_tools_manage.py`
 
 - [ ] **Step 1: 失败测试**：`CreateAccessKeyOutput.model_fields["user_hint"].description` 含 `memlake://skills/` 且不含 `GitHub`；docstring 断言同上。
 - [ ] **Step 2–4: 实现 + 通过** → **Step 5: Commit**：`docs(tools): update user_hint to MCP resources`
 
-### Task D3: e2e 修复
+### Task 20: e2e 修复
 
 **Files:** `tests/e2e/test_mcp_e2e.py`
 
@@ -270,7 +270,7 @@
 - [ ] **Step 2: 静态校验**：`python -m py_compile tests/e2e/test_mcp_e2e.py`；grep 确认无已删工具名。
 - [ ] **Step 3: Commit**：`test(e2e): align scenarios with current tool surface`
 
-### Task D4: DEPLOYMENT / wiki 升级说明
+### Task 21: DEPLOYMENT / wiki 升级说明
 
 **Files:** `DEPLOYMENT.md:98/119/183-192`、`docs/wiki/03-工具手册.md:43`、三个工具 docstring
 

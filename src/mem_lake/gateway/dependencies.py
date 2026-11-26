@@ -111,6 +111,80 @@ def validate_system_access(system_id: uuid.UUID) -> None:
         )
 
 
+async def get_allowed_write_system_ids() -> set[uuid.UUID] | None:
+    """当前 Key 允许写入的 system 集合；admin 返回 None（不限制）。
+
+    兼容口径（方案 A）：`system_scope ∪ project_scope 中各 project 所隶属的
+    system`。这样仅绑定 project 的存量 PM Key 在其项目所属 system 内不改行为，
+    跨 system 写入仍被拒绝。
+    """
+    token = get_current_access_token()
+    role = token.claims.get("role", "")
+    if role == "admin":
+        return None
+
+    allowed: set[uuid.UUID] = set()
+    for raw in token.claims.get("system_scope") or []:
+        try:
+            allowed.add(uuid.UUID(str(raw)))
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+    project_ids: list[uuid.UUID] = []
+    for raw in token.claims.get("project_scope") or []:
+        try:
+            project_ids.append(uuid.UUID(str(raw)))
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+    if project_ids:
+        from mem_lake.knowledge.repository import get_system_ids_by_projects
+
+        async with readonly_session() as session:
+            allowed |= await get_system_ids_by_projects(
+                session, project_ids=project_ids
+            )
+    return allowed
+
+
+async def validate_system_write_access(system_id: uuid.UUID) -> None:
+    """校验当前 Key 能否写入指定 system（system 必须存在且在允许集内）。
+
+    admin 不受范围限制，但仍要求 system 存在（阻止向不存在的 system 写入并
+    占用 `SYS-` 回退序列）。
+    """
+    from mem_lake.knowledge.models import System
+
+    async with readonly_session() as session:
+        if await session.get(System, system_id) is None:
+            raise ToolError(f"权限拒绝：system 不存在: {system_id}")
+
+    allowed = await get_allowed_write_system_ids()
+    if allowed is not None and system_id not in allowed:
+        raise ToolError(
+            f"权限拒绝：system {system_id} 不在当前 Access Key 的 system 范围内"
+            "（可联系 admin 用 manage_system add_projects 挂载项目，"
+            "或用 bind_keys 授权 system）"
+        )
+
+
+async def validate_project_in_system(
+    system_id: uuid.UUID, project_id: uuid.UUID
+) -> None:
+    """校验 project 已挂载到目标 system（防止跨域写出不一致归属的节点）。"""
+    from mem_lake.knowledge.repository import get_system_project_ids
+
+    async with readonly_session() as session:
+        mounted = set(
+            await get_system_project_ids(session, system_id=system_id)
+        )
+    if project_id not in mounted:
+        raise ToolError(
+            f"参数校验失败：项目 {project_id} 未挂载到 system {system_id}。"
+            "请先用 manage_system add_projects 建立归属，或改用该项目所属的 system"
+        )
+
+
 def get_current_lax_mode() -> bool:
     """获取当前调用者的审核模式（是否宽松：true=免审批直接入库）。
 

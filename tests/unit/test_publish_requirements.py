@@ -14,6 +14,18 @@ from mem_lake.gateway.tools.write_tools import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _allow_system_write_scope(monkeypatch):
+    """鉴权细节由 test_system_write_access.py 覆盖；本文件只测批量语义。"""
+
+    async def _ok(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(write_tools, "validate_system_write_access", _ok)
+    monkeypatch.setattr(write_tools, "validate_project_in_system", _ok)
+
+
+
 def _item(ref: str, title: str) -> BatchRequirementInput:
     return BatchRequirementInput(
         client_ref=ref,

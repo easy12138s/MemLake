@@ -942,6 +942,20 @@ async def get_system_ids_by_project(
     return list(result.scalars().all())
 
 
+async def get_system_ids_by_projects(
+    session: AsyncSession, *, project_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """批量反查多个 project 归属的 system 域 ID 集合（鉴权允许集展开用）。"""
+    if not project_ids:
+        return set()
+    result = await session.execute(
+        select(SystemProject.system_id).where(
+            SystemProject.project_id.in_(project_ids)
+        )
+    )
+    return set(result.scalars().all())
+
+
 async def count_nodes_by_status(session: AsyncSession) -> dict[str, int]:
     """知识节点按状态计数（排除软删除；可视化总览用，只读）。"""
     result = await session.execute(
